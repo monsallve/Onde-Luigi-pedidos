@@ -1,7 +1,8 @@
 import React, { useState } from 'react';
-import { Cloud, Database, LogOut, MailPlus, RefreshCw, Shield, Trash2, Users, X } from 'lucide-react';
+import { Cloud, Database, LogOut, MailPlus, Plus, RefreshCw, Shield, Trash2, Users, X } from 'lucide-react';
 import { usePosStore } from '../services/posStore';
 import { ADMIN_BOOTSTRAP_EMAIL } from '../data/demoSeed';
+import type { StaffRole } from '../types/pos';
 import { PWAInstallButton } from './PWAInstallBanner';
 
 interface Props {
@@ -21,7 +22,10 @@ export const SettingsModal: React.FC<Props> = ({ open, onClose }) => {
     setDemoAccountRole,
     updateAuthorizedEmails,
     staff,
+    saveStaffMember,
+    updateStaffRole,
     toggleStaffActive,
+    deleteStaffMember,
     resetDemoData,
     signOutSession,
   } = usePosStore();
@@ -30,6 +34,12 @@ export const SettingsModal: React.FC<Props> = ({ open, onClose }) => {
   const [newWaiterEmail, setNewWaiterEmail] = useState('');
   const [savingEmails, setSavingEmails] = useState(false);
   const [emailError, setEmailError] = useState<string | null>(null);
+
+  const [newStaffName, setNewStaffName] = useState('');
+  const [newStaffRole, setNewStaffRole] = useState<StaffRole>('mesero');
+  const [savingStaff, setSavingStaff] = useState(false);
+  const [staffError, setStaffError] = useState<string | null>(null);
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
 
   if (!open) return null;
 
@@ -66,6 +76,47 @@ export const SettingsModal: React.FC<Props> = ({ open, onClose }) => {
       setEmailError(err instanceof Error ? err.message : 'Error al quitar correo.');
     } finally {
       setSavingEmails(false);
+    }
+  };
+
+  const handleAddStaff = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newStaffName.trim()) {
+      setStaffError('Escribe el nombre del mesero o integrante.');
+      return;
+    }
+    setSavingStaff(true);
+    setStaffError(null);
+    try {
+      await saveStaffMember(newStaffName, newStaffRole);
+      setNewStaffName('');
+      setNewStaffRole('mesero');
+    } catch (err) {
+      setStaffError(err instanceof Error ? err.message : 'No se pudo agregar el usuario.');
+    } finally {
+      setSavingStaff(false);
+    }
+  };
+
+  const handleRoleChange = async (staffId: string, role: StaffRole) => {
+    setStaffError(null);
+    try {
+      await updateStaffRole(staffId, role);
+    } catch (err) {
+      setStaffError(err instanceof Error ? err.message : 'No se pudo cambiar el rol.');
+    }
+  };
+
+  const handleDeleteStaff = async (staffId: string) => {
+    setSavingStaff(true);
+    setStaffError(null);
+    try {
+      await deleteStaffMember(staffId);
+      setConfirmDeleteId(null);
+    } catch (err) {
+      setStaffError(err instanceof Error ? err.message : 'No se pudo eliminar.');
+    } finally {
+      setSavingStaff(false);
     }
   };
 
@@ -178,7 +229,7 @@ export const SettingsModal: React.FC<Props> = ({ open, onClose }) => {
                 <span>Cuentas de meseros autorizadas (Cloud)</span>
               </h3>
               <p className="text-xs text-zinc-400">
-                Solo los correos agregados aquí pueden entrar como meseros a tomar pedidos y confirmar pagos o cancelaciones.
+                Solo los correos agregados aquí pueden entrar como meseros, asociar su nombre y tomar o cobrar pedidos.
               </p>
 
               {emailError && (
@@ -235,40 +286,137 @@ export const SettingsModal: React.FC<Props> = ({ open, onClose }) => {
           )}
 
           {/* Team Roster management */}
-          <section className="space-y-2">
+          <section className="space-y-2.5">
             <h3 className="text-xs font-bold text-amber-400 uppercase tracking-wide flex items-center gap-1.5">
               <Users className="w-4 h-4" />
-              <span>Personal en turno</span>
+              <span>Personal y roles en turno</span>
             </h3>
-            <div className="divide-y divide-[#27272E] border border-[#27272E] rounded-xl overflow-hidden bg-[#0A0A0A]">
-              {staff.map((member) => (
-                <div
-                  key={member.id}
-                  className="flex items-center justify-between px-4 py-3"
-                >
-                  <div>
-                    <p className="text-sm font-semibold text-white">{member.name}</p>
-                    <p className="text-xs text-zinc-400 capitalize">{member.role}</p>
-                  </div>
-                  {isAdmin ? (
-                    <button
-                      type="button"
-                      onClick={() => toggleStaffActive(member.id, !member.active)}
-                      className={`min-h-[36px] px-3 rounded-lg text-xs font-semibold transition-colors ${
-                        member.active
-                          ? 'bg-emerald-950/60 text-emerald-300 border border-emerald-700'
-                          : 'bg-[#1C1C22] text-zinc-400 border border-[#27272E]'
-                      }`}
-                    >
-                      {member.active ? 'Activo' : 'Inactivo'}
-                    </button>
-                  ) : (
-                    <span className="text-xs text-zinc-400">
-                      {member.active ? 'Activo' : 'Inactivo'}
-                    </span>
-                  )}
+
+            {staffError && (
+              <div className="rounded-xl bg-red-950/60 border border-red-700 px-3 py-2 text-xs font-medium text-red-200">
+                {staffError}
+              </div>
+            )}
+
+            {isAdmin && (
+              <form onSubmit={handleAddStaff} className="flex flex-col sm:flex-row gap-2">
+                <input
+                  type="text"
+                  value={newStaffName}
+                  onChange={(e) => setNewStaffName(e.target.value)}
+                  placeholder="Nombre nuevo mesero..."
+                  className="flex-1 min-h-[42px] rounded-xl border border-[#27272E] bg-[#0A0A0A] px-3 text-sm text-white placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-amber-500"
+                />
+                <div className="flex gap-2">
+                  <select
+                    aria-label="Rol del nuevo integrante"
+                    value={newStaffRole}
+                    onChange={(e) => setNewStaffRole(e.target.value as StaffRole)}
+                    className="min-h-[42px] rounded-xl border border-[#27272E] bg-[#0A0A0A] px-2.5 text-xs font-semibold text-zinc-200 focus:outline-none focus:ring-2 focus:ring-amber-500"
+                  >
+                    <option value="mesero">Mesero</option>
+                    <option value="cajero">Caja</option>
+                    <option value="cocina">Cocina</option>
+                    <option value="admin">Administrador</option>
+                  </select>
+                  <button
+                    type="submit"
+                    disabled={savingStaff}
+                    className="min-h-[42px] px-4 rounded-xl bg-amber-500 text-black text-xs font-bold hover:bg-amber-400 flex items-center gap-1.5 whitespace-nowrap shrink-0"
+                  >
+                    <Plus className="w-4 h-4" />
+                    <span>Agregar</span>
+                  </button>
                 </div>
-              ))}
+              </form>
+            )}
+
+            <div className="divide-y divide-[#27272E] border border-[#27272E] rounded-xl overflow-hidden bg-[#0A0A0A]">
+              {staff.length === 0 && (
+                <p className="px-4 py-4 text-xs text-zinc-400 text-center">
+                  No hay usuarios registrados en el equipo.
+                </p>
+              )}
+              {staff.map((member) => {
+                const confirming = confirmDeleteId === member.id;
+                return (
+                  <div
+                    key={member.id}
+                    className="flex flex-wrap items-center justify-between gap-2 px-4 py-3"
+                  >
+                    <div className="min-w-0 flex-1">
+                      <p className="text-sm font-semibold text-white truncate">{member.name}</p>
+                      <p className="text-[11px] text-zinc-400 truncate">
+                        {member.linkedEmail ? `Cuenta: ${member.linkedEmail}` : 'Creado por administrador'}
+                      </p>
+                    </div>
+                    {isAdmin ? (
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        <select
+                          aria-label={`Rol de ${member.name}`}
+                          value={member.role}
+                          onChange={(e) => handleRoleChange(member.id, e.target.value as StaffRole)}
+                          className="min-h-[34px] rounded-lg border border-[#27272E] bg-[#141418] px-2 text-xs font-semibold text-zinc-200 focus:outline-none focus:ring-2 focus:ring-amber-500"
+                        >
+                          <option value="mesero">Mesero</option>
+                          <option value="cajero">Caja</option>
+                          <option value="cocina">Cocina</option>
+                          <option value="admin">Administrador</option>
+                        </select>
+
+                        <button
+                          type="button"
+                          onClick={() => toggleStaffActive(member.id, !member.active)}
+                          className={`min-h-[34px] px-2.5 rounded-lg text-xs font-semibold transition-colors ${
+                            member.active
+                              ? 'bg-emerald-950/60 text-emerald-300 border border-emerald-700'
+                              : 'bg-[#1C1C22] text-zinc-400 border border-[#27272E]'
+                          }`}
+                        >
+                          {member.active ? 'Activo' : 'Inactivo'}
+                        </button>
+
+                        {!confirming ? (
+                          <button
+                            type="button"
+                            onClick={() => setConfirmDeleteId(member.id)}
+                            aria-label={`Eliminar usuario ${member.name}`}
+                            className="min-h-[34px] min-w-[34px] flex items-center justify-center rounded-lg text-red-400 hover:bg-red-950/60"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        ) : (
+                          <div className="flex items-center gap-1">
+                            <button
+                              type="button"
+                              disabled={savingStaff}
+                              onClick={() => handleDeleteStaff(member.id)}
+                              className="min-h-[34px] px-2.5 rounded-lg bg-red-600 text-white text-xs font-bold hover:bg-red-500"
+                            >
+                              Borrar
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setConfirmDeleteId(null)}
+                              className="min-h-[34px] px-2 rounded-lg border border-[#27272E] bg-[#1C1C22] text-xs text-zinc-300"
+                            >
+                              No
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    ) : (
+                      <div className="text-right text-xs">
+                        <span className="text-zinc-300 capitalize">{member.role}</span>
+                        <span className="text-zinc-500 mx-1">·</span>
+                        <span className="text-zinc-400">
+                          {member.active ? 'Activo' : 'Inactivo'}
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
             </div>
           </section>
 

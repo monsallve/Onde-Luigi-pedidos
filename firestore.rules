@@ -101,12 +101,14 @@ service cloud.firestore {
     }
 
     function isValidStaffMember(data, staffId) {
-      return data.keys().hasAll(['id', 'name', 'role', 'active', 'ownerUid', 'createdByUid', 'allowedEmails', 'createdAt', 'updatedAt']) &&
-        data.keys().hasOnly(['id', 'name', 'role', 'active', 'ownerUid', 'createdByUid', 'allowedEmails', 'createdAt', 'updatedAt']) &&
+      return data.keys().hasAll(['id', 'name', 'role', 'active', 'linkedUid', 'linkedEmail', 'ownerUid', 'createdByUid', 'allowedEmails', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['id', 'name', 'role', 'active', 'linkedUid', 'linkedEmail', 'ownerUid', 'createdByUid', 'allowedEmails', 'createdAt', 'updatedAt']) &&
         data.id == staffId &&
         isStringBounded(data.name, 1, 80) &&
         data.role in ['admin', 'mesero', 'cajero', 'cocina'] &&
         data.active is bool &&
+        isStringBounded(data.linkedUid, 0, 128) &&
+        isStringBounded(data.linkedEmail, 0, 160) &&
         isStringBounded(data.ownerUid, 1, 128) &&
         isStringBounded(data.createdByUid, 1, 128) &&
         isStringListBounded(data.allowedEmails, 25) &&
@@ -267,24 +269,46 @@ service cloud.firestore {
         allow delete: if isWorkspaceAdmin(workspaceId) && isValidId(uid);
       }
 
-      // ADMIN-ONLY WRITE: Staff Roster
+      // ADMIN-CONTROLLED ROSTER + SELF-ASSOCIATED WAITER PROFILE
       match /staff/{staffId} {
         allow get: if isValidId(staffId) && isAuthorizedWorkspaceUser(workspaceId);
         allow list: if canListResource();
-        allow create: if isValidId(staffId) && isWorkspaceAdmin(workspaceId) &&
+        allow create: if isValidId(staffId) &&
+          isAuthorizedWorkspaceUser(workspaceId) &&
           isValidStaffMember(incoming(), staffId) &&
           incoming().createdByUid == request.auth.uid &&
           incoming().ownerUid == getAfter(workspacePath(workspaceId)).data.ownerUid &&
           incoming().createdAt == request.time &&
-          incoming().updatedAt == request.time;
-        allow update: if isValidId(staffId) && isWorkspaceAdmin(workspaceId) &&
+          incoming().updatedAt == request.time &&
+          (
+            isWorkspaceAdmin(workspaceId) ||
+            (
+              staffId == 'staff_' + request.auth.uid &&
+              incoming().role == 'mesero' &&
+              incoming().active == true &&
+              incoming().linkedUid == request.auth.uid &&
+              incoming().linkedEmail == request.auth.token.email
+            )
+          );
+        allow update: if isValidId(staffId) &&
+          isAuthorizedWorkspaceUser(workspaceId) &&
           isValidStaffMember(incoming(), staffId) &&
           incoming().ownerUid == existing().ownerUid &&
           incoming().createdByUid == existing().createdByUid &&
           incoming().createdAt == existing().createdAt &&
           incoming().updatedAt == request.time &&
-          incoming().diff(existing()).affectedKeys().hasOnly(['name', 'role', 'active', 'allowedEmails', 'updatedAt']);
-        allow delete: if false;
+          (
+            (
+              isWorkspaceAdmin(workspaceId) &&
+              incoming().diff(existing()).affectedKeys().hasOnly(['name', 'role', 'active', 'linkedUid', 'linkedEmail', 'allowedEmails', 'updatedAt'])
+            ) ||
+            (
+              existing().linkedUid == request.auth.uid &&
+              existing().active == true &&
+              incoming().diff(existing()).affectedKeys().hasOnly(['name', 'updatedAt'])
+            )
+          );
+        allow delete: if isValidId(staffId) && isWorkspaceAdmin(workspaceId);
       }
 
       // ADMIN-ONLY WRITE: Sauces Catalog

@@ -206,8 +206,8 @@ const PosShell: React.FC = () => {
               }`}
             >
               <UserCheck className="w-3.5 h-3.5 text-amber-400" />
-              <span className="max-w-[95px] truncate">
-                {activeWaiter ? activeWaiter.name : 'Elegir mesero'}
+              <span className="max-w-[105px] truncate">
+                {activeWaiter ? activeWaiter.name : isAdmin ? 'Elegir mesero' : 'Asociar cuenta'}
               </span>
             </button>
 
@@ -253,7 +253,7 @@ const PosShell: React.FC = () => {
               >
                 <UserCheck className="w-3.5 h-3.5 text-amber-400" />
                 <span>
-                  En turno: {activeWaiter ? activeWaiter.name : 'Seleccionar obligatorio'}
+                  En turno: {activeWaiter ? activeWaiter.name : isAdmin ? 'Seleccionar obligatorio' : 'Asocia tu cuenta'}
                 </span>
               </button>
             </div>
@@ -288,10 +288,14 @@ const PosShell: React.FC = () => {
           <div className="mb-4 rounded-2xl bg-[#141418] border border-amber-500/70 p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
             <div>
               <p className="text-sm font-bold text-amber-400">
-                Selecciona quién está tomando pedidos
+                {isAdmin
+                  ? 'Selecciona quién está tomando pedidos'
+                  : 'Asocia tu cuenta para tomar pedidos'}
               </p>
               <p className="text-xs text-zinc-300">
-                Indica tu nombre para que cada comanda y cobro quede registrado a tu turno.
+                {isAdmin
+                  ? 'Indica tu nombre para que cada comanda y cobro quede registrado a tu turno.'
+                  : 'Elige el nombre con el que aparecerás en comandas y cobros (rol inicial Mesero).'}
               </p>
             </div>
             <button
@@ -299,7 +303,7 @@ const PosShell: React.FC = () => {
               onClick={() => setWaiterModalOpen(true)}
               className="min-h-[42px] px-4 rounded-xl bg-amber-500 text-black text-xs font-bold hover:bg-amber-400 whitespace-nowrap shrink-0"
             >
-              Elegir mi nombre
+              {isAdmin ? 'Elegir mi nombre' : 'Asociar mi nombre'}
             </button>
           </div>
         )}

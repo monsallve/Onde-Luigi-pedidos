@@ -9,6 +9,7 @@ import {
 } from 'firebase/auth';
 import {
   collection,
+  deleteDoc,
   doc,
   getDoc,
   getDocs,
@@ -136,6 +137,7 @@ interface PosContextValue {
 
   activeWaiterId: string;
   activeWaiter: StaffMember | null;
+  myLinkedStaff: StaffMember | null;
   setActiveWaiterId: (id: string) => void;
 
   enterDemoMode: (role?: AccountRole) => void;
@@ -171,8 +173,11 @@ interface PosContextValue {
   toggleProductActive: (productId: string, active: boolean) => Promise<void>;
   saveSauce: (name: string, id?: string, active?: boolean) => Promise<void>;
   toggleSauceActive: (sauceId: string, active: boolean) => Promise<void>;
-  saveStaffMember: (name: string, role: StaffRole) => Promise<void>;
+  saveStaffMember: (name: string, role?: StaffRole) => Promise<void>;
+  updateStaffRole: (staffId: string, role: StaffRole) => Promise<void>;
+  renameStaffMember: (staffId: string, name: string) => Promise<void>;
   toggleStaffActive: (staffId: string, active: boolean) => Promise<void>;
+  deleteStaffMember: (staffId: string) => Promise<void>;
   updateAuthorizedEmails: (emails: string[]) => Promise<void>;
 }
 
@@ -302,12 +307,7 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   }, []);
 
-  const activeWaiter = useMemo(
-    () => staff.find((s) => s.id === activeWaiterId && s.active) || null,
-    [staff, activeWaiterId]
-  );
-
-  // Determine effective account role
+  // Determine effective account role & actor identity
   const accountRole: AccountRole = useMemo(() => {
     if (sessionMode === 'demo') return demoAccountRole;
     if (!firebaseUser) return 'mesero';
@@ -319,22 +319,57 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   }, [sessionMode, demoAccountRole, firebaseUser, workspaceOwnerUid]);
 
   const isAdmin = accountRole === 'admin';
+  const actorUid = firebaseUser
+    ? firebaseUser.uid
+    : demoAccountRole === 'mesero'
+      ? 'demo_waiter'
+      : 'demo_owner';
+  const actorEmail = firebaseUser
+    ? (firebaseUser.email || '').toLowerCase()
+    : demoAccountRole === 'mesero'
+      ? 'mesero1@ondeluigi.com'
+      : ADMIN_BOOTSTRAP_EMAIL;
 
-  // Auto-select first active waiter on ?autostart=1 if none selected
+  const myLinkedStaff = useMemo(
+    () => staff.find((s) => s.linkedUid && s.linkedUid === actorUid) || null,
+    [staff, actorUid]
+  );
+
+  const activeWaiter = useMemo(() => {
+    if (!isAdmin) {
+      return myLinkedStaff && myLinkedStaff.active ? myLinkedStaff : null;
+    }
+    return staff.find((s) => s.id === activeWaiterId && s.active) || null;
+  }, [isAdmin, myLinkedStaff, staff, activeWaiterId]);
+
+  // Auto-select linked profile (or first active waiter on ?autostart=1)
   useEffect(() => {
-    if (!activeWaiter && staff.length > 0 && typeof window !== 'undefined') {
-      const params = new URLSearchParams(window.location.search);
-      if (params.get('autostart') === '1') {
-        const preferred =
-          demoAccountRole === 'admin'
-            ? staff.find((s) => s.active && s.role === 'admin') || staff.find((s) => s.active)
-            : staff.find((s) => s.active && s.role === 'mesero') || staff.find((s) => s.active);
-        if (preferred) {
-          setActiveWaiterId(preferred.id);
+    if (staff.length === 0) return;
+
+    if (!isAdmin) {
+      if (myLinkedStaff && myLinkedStaff.active && activeWaiterId !== myLinkedStaff.id) {
+        setActiveWaiterId(myLinkedStaff.id);
+      }
+      return;
+    }
+
+    if (!activeWaiter) {
+      if (myLinkedStaff && myLinkedStaff.active) {
+        setActiveWaiterId(myLinkedStaff.id);
+        return;
+      }
+      if (typeof window !== 'undefined') {
+        const params = new URLSearchParams(window.location.search);
+        if (params.get('autostart') === '1') {
+          const preferred =
+            staff.find((s) => s.active && s.role === 'admin') || staff.find((s) => s.active);
+          if (preferred) {
+            setActiveWaiterId(preferred.id);
+          }
         }
       }
     }
-  }, [activeWaiter, staff, demoAccountRole, setActiveWaiterId]);
+  }, [isAdmin, myLinkedStaff, activeWaiter, activeWaiterId, staff, setActiveWaiterId]);
 
   // Monitor Firebase Auth + test connection
   useEffect(() => {
@@ -389,7 +424,6 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   }, [sessionMode]);
 
   const workspaceId = sessionMode === 'cloud' ? SHARED_WORKSPACE_ID : 'demo_ws';
-  const actorUid = firebaseUser ? firebaseUser.uid : 'demo_owner';
   const effectiveOwnerUid = sessionMode === 'cloud' ? workspaceOwnerUid : 'demo_owner';
 
   // Ensure Shared Cloud Workspace exists & seed O'NDE LUIGI catalog for admin
@@ -429,20 +463,23 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           createdAt: serverTimestamp(),
         });
 
+        // Seed only the Administrator's own staff profile (no predetermined fake waiters)
+        const adminStaffId = `staff_${user.uid}`;
+        batch.set(doc(db, 'workspaces', SHARED_WORKSPACE_ID, 'staff', adminStaffId), {
+          id: adminStaffId,
+          name: (user.displayName || 'Administrador').trim().slice(0, 80),
+          role: 'admin',
+          active: true,
+          linkedUid: user.uid,
+          linkedEmail: userEmail,
+          ownerUid: user.uid,
+          createdByUid: user.uid,
+          allowedEmails: initialEmails,
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
+
         const seed = buildDemoSeedData(user.uid, userEmail);
-        for (const member of seed.staff) {
-          batch.set(doc(db, 'workspaces', SHARED_WORKSPACE_ID, 'staff', member.id), {
-            id: member.id,
-            name: member.name,
-            role: member.role,
-            active: member.active,
-            ownerUid: user.uid,
-            createdByUid: user.uid,
-            allowedEmails: initialEmails,
-            createdAt: serverTimestamp(),
-            updatedAt: serverTimestamp(),
-          });
-        }
         for (const sauce of seed.sauces) {
           batch.set(doc(db, 'workspaces', SHARED_WORKSPACE_ID, 'sauces', sauce.id), {
             id: sauce.id,
@@ -579,6 +616,8 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             name: String(d.name),
             role: d.role as StaffRole,
             active: Boolean(d.active),
+            linkedUid: String(d.linkedUid || ''),
+            linkedEmail: String(d.linkedEmail || ''),
             ownerUid: String(d.ownerUid),
             createdByUid: String(d.createdByUid),
             allowedEmails: Array.isArray(d.allowedEmails) ? (d.allowedEmails as string[]) : [],
@@ -1631,17 +1670,85 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   );
 
   const saveStaffMember = useCallback(
-    async (name: string, role: StaffRole) => {
-      requireAdmin();
+    async (name: string, role: StaffRole = 'mesero') => {
       const cleanName = name.trim().slice(0, 80);
       if (!cleanName) throw new Error('Escribe el nombre del integrante del equipo.');
       const now = Date.now();
+
+      // Non-admin accounts can ONLY associate/create their own deterministic profile locked to 'mesero'
+      if (!isAdmin) {
+        const ownId = `staff_${actorUid}`;
+        const existingOwn = staff.find((s) => s.id === ownId || s.linkedUid === actorUid);
+        if (existingOwn) {
+          if (!existingOwn.active) {
+            throw new Error('Tu usuario fue desactivado por el administrador.');
+          }
+          if (sessionMode === 'cloud' && db && firebaseUser) {
+            const path = `workspaces/${workspaceId}/staff/${existingOwn.id}`;
+            try {
+              await updateDoc(doc(db, path), {
+                name: cleanName,
+                updatedAt: serverTimestamp(),
+              });
+            } catch (err) {
+              handleFirestoreError(err, OperationType.UPDATE, path);
+            }
+          } else {
+            syncDemoMutation((prev) => ({
+              ...prev,
+              staff: prev.staff.map((s) =>
+                s.id === existingOwn.id ? { ...s, name: cleanName, updatedAtMs: now } : s
+              ),
+            }));
+          }
+          setActiveWaiterId(existingOwn.id);
+          return;
+        }
+
+        const selfMember: StaffMember = {
+          id: ownId,
+          name: cleanName,
+          role: 'mesero',
+          active: true,
+          linkedUid: actorUid,
+          linkedEmail: actorEmail,
+          ownerUid: effectiveOwnerUid,
+          createdByUid: actorUid,
+          allowedEmails: authorizedEmails,
+          createdAtMs: now,
+          updatedAtMs: now,
+        };
+
+        if (sessionMode === 'cloud' && db && firebaseUser) {
+          const path = `workspaces/${workspaceId}/staff/${ownId}`;
+          try {
+            await setDoc(doc(db, path), {
+              ...stripClientTimestamps(selfMember),
+              createdAt: serverTimestamp(),
+              updatedAt: serverTimestamp(),
+            });
+          } catch (err) {
+            handleFirestoreError(err, OperationType.CREATE, path);
+          }
+        } else {
+          syncDemoMutation((prev) => ({
+            ...prev,
+            staff: [...prev.staff, selfMember],
+          }));
+        }
+        setActiveWaiterId(ownId);
+        return;
+      }
+
+      // Admin creating a new staff member (any role)
       const id = createSafeId('staff');
       const member: StaffMember = {
         id,
         name: cleanName,
         role,
         active: true,
+        linkedUid: '',
+        linkedEmail: '',
         ownerUid: effectiveOwnerUid,
         createdByUid: actorUid,
         allowedEmails: authorizedEmails,
@@ -1669,9 +1776,11 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       setActiveWaiterId(id);
     },
     [
-      requireAdmin,
+      isAdmin,
+      staff,
       effectiveOwnerUid,
       actorUid,
+      actorEmail,
       authorizedEmails,
       sessionMode,
       workspaceId,
@@ -1681,15 +1790,89 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     ]
   );
 
+  const updateStaffRole = useCallback(
+    async (staffId: string, role: StaffRole) => {
+      requireAdmin();
+      const target = staff.find((s) => s.id === staffId);
+      const now = Date.now();
+      if (sessionMode === 'cloud' && db && firebaseUser) {
+        const path = `workspaces/${workspaceId}/staff/${staffId}`;
+        try {
+          await updateDoc(doc(db, path), {
+            role,
+            linkedUid: target?.linkedUid || '',
+            linkedEmail: target?.linkedEmail || '',
+            updatedAt: serverTimestamp(),
+          });
+        } catch (err) {
+          handleFirestoreError(err, OperationType.UPDATE, path);
+        }
+      } else {
+        syncDemoMutation((prev) => ({
+          ...prev,
+          staff: prev.staff.map((s) =>
+            s.id === staffId ? { ...s, role, updatedAtMs: now } : s
+          ),
+        }));
+      }
+    },
+    [requireAdmin, staff, sessionMode, workspaceId, firebaseUser, syncDemoMutation]
+  );
+
+  const renameStaffMember = useCallback(
+    async (staffId: string, name: string) => {
+      const cleanName = name.trim().slice(0, 80);
+      if (!cleanName) throw new Error('Escribe un nombre válido.');
+      const target = staff.find((s) => s.id === staffId);
+      if (!target) throw new Error('Usuario no encontrado.');
+      if (!isAdmin && target.linkedUid !== actorUid) {
+        throw new Error('Solo puedes editar el nombre de tu propio usuario.');
+      }
+      const now = Date.now();
+      if (sessionMode === 'cloud' && db && firebaseUser) {
+        const path = `workspaces/${workspaceId}/staff/${staffId}`;
+        try {
+          await updateDoc(
+            doc(db, path),
+            isAdmin
+              ? {
+                  name: cleanName,
+                  linkedUid: target.linkedUid || '',
+                  linkedEmail: target.linkedEmail || '',
+                  updatedAt: serverTimestamp(),
+                }
+              : {
+                  name: cleanName,
+                  updatedAt: serverTimestamp(),
+                }
+          );
+        } catch (err) {
+          handleFirestoreError(err, OperationType.UPDATE, path);
+        }
+      } else {
+        syncDemoMutation((prev) => ({
+          ...prev,
+          staff: prev.staff.map((s) =>
+            s.id === staffId ? { ...s, name: cleanName, updatedAtMs: now } : s
+          ),
+        }));
+      }
+    },
+    [staff, isAdmin, actorUid, sessionMode, workspaceId, firebaseUser, syncDemoMutation]
+  );
+
   const toggleStaffActive = useCallback(
     async (staffId: string, active: boolean) => {
       requireAdmin();
+      const target = staff.find((s) => s.id === staffId);
       const now = Date.now();
       if (sessionMode === 'cloud' && db && firebaseUser) {
         const path = `workspaces/${workspaceId}/staff/${staffId}`;
         try {
           await updateDoc(doc(db, path), {
             active,
+            linkedUid: target?.linkedUid || '',
+            linkedEmail: target?.linkedEmail || '',
             updatedAt: serverTimestamp(),
           });
         } catch (err) {
@@ -1704,7 +1887,40 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         }));
       }
     },
-    [requireAdmin, sessionMode, workspaceId, firebaseUser, syncDemoMutation]
+    [requireAdmin, staff, sessionMode, workspaceId, firebaseUser, syncDemoMutation]
+  );
+
+  const deleteStaffMember = useCallback(
+    async (staffId: string) => {
+      requireAdmin();
+      if (sessionMode === 'cloud' && db && firebaseUser) {
+        const path = `workspaces/${workspaceId}/staff/${staffId}`;
+        try {
+          await deleteDoc(doc(db, path));
+        } catch (err) {
+          handleFirestoreError(err, OperationType.DELETE, path);
+        }
+      } else {
+        syncDemoMutation((prev) => ({
+          ...prev,
+          staff: prev.staff.filter((s) => s.id !== staffId),
+        }));
+      }
+      if (activeWaiterId === staffId) {
+        const nextActive = staff.find((s) => s.id !== staffId && s.active);
+        setActiveWaiterId(nextActive ? nextActive.id : '');
+      }
+    },
+    [
+      requireAdmin,
+      sessionMode,
+      workspaceId,
+      firebaseUser,
+      syncDemoMutation,
+      activeWaiterId,
+      staff,
+      setActiveWaiterId,
+    ]
   );
 
   const updateAuthorizedEmails = useCallback(
@@ -1732,10 +1948,20 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
               query(collection(db, `workspaces/${workspaceId}/${colName}`), where('ownerUid', '==', effectiveOwnerUid))
             );
             snap.docs.forEach((d) => {
-              batch.update(d.ref, {
-                allowedEmails: cleanList,
-                updatedAt: serverTimestamp(),
-              });
+              if (colName === 'staff') {
+                const raw = d.data();
+                batch.update(d.ref, {
+                  allowedEmails: cleanList,
+                  linkedUid: String(raw.linkedUid || ''),
+                  linkedEmail: String(raw.linkedEmail || ''),
+                  updatedAt: serverTimestamp(),
+                });
+              } else {
+                batch.update(d.ref, {
+                  allowedEmails: cleanList,
+                  updatedAt: serverTimestamp(),
+                });
+              }
             });
           }
           await batch.commit();
@@ -1775,6 +2001,7 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     activeWaiterId,
     activeWaiter,
+    myLinkedStaff,
     setActiveWaiterId,
 
     enterDemoMode,
@@ -1794,7 +2021,10 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     saveSauce,
     toggleSauceActive,
     saveStaffMember,
+    updateStaffRole,
+    renameStaffMember,
     toggleStaffActive,
+    deleteStaffMember,
     updateAuthorizedEmails,
   };
 

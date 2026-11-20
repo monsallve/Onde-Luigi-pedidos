@@ -141,6 +141,8 @@ export interface StaffMember {
   name: string;
   role: StaffRole;
   active: boolean;
+  linkedUid?: string;
+  linkedEmail?: string;
   ownerUid: string;
   createdByUid: string;
   allowedEmails: string[];

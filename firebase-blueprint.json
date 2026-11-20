@@ -31,20 +31,22 @@
     },
     "StaffMember": {
       "title": "StaffMember",
-      "description": "Operational waiter/staff display name roster (no PII).",
+      "description": "Operational waiter/staff display name roster linked optionally to an authenticated user.",
       "type": "object",
       "properties": {
         "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
         "name": { "type": "string", "minLength": 1, "maxLength": 80 },
         "role": { "type": "string", "enum": ["admin", "mesero", "cajero", "cocina"] },
         "active": { "type": "boolean" },
+        "linkedUid": { "type": "string", "maxLength": 128 },
+        "linkedEmail": { "type": "string", "maxLength": 160 },
         "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128 },
         "createdByUid": { "type": "string", "minLength": 1, "maxLength": 128 },
         "allowedEmails": { "type": "array" },
         "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" }
       },
-      "required": ["id", "name", "role", "active", "ownerUid", "createdByUid", "allowedEmails", "createdAt", "updatedAt"]
+      "required": ["id", "name", "role", "active", "linkedUid", "linkedEmail", "ownerUid", "createdByUid", "allowedEmails", "createdAt", "updatedAt"]
     },
     "Sauce": {
       "title": "Sauce",
