@@ -59,10 +59,12 @@ service cloud.firestore {
 
     function canListResource() {
       return isVerifiedUser() && (
-        request.auth.token.email == 'perrodog1515@gmail.com' ||
-        resource.data.ownerUid == request.auth.uid ||
-        resource.data.createdByUid == request.auth.uid ||
-        request.auth.token.email in resource.data.allowedEmails
+        isBootstrappedAdmin() ||
+        (resource != null && (
+          resource.data.ownerUid == request.auth.uid ||
+          resource.data.createdByUid == request.auth.uid ||
+          request.auth.token.email in resource.data.allowedEmails
+        ))
       );
     }
 
@@ -215,16 +217,21 @@ service cloud.firestore {
     // 4. Workspaces & Admin-Gated Catalog vs Waiter Order Operations
     match /workspaces/{workspaceId} {
       allow get: if isVerifiedUser() && isValidId(workspaceId) && (
-        existing().ownerUid == request.auth.uid ||
         isBootstrappedAdmin() ||
-        request.auth.token.email in existing().authorizedEmails
+        (resource != null && (
+          existing().ownerUid == request.auth.uid ||
+          request.auth.token.email in existing().authorizedEmails
+        ))
       );
       allow list: if isVerifiedUser() && (
-        resource.data.ownerUid == request.auth.uid ||
         isBootstrappedAdmin() ||
-        request.auth.token.email in resource.data.authorizedEmails
+        (resource != null && (
+          resource.data.ownerUid == request.auth.uid ||
+          request.auth.token.email in resource.data.authorizedEmails
+        ))
       );
       allow create: if isVerifiedUser() && isValidId(workspaceId) &&
+        (workspaceId != 'ws_onde_luigi' || isBootstrappedAdmin()) &&
         isValidWorkspace(incoming(), workspaceId) &&
         incoming().ownerUid == request.auth.uid &&
         incoming().createdAt == request.time &&
@@ -242,11 +249,15 @@ service cloud.firestore {
           uid == request.auth.uid || isWorkspaceAdmin(workspaceId)
         );
         allow list: if isVerifiedUser() && (
-          resource.data.ownerUid == request.auth.uid || resource.data.uid == request.auth.uid || isBootstrappedAdmin()
+          isBootstrappedAdmin() ||
+          (resource != null && (
+            resource.data.ownerUid == request.auth.uid ||
+            resource.data.uid == request.auth.uid
+          ))
         );
         allow create: if isWorkspaceAdmin(workspaceId) && isValidId(uid) &&
           isValidWorkspaceMember(incoming(), uid) &&
-          incoming().ownerUid == get(workspacePath(workspaceId)).data.ownerUid &&
+          incoming().ownerUid == getAfter(workspacePath(workspaceId)).data.ownerUid &&
           incoming().createdAt == request.time;
         allow update: if isWorkspaceAdmin(workspaceId) && isValidId(uid) &&
           isValidWorkspaceMember(incoming(), uid) &&
@@ -263,7 +274,7 @@ service cloud.firestore {
         allow create: if isValidId(staffId) && isWorkspaceAdmin(workspaceId) &&
           isValidStaffMember(incoming(), staffId) &&
           incoming().createdByUid == request.auth.uid &&
-          incoming().ownerUid == get(workspacePath(workspaceId)).data.ownerUid &&
+          incoming().ownerUid == getAfter(workspacePath(workspaceId)).data.ownerUid &&
           incoming().createdAt == request.time &&
           incoming().updatedAt == request.time;
         allow update: if isValidId(staffId) && isWorkspaceAdmin(workspaceId) &&
@@ -283,7 +294,7 @@ service cloud.firestore {
         allow create: if isValidId(sauceId) && isWorkspaceAdmin(workspaceId) &&
           isValidSauce(incoming(), sauceId) &&
           incoming().createdByUid == request.auth.uid &&
-          incoming().ownerUid == get(workspacePath(workspaceId)).data.ownerUid &&
+          incoming().ownerUid == getAfter(workspacePath(workspaceId)).data.ownerUid &&
           incoming().createdAt == request.time &&
           incoming().updatedAt == request.time;
         allow update: if isValidId(sauceId) && isWorkspaceAdmin(workspaceId) &&
@@ -303,7 +314,7 @@ service cloud.firestore {
         allow create: if isValidId(productId) && isWorkspaceAdmin(workspaceId) &&
           isValidProduct(incoming(), productId) &&
           incoming().createdByUid == request.auth.uid &&
-          incoming().ownerUid == get(workspacePath(workspaceId)).data.ownerUid &&
+          incoming().ownerUid == getAfter(workspacePath(workspaceId)).data.ownerUid &&
           incoming().createdAt == request.time &&
           incoming().updatedAt == request.time;
         allow update: if isValidId(productId) && isWorkspaceAdmin(workspaceId) &&
@@ -323,7 +334,7 @@ service cloud.firestore {
         allow create: if isValidId(orderId) && isAuthorizedWorkspaceUser(workspaceId) &&
           isValidOrder(incoming(), orderId) &&
           incoming().createdByUid == request.auth.uid &&
-          incoming().ownerUid == get(workspacePath(workspaceId)).data.ownerUid &&
+          incoming().ownerUid == getAfter(workspacePath(workspaceId)).data.ownerUid &&
           incoming().createdAt == request.time &&
           incoming().updatedAt == request.time;
         allow update: if isValidId(orderId) && isAuthorizedWorkspaceUser(workspaceId) &&
@@ -354,7 +365,7 @@ service cloud.firestore {
           isValidMovement(incoming(), movementId) &&
           incoming().actorUid == request.auth.uid &&
           incoming().createdByUid == request.auth.uid &&
-          incoming().ownerUid == get(workspacePath(workspaceId)).data.ownerUid &&
+          incoming().ownerUid == getAfter(workspacePath(workspaceId)).data.ownerUid &&
           incoming().createdAt == request.time &&
           existsAfter(/databases/$(database)/documents/workspaces/$(workspaceId)/orders/$(incoming().orderId));
         allow update: if false;
@@ -368,7 +379,7 @@ service cloud.firestore {
         allow create: if isValidId(transferId) && isAuthorizedWorkspaceUser(workspaceId) &&
           isValidTransfer(incoming(), transferId) &&
           incoming().createdByUid == request.auth.uid &&
-          incoming().ownerUid == get(workspacePath(workspaceId)).data.ownerUid &&
+          incoming().ownerUid == getAfter(workspacePath(workspaceId)).data.ownerUid &&
           incoming().createdAt == request.time &&
           existsAfter(/databases/$(database)/documents/workspaces/$(workspaceId)/orders/$(incoming().orderId));
         allow update: if isValidId(transferId) && isAuthorizedWorkspaceUser(workspaceId) &&

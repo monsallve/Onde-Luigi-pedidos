@@ -81,6 +81,13 @@ function toMillis(val: unknown): number {
   return Date.now();
 }
 
+function stripClientTimestamps<T extends { createdAtMs?: number; updatedAtMs?: number }>(
+  obj: T
+): Omit<T, 'createdAtMs' | 'updatedAtMs'> {
+  const { createdAtMs: _createdAtMs, updatedAtMs: _updatedAtMs, ...rest } = obj;
+  return rest;
+}
+
 export interface CreateOrderInput {
   reference: string;
   items: OrderItem[];
@@ -517,15 +524,21 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         setAuthorizedEmails(wsInfo.authorizedEmails);
 
         // Listen to workspace doc for authorizedEmails updates
-        const wsUnsub = onSnapshot(doc(db, 'workspaces', SHARED_WORKSPACE_ID), (snap) => {
-          if (snap.exists()) {
-            const d = snap.data() as { ownerUid: string; authorizedEmails?: string[] };
-            setWorkspaceOwnerUid(d.ownerUid);
-            if (Array.isArray(d.authorizedEmails)) {
-              setAuthorizedEmails(d.authorizedEmails.map((e) => e.toLowerCase()));
+        const wsUnsub = onSnapshot(
+          doc(db, 'workspaces', SHARED_WORKSPACE_ID),
+          (snap) => {
+            if (snap.exists()) {
+              const d = snap.data() as { ownerUid: string; authorizedEmails?: string[] };
+              setWorkspaceOwnerUid(d.ownerUid);
+              if (Array.isArray(d.authorizedEmails)) {
+                setAuthorizedEmails(d.authorizedEmails.map((e) => e.toLowerCase()));
+              }
             }
+          },
+          (err) => {
+            handleFirestoreError(err, OperationType.GET, `workspaces/${SHARED_WORKSPACE_ID}`);
           }
-        });
+        );
         unsubs.push(wsUnsub);
 
         const isOwnerOrBootstrap =
@@ -920,23 +933,23 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         try {
           const batch = writeBatch(db);
           batch.set(doc(db, orderPath), {
-            ...newOrder,
+            ...stripClientTimestamps(newOrder),
             createdAt: serverTimestamp(),
             updatedAt: serverTimestamp(),
           });
           batch.set(doc(db, `workspaces/${workspaceId}/movements/${creationMovement.id}`), {
-            ...creationMovement,
+            ...stripClientTimestamps(creationMovement),
             createdAt: serverTimestamp(),
           });
           if (uploadedTransfer) {
             batch.set(doc(db, `workspaces/${workspaceId}/transfers/${uploadedTransfer.id}`), {
-              ...uploadedTransfer,
+              ...stripClientTimestamps(uploadedTransfer),
               createdAt: serverTimestamp(),
             });
           }
           if (receiptMovement) {
             batch.set(doc(db, `workspaces/${workspaceId}/movements/${receiptMovement.id}`), {
-              ...receiptMovement,
+              ...stripClientTimestamps(receiptMovement),
               createdAt: serverTimestamp(),
             });
           }
@@ -1024,7 +1037,7 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             updatedAt: serverTimestamp(),
           });
           batch.set(doc(db, `workspaces/${workspaceId}/movements/${mov.id}`), {
-            ...mov,
+            ...stripClientTimestamps(mov),
             createdAt: serverTimestamp(),
           });
           await batch.commit();
@@ -1102,7 +1115,7 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             updatedAt: serverTimestamp(),
           });
           batch.set(doc(db, `workspaces/${workspaceId}/movements/${mov.id}`), {
-            ...mov,
+            ...stripClientTimestamps(mov),
             createdAt: serverTimestamp(),
           });
           await batch.commit();
@@ -1228,12 +1241,12 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             updatedAt: serverTimestamp(),
           });
           batch.set(doc(db, `workspaces/${workspaceId}/movements/${payMov.id}`), {
-            ...payMov,
+            ...stripClientTimestamps(payMov),
             createdAt: serverTimestamp(),
           });
           if (newReceipt) {
             batch.set(doc(db, `workspaces/${workspaceId}/transfers/${newReceipt.id}`), {
-              ...newReceipt,
+              ...stripClientTimestamps(newReceipt),
               createdAt: serverTimestamp(),
             });
           }
@@ -1361,11 +1374,11 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             updatedAt: serverTimestamp(),
           });
           batch.set(doc(db, `workspaces/${workspaceId}/transfers/${transferId}`), {
-            ...newTransfer,
+            ...stripClientTimestamps(newTransfer),
             createdAt: serverTimestamp(),
           });
           batch.set(doc(db, `workspaces/${workspaceId}/movements/${mov.id}`), {
-            ...mov,
+            ...stripClientTimestamps(mov),
             createdAt: serverTimestamp(),
           });
           await batch.commit();
@@ -1467,7 +1480,7 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             });
           } else {
             await setDoc(doc(db, path), {
-              ...cleanProduct,
+              ...stripClientTimestamps(cleanProduct),
               createdAt: serverTimestamp(),
               updatedAt: serverTimestamp(),
             });
@@ -1558,7 +1571,7 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             });
           } else {
             await setDoc(doc(db, path), {
-              ...cleanSauce,
+              ...stripClientTimestamps(cleanSauce),
               createdAt: serverTimestamp(),
               updatedAt: serverTimestamp(),
             });
@@ -1640,7 +1653,7 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         const path = `workspaces/${workspaceId}/staff/${id}`;
         try {
           await setDoc(doc(db, path), {
-            ...member,
+            ...stripClientTimestamps(member),
             createdAt: serverTimestamp(),
             updatedAt: serverTimestamp(),
           });
