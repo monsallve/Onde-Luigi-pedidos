@@ -1,0 +1,6 @@
+{
+  "name": "O'NDE LUIGI",
+  "description": "Sistema interno O'NDE LUIGI para toma ágil de pedidos, personalización de recetas y salsas, comprobantes de transferencia y control de ventas.",
+  "requestFramePermissions": ["camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

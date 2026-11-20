@@ -1,0 +1,197 @@
+{
+  "entities": {
+    "Workspace": {
+      "title": "Workspace",
+      "description": "Internal business workspace for O'NDE LUIGI scoping menu, sauces, orders, movements, transfers, and authorized staff.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "ownerEmail": { "type": "string", "minLength": 3, "maxLength": 160 },
+        "authorizedEmails": { "type": "array" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "name", "ownerUid", "ownerEmail", "authorizedEmails", "createdAt", "updatedAt"]
+    },
+    "WorkspaceMember": {
+      "title": "WorkspaceMember",
+      "description": "Authorized Firebase Auth member of a workspace.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "displayName": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "role": { "type": "string", "enum": ["admin", "mesero"] },
+        "active": { "type": "boolean" },
+        "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "displayName", "role", "active", "ownerUid", "createdAt"]
+    },
+    "StaffMember": {
+      "title": "StaffMember",
+      "description": "Operational waiter/staff display name roster (no PII).",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "role": { "type": "string", "enum": ["admin", "mesero", "cajero", "cocina"] },
+        "active": { "type": "boolean" },
+        "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "createdByUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "allowedEmails": { "type": "array" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "name", "role", "active", "ownerUid", "createdByUid", "allowedEmails", "createdAt", "updatedAt"]
+    },
+    "Sauce": {
+      "title": "Sauce",
+      "description": "Configurable sauce option managed exclusively by admin.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 60 },
+        "active": { "type": "boolean" },
+        "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "createdByUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "allowedEmails": { "type": "array" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "name", "active", "ownerUid", "createdByUid", "allowedEmails", "createdAt", "updatedAt"]
+    },
+    "Product": {
+      "title": "Product",
+      "description": "Menu product with base recipe, removable options, paid add-ons, and sauce rules.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "category": { "type": "string", "minLength": 1, "maxLength": 60 },
+        "basePrice": { "type": "number" },
+        "imageUrl": { "type": "string", "maxLength": 500 },
+        "baseRecipe": { "type": "array" },
+        "removableOptions": { "type": "array" },
+        "addonOptions": { "type": "array" },
+        "allowSauces": { "type": "boolean" },
+        "minSauces": { "type": "number" },
+        "maxSauces": { "type": "number" },
+        "active": { "type": "boolean" },
+        "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "createdByUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "allowedEmails": { "type": "array" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "name", "category", "basePrice", "imageUrl", "baseRecipe", "removableOptions", "addonOptions", "allowSauces", "minSauces", "maxSauces", "active", "ownerUid", "createdByUid", "allowedEmails", "createdAt", "updatedAt"]
+    },
+    "Order": {
+      "title": "Order",
+      "description": "Customer/table order with customized items, sauces, operational status, and payment status.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "orderNumber": { "type": "number" },
+        "reference": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "waiterId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "waiterName": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "status": { "type": "string", "enum": ["tomado", "preparacion", "listo", "entregado", "cancelado"] },
+        "paymentStatus": { "type": "string", "enum": ["pendiente", "pagado"] },
+        "paymentMethod": { "type": "string", "enum": ["", "efectivo", "transferencia", "tarjeta", "otro"] },
+        "items": { "type": "array" },
+        "subtotal": { "type": "number" },
+        "total": { "type": "number" },
+        "notes": { "type": "string", "maxLength": 400 },
+        "receiptCount": { "type": "number" },
+        "latestReceiptUrl": { "type": "string", "maxLength": 250000 },
+        "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "createdByUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "allowedEmails": { "type": "array" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "orderNumber", "reference", "waiterId", "waiterName", "status", "paymentStatus", "paymentMethod", "items", "subtotal", "total", "notes", "receiptCount", "latestReceiptUrl", "ownerUid", "createdByUid", "allowedEmails", "createdAt", "updatedAt"]
+    },
+    "Movement": {
+      "title": "Movement",
+      "description": "Immutable audit event recording every order creation, edit, status change, and payment update.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "orderId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "orderNumber": { "type": "number" },
+        "orderReference": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "type": { "type": "string", "enum": ["creacion", "edicion_items", "estado_pedido", "estado_pago", "comprobante"] },
+        "description": { "type": "string", "minLength": 1, "maxLength": 500 },
+        "waiterId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "waiterName": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "actorUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "details": { "type": "object" },
+        "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "createdByUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "allowedEmails": { "type": "array" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "orderId", "orderNumber", "orderReference", "type", "description", "waiterId", "waiterName", "actorUid", "details", "ownerUid", "createdByUid", "allowedEmails", "createdAt"]
+    },
+    "TransferReceipt": {
+      "title": "TransferReceipt",
+      "description": "Transfer receipt image metadata linked to an order and waiter.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "orderId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "orderNumber": { "type": "number" },
+        "orderReference": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "amount": { "type": "number" },
+        "imageUrl": { "type": "string", "minLength": 1, "maxLength": 250000 },
+        "storagePath": { "type": "string", "maxLength": 500 },
+        "waiterId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "waiterName": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "paymentStatus": { "type": "string", "enum": ["pagado", "pendiente"] },
+        "notes": { "type": "string", "maxLength": 300 },
+        "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "createdByUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "allowedEmails": { "type": "array" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "orderId", "orderNumber", "orderReference", "amount", "imageUrl", "storagePath", "waiterId", "waiterName", "paymentStatus", "notes", "ownerUid", "createdByUid", "allowedEmails", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/workspaces/{workspaceId}": {
+      "schema": { "$ref": "#/entities/Workspace" },
+      "description": "O'NDE LUIGI business workspace root document."
+    },
+    "/workspaces/{workspaceId}/members/{uid}": {
+      "schema": { "$ref": "#/entities/WorkspaceMember" },
+      "description": "Authorized Firebase Auth workspace members."
+    },
+    "/workspaces/{workspaceId}/staff/{staffId}": {
+      "schema": { "$ref": "#/entities/StaffMember" },
+      "description": "Operational staff display roster managed by admin."
+    },
+    "/workspaces/{workspaceId}/sauces/{sauceId}": {
+      "schema": { "$ref": "#/entities/Sauce" },
+      "description": "Sauces catalog managed exclusively by admin."
+    },
+    "/workspaces/{workspaceId}/products/{productId}": {
+      "schema": { "$ref": "#/entities/Product" },
+      "description": "Menu products, drinks, and customizable recipe/sauce options managed exclusively by admin."
+    },
+    "/workspaces/{workspaceId}/orders/{orderId}": {
+      "schema": { "$ref": "#/entities/Order" },
+      "description": "Orders managed by admin and waiters."
+    },
+    "/workspaces/{workspaceId}/movements/{movementId}": {
+      "schema": { "$ref": "#/entities/Movement" },
+      "description": "Immutable audit trail of all order and payment actions."
+    },
+    "/workspaces/{workspaceId}/transfers/{transferId}": {
+      "schema": { "$ref": "#/entities/TransferReceipt" },
+      "description": "Uploaded bank transfer receipt photos and metadata."
+    }
+  }
+}

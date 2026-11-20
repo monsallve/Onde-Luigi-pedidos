@@ -1,0 +1,384 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // 1. Global Safety Net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // 2. Hardened Primitives
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isBootstrappedAdmin() {
+      return isVerifiedUser() && request.auth.token.email == 'perrodog1515@gmail.com';
+    }
+
+    function workspacePath(workspaceId) {
+      return /databases/$(database)/documents/workspaces/$(workspaceId);
+    }
+
+    function workspaceExists(workspaceId) {
+      return exists(workspacePath(workspaceId));
+    }
+
+    function isWorkspaceAdmin(workspaceId) {
+      return isVerifiedUser() && (
+        isBootstrappedAdmin() ||
+        (workspaceExists(workspaceId) && get(workspacePath(workspaceId)).data.ownerUid == request.auth.uid)
+      );
+    }
+
+    function isAuthorizedWorkspaceUser(workspaceId) {
+      return isVerifiedUser() && (
+        isBootstrappedAdmin() ||
+        (workspaceExists(workspaceId) && (
+          get(workspacePath(workspaceId)).data.ownerUid == request.auth.uid ||
+          request.auth.token.email in get(workspacePath(workspaceId)).data.authorizedEmails
+        ))
+      );
+    }
+
+    function canListResource() {
+      return isVerifiedUser() && (
+        request.auth.token.email == 'perrodog1515@gmail.com' ||
+        resource.data.ownerUid == request.auth.uid ||
+        resource.data.createdByUid == request.auth.uid ||
+        request.auth.token.email in resource.data.allowedEmails
+      );
+    }
+
+    function isStringBounded(val, minLen, maxLen) {
+      return val is string && val.size() >= minLen && val.size() <= maxLen;
+    }
+
+    function isStringListBounded(arr, maxLen) {
+      return arr is list && arr.size() <= maxLen && (arr.size() == 0 || arr[0] is string);
+    }
+
+    // 3. Entity Validation Blueprints
+    function isValidWorkspace(data, workspaceId) {
+      return data.keys().hasAll(['id', 'name', 'ownerUid', 'ownerEmail', 'authorizedEmails', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['id', 'name', 'ownerUid', 'ownerEmail', 'authorizedEmails', 'createdAt', 'updatedAt']) &&
+        data.id == workspaceId &&
+        isStringBounded(data.name, 1, 120) &&
+        isStringBounded(data.ownerUid, 1, 128) &&
+        isStringBounded(data.ownerEmail, 3, 160) &&
+        isStringListBounded(data.authorizedEmails, 25) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidWorkspaceMember(data, uid) {
+      return data.keys().hasAll(['uid', 'displayName', 'role', 'active', 'ownerUid', 'createdAt']) &&
+        data.keys().hasOnly(['uid', 'displayName', 'role', 'active', 'ownerUid', 'createdAt']) &&
+        data.uid == uid &&
+        isStringBounded(data.displayName, 1, 100) &&
+        data.role in ['admin', 'mesero'] &&
+        data.active is bool &&
+        isStringBounded(data.ownerUid, 1, 128) &&
+        data.createdAt is timestamp;
+    }
+
+    function isValidStaffMember(data, staffId) {
+      return data.keys().hasAll(['id', 'name', 'role', 'active', 'ownerUid', 'createdByUid', 'allowedEmails', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['id', 'name', 'role', 'active', 'ownerUid', 'createdByUid', 'allowedEmails', 'createdAt', 'updatedAt']) &&
+        data.id == staffId &&
+        isStringBounded(data.name, 1, 80) &&
+        data.role in ['admin', 'mesero', 'cajero', 'cocina'] &&
+        data.active is bool &&
+        isStringBounded(data.ownerUid, 1, 128) &&
+        isStringBounded(data.createdByUid, 1, 128) &&
+        isStringListBounded(data.allowedEmails, 25) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidSauce(data, sauceId) {
+      return data.keys().hasAll(['id', 'name', 'active', 'ownerUid', 'createdByUid', 'allowedEmails', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['id', 'name', 'active', 'ownerUid', 'createdByUid', 'allowedEmails', 'createdAt', 'updatedAt']) &&
+        data.id == sauceId &&
+        isStringBounded(data.name, 1, 60) &&
+        data.active is bool &&
+        isStringBounded(data.ownerUid, 1, 128) &&
+        isStringBounded(data.createdByUid, 1, 128) &&
+        isStringListBounded(data.allowedEmails, 25) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidProduct(data, productId) {
+      return data.keys().hasAll(['id', 'name', 'category', 'basePrice', 'imageUrl', 'baseRecipe', 'removableOptions', 'addonOptions', 'allowSauces', 'minSauces', 'maxSauces', 'active', 'ownerUid', 'createdByUid', 'allowedEmails', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['id', 'name', 'category', 'basePrice', 'imageUrl', 'baseRecipe', 'removableOptions', 'addonOptions', 'allowSauces', 'minSauces', 'maxSauces', 'active', 'ownerUid', 'createdByUid', 'allowedEmails', 'createdAt', 'updatedAt']) &&
+        data.id == productId &&
+        isStringBounded(data.name, 1, 100) &&
+        isStringBounded(data.category, 1, 60) &&
+        data.basePrice is number && data.basePrice >= 0 && data.basePrice <= 100000000 &&
+        isStringBounded(data.imageUrl, 0, 500) &&
+        isStringListBounded(data.baseRecipe, 30) &&
+        isStringListBounded(data.removableOptions, 30) &&
+        data.addonOptions is list && data.addonOptions.size() <= 30 &&
+        (data.addonOptions.size() == 0 || (data.addonOptions[0] is map && data.addonOptions[0].keys().hasAll(['id', 'name', 'price']))) &&
+        data.allowSauces is bool &&
+        data.minSauces is number && data.minSauces >= 0 && data.minSauces <= 4 &&
+        data.maxSauces is number && data.maxSauces >= 0 && data.maxSauces <= 4 &&
+        data.active is bool &&
+        isStringBounded(data.ownerUid, 1, 128) &&
+        isStringBounded(data.createdByUid, 1, 128) &&
+        isStringListBounded(data.allowedEmails, 25) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidOrder(data, orderId) {
+      return data.keys().hasAll(['id', 'orderNumber', 'reference', 'waiterId', 'waiterName', 'status', 'paymentStatus', 'paymentMethod', 'items', 'subtotal', 'total', 'notes', 'receiptCount', 'latestReceiptUrl', 'ownerUid', 'createdByUid', 'allowedEmails', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['id', 'orderNumber', 'reference', 'waiterId', 'waiterName', 'status', 'paymentStatus', 'paymentMethod', 'items', 'subtotal', 'total', 'notes', 'receiptCount', 'latestReceiptUrl', 'ownerUid', 'createdByUid', 'allowedEmails', 'createdAt', 'updatedAt']) &&
+        data.id == orderId &&
+        data.orderNumber is number && data.orderNumber >= 1 && data.orderNumber <= 10000000 &&
+        isStringBounded(data.reference, 1, 100) &&
+        isStringBounded(data.waiterId, 1, 128) &&
+        isStringBounded(data.waiterName, 1, 80) &&
+        data.status in ['tomado', 'preparacion', 'listo', 'entregado', 'cancelado'] &&
+        data.paymentStatus in ['pendiente', 'pagado'] &&
+        data.paymentMethod in ['', 'efectivo', 'transferencia', 'tarjeta', 'otro'] &&
+        data.items is list && data.items.size() <= 50 &&
+        (data.items.size() == 0 || (data.items[0] is map && data.items[0].keys().hasAll(['lineId', 'productId', 'productName', 'quantity', 'unitPrice', 'lineTotal']))) &&
+        data.subtotal is number && data.subtotal >= 0 && data.subtotal <= 100000000 &&
+        data.total is number && data.total >= 0 && data.total <= 100000000 &&
+        isStringBounded(data.notes, 0, 400) &&
+        data.receiptCount is number && data.receiptCount >= 0 && data.receiptCount <= 100 &&
+        isStringBounded(data.latestReceiptUrl, 0, 250000) &&
+        isStringBounded(data.ownerUid, 1, 128) &&
+        isStringBounded(data.createdByUid, 1, 128) &&
+        isStringListBounded(data.allowedEmails, 25) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidMovement(data, movementId) {
+      return data.keys().hasAll(['id', 'orderId', 'orderNumber', 'orderReference', 'type', 'description', 'waiterId', 'waiterName', 'actorUid', 'details', 'ownerUid', 'createdByUid', 'allowedEmails', 'createdAt']) &&
+        data.keys().hasOnly(['id', 'orderId', 'orderNumber', 'orderReference', 'type', 'description', 'waiterId', 'waiterName', 'actorUid', 'details', 'ownerUid', 'createdByUid', 'allowedEmails', 'createdAt']) &&
+        data.id == movementId &&
+        isStringBounded(data.orderId, 1, 128) &&
+        data.orderNumber is number && data.orderNumber >= 1 &&
+        isStringBounded(data.orderReference, 1, 100) &&
+        data.type in ['creacion', 'edicion_items', 'estado_pedido', 'estado_pago', 'comprobante'] &&
+        isStringBounded(data.description, 1, 500) &&
+        isStringBounded(data.waiterId, 1, 128) &&
+        isStringBounded(data.waiterName, 1, 80) &&
+        isStringBounded(data.actorUid, 1, 128) &&
+        data.details is map &&
+        isStringBounded(data.ownerUid, 1, 128) &&
+        isStringBounded(data.createdByUid, 1, 128) &&
+        isStringListBounded(data.allowedEmails, 25) &&
+        data.createdAt is timestamp;
+    }
+
+    function isValidTransfer(data, transferId) {
+      return data.keys().hasAll(['id', 'orderId', 'orderNumber', 'orderReference', 'amount', 'imageUrl', 'storagePath', 'waiterId', 'waiterName', 'paymentStatus', 'notes', 'ownerUid', 'createdByUid', 'allowedEmails', 'createdAt']) &&
+        data.keys().hasOnly(['id', 'orderId', 'orderNumber', 'orderReference', 'amount', 'imageUrl', 'storagePath', 'waiterId', 'waiterName', 'paymentStatus', 'notes', 'ownerUid', 'createdByUid', 'allowedEmails', 'createdAt']) &&
+        data.id == transferId &&
+        isStringBounded(data.orderId, 1, 128) &&
+        data.orderNumber is number && data.orderNumber >= 1 &&
+        isStringBounded(data.orderReference, 1, 100) &&
+        data.amount is number && data.amount >= 0 && data.amount <= 100000000 &&
+        isStringBounded(data.imageUrl, 1, 250000) &&
+        isStringBounded(data.storagePath, 0, 500) &&
+        isStringBounded(data.waiterId, 1, 128) &&
+        isStringBounded(data.waiterName, 1, 80) &&
+        data.paymentStatus in ['pagado', 'pendiente'] &&
+        isStringBounded(data.notes, 0, 300) &&
+        isStringBounded(data.ownerUid, 1, 128) &&
+        isStringBounded(data.createdByUid, 1, 128) &&
+        isStringListBounded(data.allowedEmails, 25) &&
+        data.createdAt is timestamp;
+    }
+
+    // 4. Workspaces & Admin-Gated Catalog vs Waiter Order Operations
+    match /workspaces/{workspaceId} {
+      allow get: if isVerifiedUser() && isValidId(workspaceId) && (
+        existing().ownerUid == request.auth.uid ||
+        isBootstrappedAdmin() ||
+        request.auth.token.email in existing().authorizedEmails
+      );
+      allow list: if isVerifiedUser() && (
+        resource.data.ownerUid == request.auth.uid ||
+        isBootstrappedAdmin() ||
+        request.auth.token.email in resource.data.authorizedEmails
+      );
+      allow create: if isVerifiedUser() && isValidId(workspaceId) &&
+        isValidWorkspace(incoming(), workspaceId) &&
+        incoming().ownerUid == request.auth.uid &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+      allow update: if isWorkspaceAdmin(workspaceId) && isValidId(workspaceId) &&
+        isValidWorkspace(incoming(), workspaceId) &&
+        incoming().ownerUid == existing().ownerUid &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['name', 'authorizedEmails', 'updatedAt']);
+      allow delete: if false;
+
+      match /members/{uid} {
+        allow get: if isVerifiedUser() && isValidId(uid) && (
+          uid == request.auth.uid || isWorkspaceAdmin(workspaceId)
+        );
+        allow list: if isVerifiedUser() && (
+          resource.data.ownerUid == request.auth.uid || resource.data.uid == request.auth.uid || isBootstrappedAdmin()
+        );
+        allow create: if isWorkspaceAdmin(workspaceId) && isValidId(uid) &&
+          isValidWorkspaceMember(incoming(), uid) &&
+          incoming().ownerUid == get(workspacePath(workspaceId)).data.ownerUid &&
+          incoming().createdAt == request.time;
+        allow update: if isWorkspaceAdmin(workspaceId) && isValidId(uid) &&
+          isValidWorkspaceMember(incoming(), uid) &&
+          incoming().ownerUid == existing().ownerUid &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'role', 'active']);
+        allow delete: if isWorkspaceAdmin(workspaceId) && isValidId(uid);
+      }
+
+      // ADMIN-ONLY WRITE: Staff Roster
+      match /staff/{staffId} {
+        allow get: if isValidId(staffId) && isAuthorizedWorkspaceUser(workspaceId);
+        allow list: if canListResource();
+        allow create: if isValidId(staffId) && isWorkspaceAdmin(workspaceId) &&
+          isValidStaffMember(incoming(), staffId) &&
+          incoming().createdByUid == request.auth.uid &&
+          incoming().ownerUid == get(workspacePath(workspaceId)).data.ownerUid &&
+          incoming().createdAt == request.time &&
+          incoming().updatedAt == request.time;
+        allow update: if isValidId(staffId) && isWorkspaceAdmin(workspaceId) &&
+          isValidStaffMember(incoming(), staffId) &&
+          incoming().ownerUid == existing().ownerUid &&
+          incoming().createdByUid == existing().createdByUid &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['name', 'role', 'active', 'allowedEmails', 'updatedAt']);
+        allow delete: if false;
+      }
+
+      // ADMIN-ONLY WRITE: Sauces Catalog
+      match /sauces/{sauceId} {
+        allow get: if isValidId(sauceId) && isAuthorizedWorkspaceUser(workspaceId);
+        allow list: if canListResource();
+        allow create: if isValidId(sauceId) && isWorkspaceAdmin(workspaceId) &&
+          isValidSauce(incoming(), sauceId) &&
+          incoming().createdByUid == request.auth.uid &&
+          incoming().ownerUid == get(workspacePath(workspaceId)).data.ownerUid &&
+          incoming().createdAt == request.time &&
+          incoming().updatedAt == request.time;
+        allow update: if isValidId(sauceId) && isWorkspaceAdmin(workspaceId) &&
+          isValidSauce(incoming(), sauceId) &&
+          incoming().ownerUid == existing().ownerUid &&
+          incoming().createdByUid == existing().createdByUid &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['name', 'active', 'allowedEmails', 'updatedAt']);
+        allow delete: if false;
+      }
+
+      // ADMIN-ONLY WRITE: Menu Products, Recipes & Drinks
+      match /products/{productId} {
+        allow get: if isValidId(productId) && isAuthorizedWorkspaceUser(workspaceId);
+        allow list: if canListResource();
+        allow create: if isValidId(productId) && isWorkspaceAdmin(workspaceId) &&
+          isValidProduct(incoming(), productId) &&
+          incoming().createdByUid == request.auth.uid &&
+          incoming().ownerUid == get(workspacePath(workspaceId)).data.ownerUid &&
+          incoming().createdAt == request.time &&
+          incoming().updatedAt == request.time;
+        allow update: if isValidId(productId) && isWorkspaceAdmin(workspaceId) &&
+          isValidProduct(incoming(), productId) &&
+          incoming().ownerUid == existing().ownerUid &&
+          incoming().createdByUid == existing().createdByUid &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['name', 'category', 'basePrice', 'imageUrl', 'baseRecipe', 'removableOptions', 'addonOptions', 'allowSauces', 'minSauces', 'maxSauces', 'active', 'allowedEmails', 'updatedAt']);
+        allow delete: if false;
+      }
+
+      // ADMIN + AUTHORIZED WAITERS: Orders
+      match /orders/{orderId} {
+        allow get: if isValidId(orderId) && isAuthorizedWorkspaceUser(workspaceId);
+        allow list: if canListResource();
+        allow create: if isValidId(orderId) && isAuthorizedWorkspaceUser(workspaceId) &&
+          isValidOrder(incoming(), orderId) &&
+          incoming().createdByUid == request.auth.uid &&
+          incoming().ownerUid == get(workspacePath(workspaceId)).data.ownerUid &&
+          incoming().createdAt == request.time &&
+          incoming().updatedAt == request.time;
+        allow update: if isValidId(orderId) && isAuthorizedWorkspaceUser(workspaceId) &&
+          isValidOrder(incoming(), orderId) &&
+          incoming().ownerUid == existing().ownerUid &&
+          incoming().createdByUid == existing().createdByUid &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time &&
+          (
+            isWorkspaceAdmin(workspaceId) ||
+            (
+              existing().status != 'cancelado' &&
+              (
+                incoming().diff(existing()).affectedKeys().hasOnly(['items', 'subtotal', 'total', 'notes', 'reference', 'waiterId', 'waiterName', 'updatedAt']) ||
+                incoming().diff(existing()).affectedKeys().hasOnly(['status', 'waiterId', 'waiterName', 'updatedAt']) ||
+                incoming().diff(existing()).affectedKeys().hasOnly(['paymentStatus', 'paymentMethod', 'receiptCount', 'latestReceiptUrl', 'waiterId', 'waiterName', 'updatedAt'])
+              )
+            )
+          );
+        allow delete: if false;
+      }
+
+      // IMMUTABLE AUDIT LOG: Movements
+      match /movements/{movementId} {
+        allow get: if isValidId(movementId) && isAuthorizedWorkspaceUser(workspaceId);
+        allow list: if canListResource();
+        allow create: if isValidId(movementId) && isAuthorizedWorkspaceUser(workspaceId) &&
+          isValidMovement(incoming(), movementId) &&
+          incoming().actorUid == request.auth.uid &&
+          incoming().createdByUid == request.auth.uid &&
+          incoming().ownerUid == get(workspacePath(workspaceId)).data.ownerUid &&
+          incoming().createdAt == request.time &&
+          existsAfter(/databases/$(database)/documents/workspaces/$(workspaceId)/orders/$(incoming().orderId));
+        allow update: if false;
+        allow delete: if false;
+      }
+
+      // TRANSFER RECEIPTS
+      match /transfers/{transferId} {
+        allow get: if isValidId(transferId) && isAuthorizedWorkspaceUser(workspaceId);
+        allow list: if canListResource();
+        allow create: if isValidId(transferId) && isAuthorizedWorkspaceUser(workspaceId) &&
+          isValidTransfer(incoming(), transferId) &&
+          incoming().createdByUid == request.auth.uid &&
+          incoming().ownerUid == get(workspacePath(workspaceId)).data.ownerUid &&
+          incoming().createdAt == request.time &&
+          existsAfter(/databases/$(database)/documents/workspaces/$(workspaceId)/orders/$(incoming().orderId));
+        allow update: if isValidId(transferId) && isAuthorizedWorkspaceUser(workspaceId) &&
+          isValidTransfer(incoming(), transferId) &&
+          incoming().ownerUid == existing().ownerUid &&
+          incoming().createdByUid == existing().createdByUid &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['paymentStatus', 'notes']);
+        allow delete: if false;
+      }
+    }
+  }
+}

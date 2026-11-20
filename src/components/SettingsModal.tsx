@@ -1,0 +1,320 @@
+import React, { useState } from 'react';
+import { Cloud, Database, LogOut, MailPlus, RefreshCw, Shield, Trash2, Users, X } from 'lucide-react';
+import { usePosStore } from '../services/posStore';
+import { ADMIN_BOOTSTRAP_EMAIL } from '../data/demoSeed';
+import { PWAInstallButton } from './PWAInstallBanner';
+
+interface Props {
+  open: boolean;
+  onClose: () => void;
+}
+
+export const SettingsModal: React.FC<Props> = ({ open, onClose }) => {
+  const {
+    sessionMode,
+    firebaseUser,
+    configSource,
+    projectId,
+    accountRole,
+    isAdmin,
+    authorizedEmails,
+    setDemoAccountRole,
+    updateAuthorizedEmails,
+    staff,
+    toggleStaffActive,
+    resetDemoData,
+    signOutSession,
+  } = usePosStore();
+
+  const [confirmReset, setConfirmReset] = useState(false);
+  const [newWaiterEmail, setNewWaiterEmail] = useState('');
+  const [savingEmails, setSavingEmails] = useState(false);
+  const [emailError, setEmailError] = useState<string | null>(null);
+
+  if (!open) return null;
+
+  const handleAddAuthorizedEmail = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const clean = newWaiterEmail.trim().toLowerCase();
+    if (!clean || !clean.includes('@')) {
+      setEmailError('Ingresa un correo electrónico válido.');
+      return;
+    }
+    if (authorizedEmails.includes(clean)) {
+      setEmailError('Ese correo ya está autorizado.');
+      return;
+    }
+    setSavingEmails(true);
+    setEmailError(null);
+    try {
+      await updateAuthorizedEmails([...authorizedEmails, clean]);
+      setNewWaiterEmail('');
+    } catch (err) {
+      setEmailError(err instanceof Error ? err.message : 'No se pudo autorizar el correo.');
+    } finally {
+      setSavingEmails(false);
+    }
+  };
+
+  const handleRemoveAuthorizedEmail = async (email: string) => {
+    if (email === ADMIN_BOOTSTRAP_EMAIL) return;
+    setSavingEmails(true);
+    setEmailError(null);
+    try {
+      await updateAuthorizedEmails(authorizedEmails.filter((e) => e !== email));
+    } catch (err) {
+      setEmailError(err instanceof Error ? err.message : 'Error al quitar correo.');
+    } finally {
+      setSavingEmails(false);
+    }
+  };
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/75 backdrop-blur-sm sm:p-4"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="settings-modal-title"
+    >
+      <div className="w-full sm:max-w-lg bg-[#141418] text-white rounded-t-3xl sm:rounded-2xl border border-[#27272E] shadow-2xl overflow-hidden max-h-[90vh] flex flex-col">
+        <div className="px-5 py-4 border-b border-[#27272E] flex items-center justify-between bg-[#101014]">
+          <h2 id="settings-modal-title" className="font-poster text-xl font-extrabold text-white tracking-wide">
+            AJUSTES, PERMISOS Y EQUIPO
+          </h2>
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="Cerrar ajustes"
+            className="min-h-[44px] min-w-[44px] flex items-center justify-center rounded-xl text-zinc-400 hover:bg-[#1C1C22] hover:text-white"
+          >
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+
+        <div className="p-5 overflow-y-auto space-y-6">
+          {/* Account Role & Connection */}
+          <section className="space-y-2">
+            <h3 className="text-xs font-bold text-amber-400 uppercase tracking-wide flex items-center gap-1.5">
+              <Cloud className="w-4 h-4" />
+              <span>Sesión y rol de acceso</span>
+            </h3>
+            <div className="rounded-xl border border-[#27272E] p-4 space-y-2.5 bg-[#0A0A0A]">
+              <div className="flex items-center justify-between text-sm">
+                <span className="text-zinc-400">Nivel de cuenta</span>
+                <span
+                  className={`px-2.5 py-0.5 rounded font-mono text-xs font-bold ${
+                    isAdmin
+                      ? 'bg-amber-500 text-black'
+                      : 'bg-[#1C1C22] border border-[#27272E] text-zinc-200'
+                  }`}
+                >
+                  {accountRole === 'admin' ? 'ADMINISTRADOR' : 'MESERO (SOLO PEDIDOS)'}
+                </span>
+              </div>
+              <div className="flex items-center justify-between text-sm">
+                <span className="text-zinc-400">Modo actual</span>
+                <span className="font-semibold text-white">
+                  {sessionMode === 'cloud' ? 'Firebase en Tiempo Real' : 'Modo Demo Local'}
+                </span>
+              </div>
+              <div className="flex items-center justify-between text-sm">
+                <span className="text-zinc-400">Credenciales</span>
+                <span className="font-mono text-xs text-zinc-300">
+                  {configSource === 'env'
+                    ? 'Variables .env'
+                    : configSource === 'applet-config'
+                      ? `Proyecto ${projectId}`
+                      : 'Sin configurar'}
+                </span>
+              </div>
+              {firebaseUser && (
+                <div className="flex items-center justify-between text-sm">
+                  <span className="text-zinc-400">Cuenta conectada</span>
+                  <span className="text-white font-medium truncate max-w-[220px]">
+                    {firebaseUser.email}
+                  </span>
+                </div>
+              )}
+
+              {sessionMode === 'demo' && (
+                <div className="pt-2 border-t border-[#27272E]">
+                  <p className="text-xs text-zinc-400 mb-2">
+                    Probar permisos en Modo Demo:
+                  </p>
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setDemoAccountRole('admin')}
+                      className={`min-h-[38px] rounded-lg border text-xs font-bold transition-colors ${
+                        isAdmin
+                          ? 'bg-amber-500 border-amber-400 text-black'
+                          : 'bg-[#1C1C22] border-[#27272E] text-zinc-300'
+                      }`}
+                    >
+                      Administrador
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setDemoAccountRole('mesero')}
+                      className={`min-h-[38px] rounded-lg border text-xs font-bold transition-colors ${
+                        !isAdmin
+                          ? 'bg-red-600 border-red-500 text-white'
+                          : 'bg-[#1C1C22] border-[#27272E] text-zinc-300'
+                      }`}
+                    >
+                      Solo Mesero
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          </section>
+
+          {/* Admin-only Authorized Waiter Emails */}
+          {isAdmin && (
+            <section className="space-y-2.5">
+              <h3 className="text-xs font-bold text-amber-400 uppercase tracking-wide flex items-center gap-1.5">
+                <Shield className="w-4 h-4" />
+                <span>Cuentas de meseros autorizadas (Cloud)</span>
+              </h3>
+              <p className="text-xs text-zinc-400">
+                Solo los correos agregados aquí pueden entrar como meseros a tomar pedidos y confirmar pagos o cancelaciones.
+              </p>
+
+              {emailError && (
+                <div className="rounded-xl bg-red-950/60 border border-red-700 px-3 py-2 text-xs font-medium text-red-200">
+                  {emailError}
+                </div>
+              )}
+
+              <form onSubmit={handleAddAuthorizedEmail} className="flex gap-2">
+                <input
+                  type="email"
+                  value={newWaiterEmail}
+                  onChange={(e) => setNewWaiterEmail(e.target.value)}
+                  placeholder="correo.mesero@gmail.com"
+                  className="flex-1 min-h-[42px] rounded-xl border border-[#27272E] bg-[#0A0A0A] px-3 text-sm text-white placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-amber-500"
+                />
+                <button
+                  type="submit"
+                  disabled={savingEmails}
+                  className="min-h-[42px] px-4 rounded-xl bg-amber-500 text-black text-xs font-bold hover:bg-amber-400 flex items-center gap-1.5 whitespace-nowrap shrink-0"
+                >
+                  <MailPlus className="w-4 h-4" />
+                  <span>Autorizar</span>
+                </button>
+              </form>
+
+              <div className="divide-y divide-[#27272E] border border-[#27272E] rounded-xl overflow-hidden bg-[#0A0A0A]">
+                {authorizedEmails.map((em) => {
+                  const isMainAdmin = em === ADMIN_BOOTSTRAP_EMAIL;
+                  return (
+                    <div key={em} className="flex items-center justify-between px-3.5 py-2.5 text-xs">
+                      <div className="min-w-0">
+                        <p className="font-mono text-zinc-200 truncate">{em}</p>
+                        <p className="text-[11px] text-zinc-400">
+                          {isMainAdmin ? 'Administrador principal' : 'Mesero autorizado'}
+                        </p>
+                      </div>
+                      {!isMainAdmin && (
+                        <button
+                          type="button"
+                          disabled={savingEmails}
+                          onClick={() => handleRemoveAuthorizedEmail(em)}
+                          aria-label={`Revocar acceso a ${em}`}
+                          className="min-h-[34px] min-w-[34px] flex items-center justify-center rounded-lg text-red-400 hover:bg-red-950/60"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </section>
+          )}
+
+          {/* Team Roster management */}
+          <section className="space-y-2">
+            <h3 className="text-xs font-bold text-amber-400 uppercase tracking-wide flex items-center gap-1.5">
+              <Users className="w-4 h-4" />
+              <span>Personal en turno</span>
+            </h3>
+            <div className="divide-y divide-[#27272E] border border-[#27272E] rounded-xl overflow-hidden bg-[#0A0A0A]">
+              {staff.map((member) => (
+                <div
+                  key={member.id}
+                  className="flex items-center justify-between px-4 py-3"
+                >
+                  <div>
+                    <p className="text-sm font-semibold text-white">{member.name}</p>
+                    <p className="text-xs text-zinc-400 capitalize">{member.role}</p>
+                  </div>
+                  {isAdmin ? (
+                    <button
+                      type="button"
+                      onClick={() => toggleStaffActive(member.id, !member.active)}
+                      className={`min-h-[36px] px-3 rounded-lg text-xs font-semibold transition-colors ${
+                        member.active
+                          ? 'bg-emerald-950/60 text-emerald-300 border border-emerald-700'
+                          : 'bg-[#1C1C22] text-zinc-400 border border-[#27272E]'
+                      }`}
+                    >
+                      {member.active ? 'Activo' : 'Inactivo'}
+                    </button>
+                  ) : (
+                    <span className="text-xs text-zinc-400">
+                      {member.active ? 'Activo' : 'Inactivo'}
+                    </span>
+                  )}
+                </div>
+              ))}
+            </div>
+          </section>
+
+          <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-[#27272E]">
+            <PWAInstallButton />
+
+            {sessionMode === 'demo' && (
+              !confirmReset ? (
+                <button
+                  type="button"
+                  onClick={() => setConfirmReset(true)}
+                  className="min-h-[44px] flex items-center gap-2 px-3.5 rounded-xl border border-[#27272E] bg-[#1C1C22] text-xs font-semibold text-zinc-200 hover:border-zinc-500"
+                >
+                  <Database className="w-4 h-4 text-amber-400" />
+                  <span>Restaurar menú demo</span>
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => {
+                    resetDemoData();
+                    setConfirmReset(false);
+                    onClose();
+                  }}
+                  className="min-h-[44px] flex items-center gap-2 px-3.5 rounded-xl bg-amber-500 text-black text-xs font-bold hover:bg-amber-400"
+                >
+                  <RefreshCw className="w-4 h-4" />
+                  <span>Confirmar restauración</span>
+                </button>
+              )
+            )}
+
+            <button
+              type="button"
+              onClick={async () => {
+                await signOutSession();
+                onClose();
+              }}
+              className="ml-auto min-h-[44px] flex items-center gap-2 px-4 rounded-xl bg-red-600/20 text-red-200 border border-red-700 text-xs font-semibold hover:bg-red-600/30"
+            >
+              <LogOut className="w-4 h-4" />
+              <span>Cambiar sesión</span>
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
