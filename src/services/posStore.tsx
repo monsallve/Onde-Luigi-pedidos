@@ -209,6 +209,34 @@ function persistDemoState(state: DemoStatePayload) {
   }
 }
 
+function safeGetStorage(key: string): string | null {
+  try {
+    return typeof window !== 'undefined' ? window.localStorage.getItem(key) : null;
+  } catch {
+    return null;
+  }
+}
+
+function safeSetStorage(key: string, value: string): void {
+  try {
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem(key, value);
+    }
+  } catch {
+    // ignore iframe/quota errors
+  }
+}
+
+function safeRemoveStorage(key: string): void {
+  try {
+    if (typeof window !== 'undefined') {
+      window.localStorage.removeItem(key);
+    }
+  } catch {
+    // ignore iframe/quota errors
+  }
+}
+
 export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [sessionMode, setSessionMode] = useState<ConnectionMode | null>(() => {
     if (typeof window !== 'undefined') {
@@ -216,7 +244,7 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       if (params.get('autostart') === '1') {
         return 'demo';
       }
-      if (localStorage.getItem(DEMO_MODE_FLAG_KEY) === '1') {
+      if (safeGetStorage(DEMO_MODE_FLAG_KEY) === '1') {
         return 'demo';
       }
     }
@@ -228,7 +256,7 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       const params = new URLSearchParams(window.location.search);
       const qRole = params.get('role');
       if (qRole === 'mesero' || qRole === 'admin') return qRole;
-      const saved = localStorage.getItem(DEMO_ROLE_STORAGE_KEY);
+      const saved = safeGetStorage(DEMO_ROLE_STORAGE_KEY);
       if (saved === 'mesero' || saved === 'admin') return saved;
     }
     return 'admin';
@@ -250,19 +278,12 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [transfers, setTransfers] = useState<TransferReceipt[]>([]);
 
   const [activeWaiterId, setActiveWaiterIdState] = useState<string>(() => {
-    if (typeof window !== 'undefined') {
-      return localStorage.getItem(ACTIVE_WAITER_STORAGE_KEY) || '';
-    }
-    return '';
+    return safeGetStorage(ACTIVE_WAITER_STORAGE_KEY) || '';
   });
 
   const setActiveWaiterId = useCallback((id: string) => {
     setActiveWaiterIdState(id);
-    try {
-      localStorage.setItem(ACTIVE_WAITER_STORAGE_KEY, id);
-    } catch {
-      // ignore
-    }
+    safeSetStorage(ACTIVE_WAITER_STORAGE_KEY, id);
   }, []);
 
   const setDemoAccountRole = useCallback((role: AccountRole) => {
@@ -315,6 +336,10 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       return;
     }
 
+    const safetyTimer = window.setTimeout(() => {
+      setAuthReady(true);
+    }, 2500);
+
     testFirestoreConnection().then((res) => {
       if (!res.ok && res.message) {
         setCloudError(res.message);
@@ -322,15 +347,19 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     });
 
     const unsub = onAuthStateChanged(auth, (user) => {
+      window.clearTimeout(safetyTimer);
       setFirebaseUser(user);
       setAuthReady(true);
       if (user && user.emailVerified) {
         setSessionMode('cloud');
-        localStorage.removeItem(DEMO_MODE_FLAG_KEY);
+        safeRemoveStorage(DEMO_MODE_FLAG_KEY);
       }
     });
 
-    return () => unsub();
+    return () => {
+      window.clearTimeout(safetyTimer);
+      unsub();
+    };
   }, []);
 
   // Load Demo Data when sessionMode === 'demo'
@@ -682,7 +711,7 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const enterDemoMode = useCallback(
     (role: AccountRole = 'admin') => {
-      localStorage.setItem(DEMO_MODE_FLAG_KEY, '1');
+      safeSetStorage(DEMO_MODE_FLAG_KEY, '1');
       setDemoAccountRole(role);
       setSessionMode('demo');
     },
@@ -711,7 +740,7 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     provider.setCustomParameters({ prompt: 'select_account' });
     const cred = await signInWithPopup(auth, provider);
     if (cred.user) {
-      localStorage.removeItem(DEMO_MODE_FLAG_KEY);
+      safeRemoveStorage(DEMO_MODE_FLAG_KEY);
       setSessionMode('cloud');
     }
   }, []);
@@ -724,13 +753,13 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       throw new Error('Tu correo aún no está verificado. Verifica tu bandeja o inicia sesión con Google.');
     }
     if (cred.user) {
-      localStorage.removeItem(DEMO_MODE_FLAG_KEY);
+      safeRemoveStorage(DEMO_MODE_FLAG_KEY);
       setSessionMode('cloud');
     }
   }, []);
 
   const signOutSession = useCallback(async () => {
-    localStorage.removeItem(DEMO_MODE_FLAG_KEY);
+    safeRemoveStorage(DEMO_MODE_FLAG_KEY);
     if (auth && firebaseUser) {
       await signOut(auth);
     }

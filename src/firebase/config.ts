@@ -19,11 +19,23 @@ export interface FirebaseResolvedConfig {
   firestoreDatabaseId?: string;
 }
 
-const envApiKey = import.meta.env.VITE_FIREBASE_API_KEY as string | undefined;
-const envProjectId = import.meta.env.VITE_FIREBASE_PROJECT_ID as string | undefined;
-const envAppId = import.meta.env.VITE_FIREBASE_APP_ID as string | undefined;
+function cleanEnv(val: unknown): string {
+  if (typeof val !== 'string') return '';
+  const trimmed = val.trim().replace(/^["']|["']$/g, '').trim();
+  if (!trimmed || trimmed === 'undefined' || trimmed === 'null') return '';
+  return trimmed;
+}
 
-const hasEnvConfig = Boolean(envApiKey && envProjectId && envAppId);
+const envApiKey = cleanEnv(import.meta.env.VITE_FIREBASE_API_KEY);
+const envProjectId = cleanEnv(import.meta.env.VITE_FIREBASE_PROJECT_ID);
+const envAppId = cleanEnv(import.meta.env.VITE_FIREBASE_APP_ID);
+
+const hasEnvConfig = Boolean(
+  envApiKey &&
+    envProjectId &&
+    envAppId &&
+    envProjectId !== 'remixed-project-id'
+);
 
 const hasAppletConfig = Boolean(
   appletConfig &&
@@ -32,69 +44,108 @@ const hasAppletConfig = Boolean(
     appletConfig.projectId !== 'remixed-project-id'
 );
 
-export const configSource: 'env' | 'applet-config' | 'none' = hasEnvConfig
+function buildEnvConfig(): FirebaseResolvedConfig {
+  return {
+    apiKey: envApiKey,
+    authDomain:
+      cleanEnv(import.meta.env.VITE_FIREBASE_AUTH_DOMAIN) ||
+      `${envProjectId}.firebaseapp.com`,
+    projectId: envProjectId,
+    storageBucket:
+      cleanEnv(import.meta.env.VITE_FIREBASE_STORAGE_BUCKET) ||
+      `${envProjectId}.firebasestorage.app`,
+    messagingSenderId: cleanEnv(import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID),
+    appId: envAppId,
+    firestoreDatabaseId:
+      cleanEnv(import.meta.env.VITE_FIREBASE_FIRESTORE_DATABASE_ID) || undefined,
+  };
+}
+
+function buildAppletConfig(): FirebaseResolvedConfig {
+  return {
+    apiKey: appletConfig.apiKey,
+    authDomain: appletConfig.authDomain,
+    projectId: appletConfig.projectId,
+    storageBucket: appletConfig.storageBucket,
+    messagingSenderId: appletConfig.messagingSenderId,
+    appId: appletConfig.appId,
+    firestoreDatabaseId: appletConfig.firestoreDatabaseId,
+  };
+}
+
+export let configSource: 'env' | 'applet-config' | 'none' = hasEnvConfig
   ? 'env'
   : hasAppletConfig
     ? 'applet-config'
     : 'none';
 
-export const resolvedFirebaseConfig: FirebaseResolvedConfig | null =
+export let resolvedFirebaseConfig: FirebaseResolvedConfig | null =
   configSource === 'env'
-    ? {
-        apiKey: envApiKey!,
-        authDomain:
-          (import.meta.env.VITE_FIREBASE_AUTH_DOMAIN as string) ||
-          `${envProjectId}.firebaseapp.com`,
-        projectId: envProjectId!,
-        storageBucket:
-          (import.meta.env.VITE_FIREBASE_STORAGE_BUCKET as string) ||
-          `${envProjectId}.firebasestorage.app`,
-        messagingSenderId:
-          (import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID as string) || '',
-        appId: envAppId!,
-        firestoreDatabaseId:
-          (import.meta.env.VITE_FIREBASE_FIRESTORE_DATABASE_ID as string) ||
-          undefined,
-      }
+    ? buildEnvConfig()
     : configSource === 'applet-config'
-      ? {
-          apiKey: appletConfig.apiKey,
-          authDomain: appletConfig.authDomain,
-          projectId: appletConfig.projectId,
-          storageBucket: appletConfig.storageBucket,
-          messagingSenderId: appletConfig.messagingSenderId,
-          appId: appletConfig.appId,
-          firestoreDatabaseId: appletConfig.firestoreDatabaseId,
-        }
+      ? buildAppletConfig()
       : null;
-
-export const isFirebaseConfigured = Boolean(resolvedFirebaseConfig);
 
 let app: FirebaseApp | null = null;
 let db: Firestore | null = null;
 let auth: Auth | null = null;
 let storage: FirebaseStorage | null = null;
 
-if (resolvedFirebaseConfig) {
-  app =
-    getApps().length > 0
-      ? getApps()[0]
-      : initializeApp({
-          apiKey: resolvedFirebaseConfig.apiKey,
-          authDomain: resolvedFirebaseConfig.authDomain,
-          projectId: resolvedFirebaseConfig.projectId,
-          storageBucket: resolvedFirebaseConfig.storageBucket,
-          messagingSenderId: resolvedFirebaseConfig.messagingSenderId,
-          appId: resolvedFirebaseConfig.appId,
-        });
+function initFromConfig(cfg: FirebaseResolvedConfig): boolean {
+  try {
+    const firebaseApp =
+      getApps().length > 0
+        ? getApps()[0]
+        : initializeApp({
+            apiKey: cfg.apiKey,
+            authDomain: cfg.authDomain,
+            projectId: cfg.projectId,
+            storageBucket: cfg.storageBucket,
+            messagingSenderId: cfg.messagingSenderId,
+            appId: cfg.appId,
+          });
 
-  db = resolvedFirebaseConfig.firestoreDatabaseId
-    ? getFirestore(app, resolvedFirebaseConfig.firestoreDatabaseId)
-    : getFirestore(app);
+    const firestoreDb = cfg.firestoreDatabaseId
+      ? getFirestore(firebaseApp, cfg.firestoreDatabaseId)
+      : getFirestore(firebaseApp);
 
-  auth = getAuth(app);
-  storage = getStorage(app);
+    const firebaseAuth = getAuth(firebaseApp);
+    let firebaseStorage: FirebaseStorage | null = null;
+    try {
+      firebaseStorage = getStorage(firebaseApp);
+    } catch {
+      firebaseStorage = null;
+    }
+
+    app = firebaseApp;
+    db = firestoreDb;
+    auth = firebaseAuth;
+    storage = firebaseStorage;
+    return true;
+  } catch (err) {
+    console.warn('Firebase initialization warning:', err);
+    return false;
+  }
 }
+
+if (resolvedFirebaseConfig) {
+  const ok = initFromConfig(resolvedFirebaseConfig);
+  if (!ok && configSource === 'env' && hasAppletConfig) {
+    const fallbackCfg = buildAppletConfig();
+    if (initFromConfig(fallbackCfg)) {
+      configSource = 'applet-config';
+      resolvedFirebaseConfig = fallbackCfg;
+    } else {
+      configSource = 'none';
+      resolvedFirebaseConfig = null;
+    }
+  } else if (!ok) {
+    configSource = 'none';
+    resolvedFirebaseConfig = null;
+  }
+}
+
+export const isFirebaseConfigured = Boolean(app && db && auth);
 
 export { app, db, auth, storage };
 
