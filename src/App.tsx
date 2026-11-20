@@ -20,6 +20,7 @@ import { WaiterSelectorModal } from './components/WaiterSelectorModal';
 import { WhatsAppReceiptViewer } from './components/WhatsAppReceiptViewer';
 import { PosProvider, usePosStore } from './services/posStore';
 import type { AppTab, Order } from './types/pos';
+import { resolveAssetUrl } from './utils/assetPath';
 import { HistoryView } from './views/HistoryView';
 import { MenuManagerView } from './views/MenuManagerView';
 import { OrdersView } from './views/OrdersView';
@@ -155,7 +156,7 @@ const PosShell: React.FC = () => {
             className="flex items-center gap-2.5 shrink-0 text-left"
           >
             <img
-              src="/onde-luigi-logo.png"
+              src={resolveAssetUrl('/onde-luigi-logo.png')}
               alt="O'NDE LUIGI"
               className="w-8 h-8 rounded-full border border-red-600 object-cover shrink-0"
             />

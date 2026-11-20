@@ -17,6 +17,7 @@ import {
   X,
 } from 'lucide-react';
 import { usePosStore } from '../services/posStore';
+import { resolveAssetUrl } from '../utils/assetPath';
 import type {
   Order,
   OrderItem,
@@ -358,7 +359,7 @@ export const PosOrderWorkspaceView: React.FC<Props> = ({
                     {product.imageUrl && (
                       <div className="relative h-36 bg-[#0A0A0A] overflow-hidden border-b border-[#27272E]">
                         <img
-                          src={product.imageUrl}
+                          src={resolveAssetUrl(product.imageUrl)}
                           alt={product.name}
                           className="w-full h-full object-cover object-top"
                         />

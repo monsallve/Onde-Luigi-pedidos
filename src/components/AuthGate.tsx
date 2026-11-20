@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { Cloud, Lock, Mail, Play, ShieldCheck, UserCheck } from 'lucide-react';
 import { usePosStore } from '../services/posStore';
 import { PWAInstallButton } from './PWAInstallBanner';
+import { resolveAssetUrl } from '../utils/assetPath';
 
 export const AuthGate: React.FC = () => {
   const {
@@ -66,7 +67,7 @@ export const AuthGate: React.FC = () => {
       <header className="max-w-5xl w-full mx-auto flex items-center justify-between gap-4">
         <div className="flex items-center gap-3">
           <img
-            src="/onde-luigi-logo.png"
+            src={resolveAssetUrl('/onde-luigi-logo.png')}
             alt="Logo O'NDE LUIGI"
             className="w-11 h-11 rounded-full border-2 border-red-600 object-cover shrink-0"
           />
@@ -86,7 +87,7 @@ export const AuthGate: React.FC = () => {
         <div className="lg:col-span-6 space-y-5">
           <div className="overflow-hidden rounded-2xl border border-[#27272E] bg-black">
             <img
-              src="/onde-luigi-banner.jpg"
+              src={resolveAssetUrl('/onde-luigi-banner.jpg')}
               alt="O'NDE LUIGI Hamburguesas y Comida Rápida"
               className="w-full aspect-[2.15/1] object-contain bg-black"
             />

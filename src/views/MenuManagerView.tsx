@@ -3,6 +3,7 @@ import { Droplets, Edit3, Lock, Plus, Search } from 'lucide-react';
 import { usePosStore } from '../services/posStore';
 import type { Product } from '../types/pos';
 import { formatCurrency } from '../utils/orderMath';
+import { resolveAssetUrl } from '../utils/assetPath';
 import { ProductEditorModal } from '../components/ProductEditorModal';
 
 export const MenuManagerView: React.FC = () => {
@@ -200,7 +201,7 @@ export const MenuManagerView: React.FC = () => {
               <div className="flex items-start gap-3">
                 {product.imageUrl && (
                   <img
-                    src={product.imageUrl}
+                    src={resolveAssetUrl(product.imageUrl)}
                     alt={product.name}
                     className="w-16 h-16 rounded-xl object-cover object-top border border-[#27272E] shrink-0"
                   />

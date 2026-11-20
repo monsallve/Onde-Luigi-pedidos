@@ -16,6 +16,7 @@ import {
   X,
 } from 'lucide-react';
 import { usePosStore } from '../services/posStore';
+import { resolveAssetUrl } from '../utils/assetPath';
 import type {
   Order,
   OrderItem,
@@ -405,7 +406,7 @@ export const OrderComposerModal: React.FC<Props> = ({
                         <div className="flex items-start gap-3">
                           {product.imageUrl && (
                             <img
-                              src={product.imageUrl}
+                              src={resolveAssetUrl(product.imageUrl)}
                               alt={product.name}
                               className="w-16 h-16 rounded-lg object-cover object-top border border-[#27272E] shrink-0"
                             />

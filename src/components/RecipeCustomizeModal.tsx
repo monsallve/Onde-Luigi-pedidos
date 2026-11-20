@@ -8,6 +8,7 @@ import {
   formatCurrency,
   validateItemSauces,
 } from '../utils/orderMath';
+import { resolveAssetUrl } from '../utils/assetPath';
 
 interface Props {
   product: Product;
@@ -112,7 +113,7 @@ export const RecipeCustomizeModal: React.FC<Props> = ({
           <div className="flex items-center gap-3 min-w-0">
             {product.imageUrl && (
               <img
-                src={product.imageUrl}
+                src={resolveAssetUrl(product.imageUrl)}
                 alt={product.name}
                 className="w-14 h-14 rounded-xl object-cover object-top border border-[#27272E] shrink-0"
               />
