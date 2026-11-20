@@ -24,12 +24,14 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '20'
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
       - name: Configure Pages
         uses: actions/configure-pages@v5
       - name: Install dependencies
-        run: npm install --no-audit --no-fund
+        run: bun install --frozen-lockfile || npm install --legacy-peer-deps --no-audit --no-fund
       - name: Build production bundle
-        run: npm run build
+        run: bun run build || npm run build
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
