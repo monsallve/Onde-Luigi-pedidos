@@ -111,13 +111,6 @@ export const AuthGate: React.FC = () => {
     setSuccessMsg(null);
     try {
       await registerWithEmail(fullName, email, password);
-      setSuccessMsg(
-        'Cuenta creada. Revisa tu correo electrónico para verificar tu cuenta y luego inicia sesión.'
-      );
-      setPassword('');
-      setConfirmPassword('');
-      setMode('login');
-      setShowEmailForm(true);
     } catch (err) {
       setErrorMsg(mapAuthError(err, 'No se pudo registrar la cuenta.'));
     } finally {
@@ -212,7 +205,7 @@ export const AuthGate: React.FC = () => {
                   {mode === 'login'
                     ? 'Ingresa con tu cuenta de Google o con correo y contraseña.'
                     : mode === 'register'
-                      ? 'Regístrate para acceder al sistema con rol inicial de Mesero.'
+                      ? 'Crea tu cuenta para entrar, elegir tu nombre permanente y verificar tu correo.'
                       : 'Te enviaremos un correo para definir una nueva contraseña.'}
                 </p>
               </div>

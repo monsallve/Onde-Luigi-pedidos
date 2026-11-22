@@ -28,6 +28,12 @@ service cloud.firestore {
       return isSignedIn() && request.auth.token.email_verified == true;
     }
 
+    function isAuthenticatedEmailUser() {
+      return isSignedIn() &&
+        request.auth.token.email is string &&
+        request.auth.token.email.size() > 0;
+    }
+
     function isBootstrappedAdmin() {
       return isVerifiedUser() && request.auth.token.email == 'perrodog1515@gmail.com';
     }
@@ -49,33 +55,33 @@ service cloud.firestore {
     }
 
     function isActiveWorkspaceMember(workspaceId) {
-      return isVerifiedUser() &&
+      return isAuthenticatedEmailUser() &&
         exists(memberPath(workspaceId, request.auth.uid)) &&
         get(memberPath(workspaceId, request.auth.uid)).data.active == true;
     }
 
     function isActiveWorkspaceMemberAfter(workspaceId) {
-      return isVerifiedUser() &&
+      return isAuthenticatedEmailUser() &&
         existsAfter(memberPath(workspaceId, request.auth.uid)) &&
         getAfter(memberPath(workspaceId, request.auth.uid)).data.active == true;
     }
 
     function isPrimaryAdmin(workspaceId) {
-      return isVerifiedUser() && (
+      return isAuthenticatedEmailUser() && (
         isBootstrappedAdmin() ||
         (workspaceExists(workspaceId) && get(workspacePath(workspaceId)).data.ownerUid == request.auth.uid)
       );
     }
 
     function isWorkspaceAdmin(workspaceId) {
-      return isVerifiedUser() && (
+      return isAuthenticatedEmailUser() && (
         isPrimaryAdmin(workspaceId) ||
         (isActiveWorkspaceMember(workspaceId) && get(memberPath(workspaceId, request.auth.uid)).data.role == 'admin')
       );
     }
 
     function isAuthorizedWorkspaceUser(workspaceId) {
-      return isVerifiedUser() && (
+      return isAuthenticatedEmailUser() && (
         isPrimaryAdmin(workspaceId) ||
         isActiveWorkspaceMember(workspaceId) ||
         (workspaceExists(workspaceId) && (
@@ -86,7 +92,7 @@ service cloud.firestore {
     }
 
     function canListWorkspaceSubcollection(workspaceId) {
-      return isVerifiedUser() && (
+      return isAuthenticatedEmailUser() && (
         isBootstrappedAdmin() ||
         (
           isActiveWorkspaceMember(workspaceId) &&
@@ -266,14 +272,14 @@ service cloud.firestore {
 
     // 4. Workspaces & Primary-Admin Role Control vs Admin Catalog/Records vs Waiter Operations
     match /workspaceDirectory/{workspaceId} {
-      allow get: if isVerifiedUser() && isValidId(workspaceId);
+      allow get: if isAuthenticatedEmailUser() && isValidId(workspaceId);
       allow list: if false;
-      allow create: if isVerifiedUser() && isValidId(workspaceId) &&
+      allow create: if isAuthenticatedEmailUser() && isValidId(workspaceId) &&
         isPrimaryAdmin(workspaceId) &&
         isValidWorkspaceDirectory(incoming(), workspaceId) &&
         incoming().ownerUid == getAfter(workspacePath(workspaceId)).data.ownerUid &&
         incoming().updatedAt == request.time;
-      allow update: if isVerifiedUser() && isValidId(workspaceId) &&
+      allow update: if isAuthenticatedEmailUser() && isValidId(workspaceId) &&
         isPrimaryAdmin(workspaceId) &&
         isValidWorkspaceDirectory(incoming(), workspaceId) &&
         incoming().ownerUid == existing().ownerUid &&
@@ -283,7 +289,7 @@ service cloud.firestore {
     }
 
     match /workspaces/{workspaceId} {
-      allow get: if isVerifiedUser() && isValidId(workspaceId) && (
+      allow get: if isAuthenticatedEmailUser() && isValidId(workspaceId) && (
         isBootstrappedAdmin() ||
         isActiveWorkspaceMember(workspaceId) ||
         (resource != null && (
@@ -291,12 +297,12 @@ service cloud.firestore {
           request.auth.token.email in existing().authorizedEmails
         ))
       );
-      allow list: if isVerifiedUser() && (
+      allow list: if isAuthenticatedEmailUser() && (
         isBootstrappedAdmin() ||
         resource.data.ownerUid == request.auth.uid ||
         request.auth.token.email in resource.data.authorizedEmails
       );
-      allow create: if isVerifiedUser() && isValidId(workspaceId) &&
+      allow create: if isAuthenticatedEmailUser() && isValidId(workspaceId) &&
         (workspaceId != 'ws_onde_luigi' || isBootstrappedAdmin()) &&
         isValidWorkspace(incoming(), workspaceId) &&
         incoming().ownerUid == request.auth.uid &&
@@ -312,15 +318,15 @@ service cloud.firestore {
 
       // ONLY PRIMARY ADMIN CAN CHANGE USER ROLES OR DELETE MEMBERS
       match /members/{uid} {
-        allow get: if isVerifiedUser() && isValidId(uid) && (
+        allow get: if isAuthenticatedEmailUser() && isValidId(uid) && (
           uid == request.auth.uid || isPrimaryAdmin(workspaceId)
         );
-        allow list: if isVerifiedUser() && (
+        allow list: if isAuthenticatedEmailUser() && (
           isBootstrappedAdmin() ||
           resource.data.ownerUid == request.auth.uid ||
           resource.data.uid == request.auth.uid
         );
-        allow create: if isVerifiedUser() && isValidId(uid) &&
+        allow create: if isAuthenticatedEmailUser() && isValidId(uid) &&
           isValidWorkspaceMember(incoming(), uid) &&
           incoming().ownerUid == getAfter(workspacePath(workspaceId)).data.ownerUid &&
           incoming().createdAt == request.time &&

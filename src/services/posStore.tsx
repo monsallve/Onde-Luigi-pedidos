@@ -1,5 +1,6 @@
-import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  applyActionCode,
   createUserWithEmailAndPassword,
   GoogleAuthProvider,
   onAuthStateChanged,
@@ -61,6 +62,11 @@ import {
   ORDER_STATUS_LABELS,
   PAYMENT_METHOD_LABELS,
 } from '../utils/orderMath';
+import {
+  findLinkedStaffMember,
+  isStartupIdentityReady,
+  resolveActiveWaiter,
+} from '../utils/identityState';
 import { uploadTransferReceiptImage } from './storageService';
 
 const DEMO_STORAGE_KEY = 'ondeluigi_demo_state_v2';
@@ -130,6 +136,7 @@ interface PosContextValue {
   projectId: string | null;
   cloudError: string | null;
   loadingData: boolean;
+  identityReady: boolean;
 
   accountRole: AccountRole;
   isAdmin: boolean;
@@ -149,6 +156,10 @@ interface PosContextValue {
   myLinkedStaff: StaffMember | null;
   setActiveWaiterId: (id: string) => void;
 
+  emailVerified: boolean;
+  verificationNotice: string | null;
+  clearVerificationNotice: () => void;
+
   enterDemoMode: (role?: AccountRole) => void;
   setDemoAccountRole: (role: AccountRole) => void;
   resetDemoData: () => void;
@@ -156,6 +167,8 @@ interface PosContextValue {
   signInWithEmail: (email: string, password: string) => Promise<void>;
   registerWithEmail: (name: string, email: string, password: string) => Promise<void>;
   resetPassword: (email: string) => Promise<void>;
+  sendVerificationEmail: () => Promise<void>;
+  refreshEmailVerification: () => Promise<boolean>;
   signOutSession: () => Promise<void>;
 
   createOrder: (input: CreateOrderInput) => Promise<Order>;
@@ -288,6 +301,8 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
     return null;
   });
+  const sessionModeRef = useRef<ConnectionMode | null>(sessionMode);
+  sessionModeRef.current = sessionMode;
 
   const [demoAccountRole, setDemoAccountRoleState] = useState<AccountRole>(() => {
     if (typeof window !== 'undefined') {
@@ -305,10 +320,19 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return new URLSearchParams(window.location.search).get('secondaryAdmin') === '1';
   }, []);
 
+  const isUnverifiedDemo = useMemo(() => {
+    if (typeof window === 'undefined') return false;
+    return new URLSearchParams(window.location.search).get('unverified') === '1';
+  }, []);
+
   const [authReady, setAuthReady] = useState(!isFirebaseConfigured);
   const [firebaseUser, setFirebaseUser] = useState<User | null>(null);
+  const [emailVerifiedState, setEmailVerifiedState] = useState<boolean>(false);
+  const [verificationNotice, setVerificationNotice] = useState<string | null>(null);
   const [cloudError, setCloudError] = useState<string | null>(null);
-  const [loadingData, setLoadingData] = useState(false);
+  const [loadingData, setLoadingData] = useState<boolean>(() => sessionMode !== null);
+  const [staffLoaded, setStaffLoaded] = useState<boolean>(false);
+  const [cloudReadyForUid, setCloudReadyForUid] = useState<string | null>(null);
 
   const [workspaceOwnerUid, setWorkspaceOwnerUid] = useState<string>('demo_owner');
   const [authorizedEmails, setAuthorizedEmails] = useState<string[]>([ADMIN_BOOTSTRAP_EMAIL]);
@@ -356,12 +380,7 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         : ADMIN_BOOTSTRAP_EMAIL;
 
   const myLinkedStaff = useMemo(
-    () =>
-      staff.find(
-        (s) =>
-          (s.linkedUid && s.linkedUid === actorUid) ||
-          (s.linkedEmail && actorEmail && s.linkedEmail.toLowerCase() === actorEmail)
-      ) || null,
+    () => findLinkedStaffMember(staff, actorUid, actorEmail),
     [staff, actorUid, actorEmail]
   );
 
@@ -392,39 +411,30 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   // Registered users (waiters AND promoted admins) keep their permanent assigned name/role.
   // Only the principal admin can optionally pick/switch staff or use their own profile.
-  const activeWaiter = useMemo(() => {
-    if (!isPrimaryAdmin) {
-      return myLinkedStaff && myLinkedStaff.active ? myLinkedStaff : null;
-    }
-    return (
-      staff.find((s) => s.id === activeWaiterId && s.active) ||
-      (myLinkedStaff && myLinkedStaff.active ? myLinkedStaff : null) ||
-      null
-    );
-  }, [isPrimaryAdmin, myLinkedStaff, staff, activeWaiterId]);
+  const activeWaiter = useMemo(
+    () =>
+      resolveActiveWaiter({
+        isPrimaryAdmin,
+        myLinkedStaff,
+        staff,
+        activeWaiterId,
+      }),
+    [isPrimaryAdmin, myLinkedStaff, staff, activeWaiterId]
+  );
 
-  // Ensure demo secondary admin test profile exists when ?secondaryAdmin=1 is used
-  useEffect(() => {
-    if (sessionMode !== 'demo' || !isSecondaryAdminDemo) return;
-    if (staff.some((s) => s.linkedUid === 'demo_secondary_admin')) return;
-    const now = Date.now();
-    setStaff((prev) => [
-      ...prev,
-      {
-        id: 'staff_demo_secondary_admin',
-        name: 'Carla Admin Secundaria',
-        role: 'admin',
-        active: true,
-        linkedUid: 'demo_secondary_admin',
-        linkedEmail: 'admin2@ondeluigi.com',
-        ownerUid: 'demo_owner',
-        createdByUid: 'demo_owner',
-        allowedEmails: [ADMIN_BOOTSTRAP_EMAIL, 'admin2@ondeluigi.com'],
-        createdAtMs: now,
-        updatedAtMs: now,
-      },
-    ]);
-  }, [sessionMode, isSecondaryAdminDemo, staff]);
+  const identityReady = useMemo(
+    () =>
+      isStartupIdentityReady({
+        authReady,
+        sessionMode,
+        cloudError,
+        firebaseUid: firebaseUser?.uid || null,
+        cloudReadyForUid,
+        staffLoaded,
+        loadingData,
+      }),
+    [authReady, sessionMode, cloudError, firebaseUser, cloudReadyForUid, staffLoaded, loadingData]
+  );
 
   // Auto-select permanent linked profile for registered users (or first active admin on ?autostart=1)
   useEffect(() => {
@@ -455,16 +465,76 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   }, [isPrimaryAdmin, myLinkedStaff, activeWaiter, activeWaiterId, staff, setActiveWaiterId]);
 
-  // Monitor Firebase Auth + test connection
+  const activateCloudSession = useCallback((user: User) => {
+    setFirebaseUser(user);
+    setEmailVerifiedState(Boolean(user.emailVerified));
+    setCloudError(null);
+    setCloudReadyForUid(null);
+    setStaffLoaded(false);
+    setLoadingData(true);
+    setSessionMode('cloud');
+    safeRemoveStorage(DEMO_MODE_FLAG_KEY);
+  }, []);
+
+  const clearVerificationNotice = useCallback(() => {
+    setVerificationNotice(null);
+  }, []);
+
+  // Monitor Firebase Auth + test connection + process email verification action links
   useEffect(() => {
     if (!isFirebaseConfigured || !auth) {
       setAuthReady(true);
       return;
     }
 
+    const cleanUrlParams = (keys: string[]) => {
+      if (typeof window === 'undefined') return;
+      try {
+        const url = new URL(window.location.href);
+        let changed = false;
+        for (const k of keys) {
+          if (url.searchParams.has(k)) {
+            url.searchParams.delete(k);
+            changed = true;
+          }
+        }
+        if (changed) {
+          window.history.replaceState({}, '', url.pathname + url.search + url.hash);
+        }
+      } catch {
+        // ignore URL cleanup errors
+      }
+    };
+
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search);
+      const mode = params.get('mode');
+      const oobCode = params.get('oobCode');
+      if (mode === 'verifyEmail' && oobCode) {
+        applyActionCode(auth, oobCode)
+          .then(async () => {
+            if (auth?.currentUser) {
+              await auth.currentUser.reload().catch(() => undefined);
+              await auth.currentUser.getIdToken(true).catch(() => undefined);
+              setFirebaseUser(auth.currentUser);
+              setEmailVerifiedState(Boolean(auth.currentUser.emailVerified));
+            } else {
+              setEmailVerifiedState(true);
+            }
+            setVerificationNotice("¡Tu correo electrónico fue verificado exitosamente para O'NDE LUIGI!");
+          })
+          .catch(() => {
+            // Code might already have been consumed; reload user state safely
+          })
+          .finally(() => {
+            cleanUrlParams(['mode', 'oobCode', 'apiKey', 'lang']);
+          });
+      }
+    }
+
     const safetyTimer = window.setTimeout(() => {
       setAuthReady(true);
-    }, 2500);
+    }, 4000);
 
     testFirestoreConnection().then((res) => {
       if (!res.ok && res.message) {
@@ -472,13 +542,32 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       }
     });
 
-    const unsub = onAuthStateChanged(auth, (user) => {
+    const unsub = onAuthStateChanged(auth, async (user) => {
       window.clearTimeout(safetyTimer);
-      setFirebaseUser(user);
+      let activeUser = user;
+      if (activeUser && typeof window !== 'undefined') {
+        const params = new URLSearchParams(window.location.search);
+        if (params.get('verified') === '1') {
+          await activeUser.reload().catch(() => undefined);
+          await activeUser.getIdToken(true).catch(() => undefined);
+          activeUser = auth?.currentUser || activeUser;
+          if (activeUser.emailVerified) {
+            setVerificationNotice("¡Tu correo electrónico fue verificado exitosamente para O'NDE LUIGI!");
+          }
+          cleanUrlParams(['verified']);
+        }
+      }
+
+      setFirebaseUser(activeUser);
+      setEmailVerifiedState(Boolean(activeUser?.emailVerified));
       setAuthReady(true);
-      if (user && user.emailVerified) {
-        setSessionMode('cloud');
-        safeRemoveStorage(DEMO_MODE_FLAG_KEY);
+      if (activeUser && activeUser.email) {
+        activateCloudSession(activeUser);
+      } else if (!activeUser && sessionModeRef.current === 'cloud') {
+        setCloudReadyForUid(null);
+        setStaffLoaded(false);
+        setLoadingData(false);
+        setSessionMode(null);
       }
     });
 
@@ -486,26 +575,47 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       window.clearTimeout(safetyTimer);
       unsub();
     };
-  }, []);
+  }, [activateCloudSession]);
 
   // Load Demo Data when sessionMode === 'demo'
   useEffect(() => {
     if (sessionMode !== 'demo') return;
     const loaded = loadDemoState();
+    const demoStaff = [...loaded.staff];
+    if (
+      isSecondaryAdminDemo &&
+      !demoStaff.some((s) => s.linkedUid === 'demo_secondary_admin')
+    ) {
+      const now = Date.now();
+      demoStaff.push({
+        id: 'staff_demo_secondary_admin',
+        name: 'Carla Admin Secundaria',
+        role: 'admin',
+        active: true,
+        linkedUid: 'demo_secondary_admin',
+        linkedEmail: 'admin2@ondeluigi.com',
+        ownerUid: 'demo_owner',
+        createdByUid: 'demo_owner',
+        allowedEmails: [ADMIN_BOOTSTRAP_EMAIL, 'admin2@ondeluigi.com'],
+        createdAtMs: now,
+        updatedAtMs: now,
+      });
+    }
     setWorkspaceOwnerUid('demo_owner');
     setAuthorizedEmails(
       loaded.authorizedEmails && loaded.authorizedEmails.length > 0
         ? loaded.authorizedEmails
         : [ADMIN_BOOTSTRAP_EMAIL]
     );
-    setStaff(loaded.staff);
+    setStaff(demoStaff);
     setSauces(loaded.sauces);
     setProducts(loaded.products);
     setOrders(loaded.orders.sort((a, b) => b.createdAtMs - a.createdAtMs));
     setMovements(loaded.movements.sort((a, b) => b.createdAtMs - a.createdAtMs));
     setTransfers(loaded.transfers.sort((a, b) => b.createdAtMs - a.createdAtMs));
+    setStaffLoaded(true);
     setLoadingData(false);
-  }, [sessionMode]);
+  }, [sessionMode, isSecondaryAdminDemo]);
 
   const workspaceId = sessionMode === 'cloud' ? SHARED_WORKSPACE_ID : 'demo_ws';
   const effectiveOwnerUid = sessionMode === 'cloud' ? workspaceOwnerUid : 'demo_owner';
@@ -774,11 +884,15 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     let cancelled = false;
     setLoadingData(true);
+    setStaffLoaded(false);
+    setCloudReadyForUid(null);
     setCloudError(null);
 
     const userEmail = (firebaseUser.email || '').toLowerCase();
     const isBootstrapAdmin = userEmail === ADMIN_BOOTSTRAP_EMAIL;
     const unsubs: Array<() => void> = [];
+    const loadedCollections = new Set<string>();
+    const REQUIRED_COLLECTIONS = ['staff', 'sauces', 'products', 'orders'];
 
     resolveOrBootstrapCloudWorkspace(firebaseUser)
       .then((wsInfo) => {
@@ -788,6 +902,7 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         setAuthorizedEmails(wsInfo.authorizedEmails);
         setAllowSelfRegistration(wsInfo.allowSelfRegistration);
         setCloudMemberRole(wsInfo.memberRole);
+        setCloudReadyForUid(firebaseUser.uid);
 
         // Listen to workspace doc for authorizedEmails updates
         const wsUnsub = onSnapshot(
@@ -859,14 +974,24 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           const unsub = onSnapshot(
             q,
             (snapshot) => {
+              if (cancelled) return;
               const items = snapshot.docs.map((d) => mapper(d.data()));
               if (sortDesc) {
                 items.sort((a, b) => (b.createdAtMs || 0) - (a.createdAtMs || 0));
               }
               setter(items);
-              setLoadingData(false);
+              if (subName === 'staff') {
+                setStaffLoaded(true);
+              }
+              loadedCollections.add(subName);
+              if (REQUIRED_COLLECTIONS.every((c) => loadedCollections.has(c))) {
+                setLoadingData(false);
+              }
             },
             (err) => {
+              setCloudError(err instanceof Error ? err.message : `Error al cargar ${subName}`);
+              setStaffLoaded(true);
+              setLoadingData(false);
               handleFirestoreError(err, OperationType.LIST, path);
             }
           );
@@ -1026,6 +1151,7 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       })
       .catch((err) => {
         setCloudError(err instanceof Error ? err.message : 'Error al conectar con Firestore');
+        setStaffLoaded(true);
         setLoadingData(false);
       });
 
@@ -1066,26 +1192,17 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     provider.setCustomParameters({ prompt: 'select_account' });
     const cred = await signInWithPopup(auth, provider);
     if (cred.user) {
-      safeRemoveStorage(DEMO_MODE_FLAG_KEY);
-      setSessionMode('cloud');
+      activateCloudSession(cred.user);
     }
-  }, []);
+  }, [activateCloudSession]);
 
   const signInWithEmail = useCallback(async (email: string, password: string) => {
     if (!auth) throw new Error('El inicio de sesión no está disponible.');
     const cred = await signInWithEmailAndPassword(auth, email.trim(), password);
-    if (cred.user && !cred.user.emailVerified) {
-      await sendEmailVerification(cred.user).catch(() => undefined);
-      await signOut(auth);
-      throw new Error(
-        'Tu correo aún no está verificado. Te reenviamos el enlace de verificación a tu bandeja.'
-      );
-    }
     if (cred.user) {
-      safeRemoveStorage(DEMO_MODE_FLAG_KEY);
-      setSessionMode('cloud');
+      activateCloudSession(cred.user);
     }
-  }, []);
+  }, [activateCloudSession]);
 
   const registerWithEmail = useCallback(async (name: string, email: string, password: string) => {
     if (!auth) throw new Error('El registro no está disponible.');
@@ -1094,10 +1211,10 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const cred = await createUserWithEmailAndPassword(auth, email.trim(), password);
     if (cred.user) {
       await updateProfile(cred.user, { displayName: cleanName }).catch(() => undefined);
-      await sendEmailVerification(cred.user);
-      await signOut(auth);
+      await cred.user.reload().catch(() => undefined);
+      activateCloudSession(auth.currentUser || cred.user);
     }
-  }, []);
+  }, [activateCloudSession]);
 
   const resetPassword = useCallback(async (email: string) => {
     if (!auth) throw new Error('La recuperación de contraseña no está disponible.');
@@ -1105,6 +1222,46 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     if (!cleanEmail) throw new Error('Ingresa tu correo electrónico.');
     await sendPasswordResetEmail(auth, cleanEmail);
   }, []);
+
+  const sendVerificationEmail = useCallback(async () => {
+    if (sessionMode === 'demo') {
+      return;
+    }
+    if (!auth || !auth.currentUser) {
+      throw new Error('Debes iniciar sesión para verificar tu correo.');
+    }
+    const cleanUrl =
+      typeof window !== 'undefined'
+        ? `${window.location.origin}${window.location.pathname}?verified=1`
+        : undefined;
+    await sendEmailVerification(
+      auth.currentUser,
+      cleanUrl
+        ? {
+            url: cleanUrl,
+            handleCodeInApp: false,
+          }
+        : undefined
+    );
+  }, [sessionMode]);
+
+  const refreshEmailVerification = useCallback(async (): Promise<boolean> => {
+    if (sessionMode === 'demo') {
+      const next = !isUnverifiedDemo;
+      setEmailVerifiedState(next);
+      return next;
+    }
+    if (!auth || !auth.currentUser) return false;
+    await auth.currentUser.reload();
+    await auth.currentUser.getIdToken(true).catch(() => undefined);
+    const verified = Boolean(auth.currentUser.emailVerified);
+    setFirebaseUser(auth.currentUser);
+    setEmailVerifiedState(verified);
+    if (verified) {
+      setVerificationNotice("¡Tu correo electrónico fue verificado exitosamente para O'NDE LUIGI!");
+    }
+    return verified;
+  }, [sessionMode, isUnverifiedDemo]);
 
   const signOutSession = useCallback(async () => {
     safeRemoveStorage(DEMO_MODE_FLAG_KEY);
@@ -1115,6 +1272,11 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setActiveWaiterIdState('');
     setSessionMode(null);
     setCloudError(null);
+    setCloudReadyForUid(null);
+    setStaffLoaded(false);
+    setLoadingData(false);
+    setEmailVerifiedState(false);
+    setVerificationNotice(null);
     setCloudMemberRole('mesero');
     setStaff([]);
     setSauces([]);
@@ -2338,7 +2500,7 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           role: 'mesero',
           active: true,
           linkedUid: actorUid,
-          linkedEmail: firebaseUser?.email || actorEmail,
+          linkedEmail: actorEmail || (firebaseUser?.email || '').toLowerCase(),
           ownerUid: effectiveOwnerUid,
           createdByUid: actorUid,
           allowedEmails: authorizedEmails,
@@ -2687,6 +2849,7 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     projectId: resolvedFirebaseConfig?.projectId || null,
     cloudError,
     loadingData,
+    identityReady,
 
     accountRole,
     isAdmin,
@@ -2706,6 +2869,10 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     myLinkedStaff,
     setActiveWaiterId,
 
+    emailVerified: sessionMode === 'demo' ? !isUnverifiedDemo : emailVerifiedState,
+    verificationNotice,
+    clearVerificationNotice,
+
     enterDemoMode,
     setDemoAccountRole,
     resetDemoData,
@@ -2713,6 +2880,8 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     signInWithEmail,
     registerWithEmail,
     resetPassword,
+    sendVerificationEmail,
+    refreshEmailVerification,
     signOutSession,
 
     createOrder,

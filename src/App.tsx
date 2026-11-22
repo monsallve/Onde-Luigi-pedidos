@@ -5,13 +5,16 @@ import {
   History,
   Image as ImageIcon,
   LogOut,
+  MailCheck,
   PlusCircle,
   Settings,
   UserCheck,
   UtensilsCrossed,
+  X,
 } from 'lucide-react';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { AuthGate } from './components/AuthGate';
+import { EmailVerificationModal } from './components/EmailVerificationModal';
 import { OfflineIndicator } from './components/OfflineIndicator';
 import { OrderComposerModal } from './components/OrderComposerModal';
 import { PaymentSheetModal } from './components/PaymentSheetModal';
@@ -22,6 +25,7 @@ import { WhatsAppReceiptViewer } from './components/WhatsAppReceiptViewer';
 import { PosProvider, usePosStore } from './services/posStore';
 import type { AppTab, Order } from './types/pos';
 import { resolveAssetUrl } from './utils/assetPath';
+import { shouldPromptPermanentRegistration } from './utils/identityState';
 import { isOrderInCourse } from './utils/orderMath';
 import { HistoryView } from './views/HistoryView';
 import { MenuManagerView } from './views/MenuManagerView';
@@ -52,10 +56,14 @@ const PosShell: React.FC = () => {
     sessionMode,
     authReady,
     loadingData,
+    identityReady,
     activeWaiter,
     myLinkedStaff,
     isAdmin,
     isPrimaryAdmin,
+    emailVerified,
+    verificationNotice,
+    clearVerificationNotice,
     orders,
     transfers,
     cloudError,
@@ -69,6 +77,7 @@ const PosShell: React.FC = () => {
   const [editingOrder, setEditingOrder] = useState<Order | null>(null);
   const [paymentOrder, setPaymentOrder] = useState<Order | null>(null);
   const [waiterModalOpen, setWaiterModalOpen] = useState(false);
+  const [verifyModalOpen, setVerifyModalOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [exitConfirmOpen, setExitConfirmOpen] = useState(false);
   const autoPromptedRef = useRef(false);
@@ -113,16 +122,25 @@ const PosShell: React.FC = () => {
   const modalStateRef = useRef({
     exitConfirmOpen: false,
     hasViewer: false,
+    verifyModalOpen: false,
     settingsOpen: false,
     waiterModalOpen: false,
     waiterModalRequired: false,
     hasPaymentOrder: false,
     composerOpen: false,
   });
-  const requiresOneTimeName = !isPrimaryAdmin && !myLinkedStaff && !loadingData && !cloudError;
+  const requiresOneTimeName = shouldPromptPermanentRegistration({
+    sessionMode,
+    identityReady,
+    loadingData,
+    cloudError,
+    isPrimaryAdmin,
+    myLinkedStaff,
+  });
   modalStateRef.current = {
     exitConfirmOpen,
     hasViewer: Boolean(viewerState),
+    verifyModalOpen,
     settingsOpen,
     waiterModalOpen,
     waiterModalRequired: requiresOneTimeName,
@@ -180,6 +198,11 @@ const PosShell: React.FC = () => {
         pushGuard();
         return;
       }
+      if (ms.verifyModalOpen) {
+        setVerifyModalOpen(false);
+        pushGuard();
+        return;
+      }
       if (ms.settingsOpen) {
         setSettingsOpen(false);
         pushGuard();
@@ -227,23 +250,26 @@ const PosShell: React.FC = () => {
     return () => window.removeEventListener('popstate', handlePopState);
   }, [sessionMode]);
 
-  // Auto-open WaiterSelectorModal once for newly registered users so they choose their permanent name
+  // Auto-open WaiterSelectorModal ONLY after identityReady confirms registered user has no permanent staff profile yet
   useEffect(() => {
     if (
-      sessionMode === 'cloud' &&
-      !loadingData &&
-      !cloudError &&
-      !isPrimaryAdmin &&
-      !myLinkedStaff &&
+      shouldPromptPermanentRegistration({
+        sessionMode,
+        identityReady,
+        loadingData,
+        cloudError,
+        isPrimaryAdmin,
+        myLinkedStaff,
+      }) &&
       !autoPromptedRef.current
     ) {
       autoPromptedRef.current = true;
       setWaiterModalOpen(true);
     }
-    if (!sessionMode || myLinkedStaff) {
+    if (!sessionMode || myLinkedStaff || !identityReady) {
       autoPromptedRef.current = false;
     }
-  }, [sessionMode, loadingData, cloudError, isPrimaryAdmin, myLinkedStaff]);
+  }, [sessionMode, identityReady, loadingData, cloudError, isPrimaryAdmin, myLinkedStaff]);
 
   const viewerReceipts = useMemo(() => {
     if (!viewerState) return [];
@@ -259,10 +285,28 @@ const PosShell: React.FC = () => {
     [orders]
   );
 
-  if (!authReady) {
+  if (!authReady || (sessionMode && !identityReady)) {
     return (
-      <div className="min-h-screen bg-[#0A0A0A] flex items-center justify-center p-6">
-        <div className="text-sm font-medium text-zinc-400">Cargando O&apos;NDE LUIGI...</div>
+      <div
+        className="min-h-screen bg-[#0A0A0A] text-white flex flex-col items-center justify-center p-6 gap-4"
+        role="status"
+        aria-live="polite"
+        aria-label="Verificando sesión y cargando datos"
+      >
+        <div
+          className="w-11 h-11 rounded-full border-4 border-[#27272E] border-t-amber-500 animate-spin"
+          aria-hidden="true"
+        />
+        <div className="text-center space-y-1">
+          <p className="font-poster text-xl font-extrabold tracking-wide text-white uppercase">
+            O&apos;NDE LUIGI
+          </p>
+          <p className="text-xs sm:text-sm font-medium text-zinc-400">
+            {!authReady
+              ? 'Iniciando sistema...'
+              : 'Verificando usuario, rol y datos del local...'}
+          </p>
+        </div>
       </div>
     );
   }
@@ -468,7 +512,47 @@ const PosShell: React.FC = () => {
           </div>
         )}
 
-        {!activeWaiter && (
+        {verificationNotice && (
+          <div
+            role="status"
+            className="mb-4 rounded-xl bg-emerald-950/60 border border-emerald-700 px-4 py-3 text-xs font-medium text-emerald-200 flex items-center justify-between gap-2.5"
+          >
+            <span>{verificationNotice}</span>
+            <button
+              type="button"
+              onClick={clearVerificationNotice}
+              aria-label="Cerrar aviso de verificación"
+              className="min-h-[32px] min-w-[32px] flex items-center justify-center rounded-lg text-emerald-300 hover:bg-emerald-900/40 shrink-0"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        )}
+
+        {!emailVerified && !cloudError && (isPrimaryAdmin || Boolean(myLinkedStaff)) && (
+          <div className="mb-4 rounded-2xl bg-[#141418] border border-amber-500/70 p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div className="flex items-start gap-2.5">
+              <MailCheck className="w-5 h-5 text-amber-400 shrink-0 mt-0.5" />
+              <div>
+                <p className="text-sm font-bold text-amber-400">
+                  Verifica tu correo electrónico en O&apos;NDE LUIGI
+                </p>
+                <p className="text-xs text-zinc-300">
+                  Tu nombre de usuario ya está configurado. Confirma tu correo para completar la verificación de tu cuenta.
+                </p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => setVerifyModalOpen(true)}
+              className="min-h-[40px] px-4 rounded-xl bg-amber-500 text-black text-xs font-bold hover:bg-amber-400 whitespace-nowrap shrink-0"
+            >
+              Verificar correo
+            </button>
+          </div>
+        )}
+
+        {!activeWaiter && !cloudError && (
           <div className="mb-4 rounded-2xl bg-[#141418] border border-amber-500/70 p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
             <div>
               <p className="text-sm font-bold text-amber-400">
@@ -583,11 +667,23 @@ const PosShell: React.FC = () => {
         open={waiterModalOpen}
         onClose={() => setWaiterModalOpen(false)}
         required={requiresOneTimeName}
+        onPermanentNameConfirmed={() => {
+          if (!emailVerified) {
+            setVerifyModalOpen(true);
+          }
+        }}
+        onOpenVerifyEmail={() => setVerifyModalOpen(true)}
+      />
+
+      <EmailVerificationModal
+        open={verifyModalOpen}
+        onClose={() => setVerifyModalOpen(false)}
       />
 
       <SettingsModal
         open={settingsOpen}
         onClose={() => setSettingsOpen(false)}
+        onOpenVerifyEmail={() => setVerifyModalOpen(true)}
       />
 
       {viewerState && viewerReceipts.length > 0 && (

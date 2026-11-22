@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Check, Lock, LogOut, Plus, Trash2, UserCheck, X } from 'lucide-react';
+import { Check, Lock, LogOut, MailCheck, Plus, Trash2, UserCheck, X } from 'lucide-react';
 import { ADMIN_BOOTSTRAP_EMAIL } from '../data/demoSeed';
 import { usePosStore } from '../services/posStore';
 import type { StaffRole } from '../types/pos';
@@ -8,6 +8,8 @@ interface Props {
   open: boolean;
   onClose: () => void;
   required?: boolean;
+  onPermanentNameConfirmed?: () => void;
+  onOpenVerifyEmail?: () => void;
 }
 
 const ROLE_LABELS: Record<StaffRole, string> = {
@@ -17,12 +19,19 @@ const ROLE_LABELS: Record<StaffRole, string> = {
   cocina: 'Cocina',
 };
 
-export const WaiterSelectorModal: React.FC<Props> = ({ open, onClose, required = false }) => {
+export const WaiterSelectorModal: React.FC<Props> = ({
+  open,
+  onClose,
+  required = false,
+  onPermanentNameConfirmed,
+  onOpenVerifyEmail,
+}) => {
   const {
     staff,
     activeWaiterId,
     myLinkedStaff,
     firebaseUser,
+    emailVerified,
     isPrimaryAdmin,
     setActiveWaiterId,
     saveStaffMember,
@@ -97,6 +106,9 @@ export const WaiterSelectorModal: React.FC<Props> = ({ open, onClose, required =
     try {
       await saveStaffMember(selfName, 'mesero');
       onClose();
+      if (!emailVerified) {
+        onPermanentNameConfirmed?.();
+      }
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : 'No se pudo guardar tu usuario.');
     } finally {
@@ -354,6 +366,20 @@ export const WaiterSelectorModal: React.FC<Props> = ({ open, onClose, required =
                   >
                     Continuar como {myLinkedStaff.name}
                   </button>
+
+                  {!emailVerified && onOpenVerifyEmail && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        onClose();
+                        onOpenVerifyEmail();
+                      }}
+                      className="w-full min-h-[42px] rounded-xl border border-amber-500/60 bg-[#141418] text-amber-300 text-xs font-bold hover:bg-[#1C1C22] flex items-center justify-center gap-1.5"
+                    >
+                      <MailCheck className="w-4 h-4" />
+                      <span>Verificar correo electrónico</span>
+                    </button>
+                  )}
                 </div>
               )}
 

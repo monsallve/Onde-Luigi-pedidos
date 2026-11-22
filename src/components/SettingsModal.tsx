@@ -1,19 +1,23 @@
 import React, { useState } from 'react';
-import { Cloud, Database, Lock, LogOut, MailPlus, Plus, RefreshCw, Shield, Trash2, Users, X } from 'lucide-react';
+import { Check, Cloud, Code2, Copy, Database, Lock, LogOut, MailCheck, MailPlus, Plus, RefreshCw, Shield, Trash2, Users, X } from 'lucide-react';
 import { usePosStore } from '../services/posStore';
 import { ADMIN_BOOTSTRAP_EMAIL } from '../data/demoSeed';
 import type { StaffRole } from '../types/pos';
+import { resolveAssetUrl } from '../utils/assetPath';
+import { buildBrandVerificationEmailHtml } from '../utils/verificationEmailTemplate';
 import { PWAInstallButton } from './PWAInstallBanner';
 
 interface Props {
   open: boolean;
   onClose: () => void;
+  onOpenVerifyEmail?: () => void;
 }
 
-export const SettingsModal: React.FC<Props> = ({ open, onClose }) => {
+export const SettingsModal: React.FC<Props> = ({ open, onClose, onOpenVerifyEmail }) => {
   const {
     sessionMode,
     firebaseUser,
+    emailVerified,
     configSource,
     accountRole,
     isAdmin,
@@ -42,8 +46,29 @@ export const SettingsModal: React.FC<Props> = ({ open, onClose }) => {
   const [savingStaff, setSavingStaff] = useState(false);
   const [staffError, setStaffError] = useState<string | null>(null);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  const [copiedHtml, setCopiedHtml] = useState(false);
 
   if (!open) return null;
+
+  const handleCopyBrandEmailHtml = async () => {
+    const logoAbsolute =
+      typeof window !== 'undefined'
+        ? new URL(resolveAssetUrl('/onde-luigi-logo.png'), window.location.href).toString()
+        : 'https://monsallve.github.io/Onde-Luigi-pedidos/onde-luigi-logo.png';
+    const html = buildBrandVerificationEmailHtml({
+      recipientName: 'Nombre del usuario',
+      recipientEmail: 'usuario@correo.com',
+      logoUrl: logoAbsolute,
+      actionUrl: '%LINK%',
+    });
+    try {
+      await navigator.clipboard.writeText(html);
+      setCopiedHtml(true);
+      window.setTimeout(() => setCopiedHtml(false), 2500);
+    } catch {
+      setCopiedHtml(false);
+    }
+  };
 
   const handleAddAuthorizedEmail = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -183,12 +208,37 @@ export const SettingsModal: React.FC<Props> = ({ open, onClose }) => {
                 </span>
               </div>
               {firebaseUser && (
-                <div className="flex items-center justify-between text-sm">
-                  <span className="text-zinc-400">Cuenta conectada</span>
-                  <span className="text-white font-medium truncate max-w-[220px]">
-                    {firebaseUser.email}
-                  </span>
-                </div>
+                <>
+                  <div className="flex items-center justify-between text-sm">
+                    <span className="text-zinc-400">Cuenta conectada</span>
+                    <span className="text-white font-medium truncate max-w-[220px]">
+                      {firebaseUser.email}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between text-sm">
+                    <span className="text-zinc-400">Estado del correo</span>
+                    {emailVerified ? (
+                      <span className="text-xs font-bold text-emerald-400">Verificado</span>
+                    ) : (
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs font-bold text-amber-400">Sin verificar</span>
+                        {onOpenVerifyEmail && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              onClose();
+                              onOpenVerifyEmail();
+                            }}
+                            className="min-h-[30px] px-2.5 rounded-lg bg-amber-500 text-black text-[11px] font-bold hover:bg-amber-400 inline-flex items-center gap-1"
+                          >
+                            <MailCheck className="w-3.5 h-3.5" />
+                            <span>Verificar</span>
+                          </button>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                </>
               )}
 
               {sessionMode === 'demo' && (
@@ -240,7 +290,7 @@ export const SettingsModal: React.FC<Props> = ({ open, onClose }) => {
                   </p>
                   <p className="text-[11px] text-zinc-400 mt-0.5">
                     {allowSelfRegistration
-                      ? 'Activo: cualquier mesero que entre con Google puede asociar su nombre (rol inicial Mesero).'
+                      ? 'Activo: cualquier mesero que entre con Google o correo puede asociar su nombre (rol inicial Mesero).'
                       : 'Cerrado: solo los correos agregados abajo pueden entrar.'}
                   </p>
                 </div>
@@ -321,6 +371,27 @@ export const SettingsModal: React.FC<Props> = ({ open, onClose }) => {
                     </div>
                   );
                 })}
+              </div>
+              <div className="rounded-xl border border-[#27272E] bg-[#0A0A0A] p-3.5 space-y-2">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <Code2 className="w-4 h-4 text-amber-400 shrink-0" />
+                    <p className="text-xs font-bold text-white truncate">
+                      Correo de verificación con logo (O&apos;NDE LUIGI)
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleCopyBrandEmailHtml}
+                    className="min-h-[34px] px-3 rounded-lg border border-[#27272E] bg-[#1C1C22] text-[11px] font-bold text-amber-400 hover:border-amber-500 flex items-center gap-1.5 shrink-0"
+                  >
+                    {copiedHtml ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+                    <span>{copiedHtml ? 'HTML copiado' : 'Copiar HTML'}</span>
+                  </button>
+                </div>
+                <p className="text-[11px] text-zinc-400 leading-relaxed">
+                  Plantilla HTML personalizada con el logo oficial de O&apos;NDE LUIGI para configurar remitente o SMTP corporativo en Firebase Authentication.
+                </p>
               </div>
             </section>
           )}
