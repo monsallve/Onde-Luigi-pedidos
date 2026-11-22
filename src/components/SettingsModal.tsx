@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Cloud, Database, LogOut, MailPlus, Plus, RefreshCw, Shield, Trash2, Users, X } from 'lucide-react';
+import { Cloud, Database, Lock, LogOut, MailPlus, Plus, RefreshCw, Shield, Trash2, Users, X } from 'lucide-react';
 import { usePosStore } from '../services/posStore';
 import { ADMIN_BOOTSTRAP_EMAIL } from '../data/demoSeed';
 import type { StaffRole } from '../types/pos';
@@ -17,6 +17,7 @@ export const SettingsModal: React.FC<Props> = ({ open, onClose }) => {
     configSource,
     accountRole,
     isAdmin,
+    isPrimaryAdmin,
     authorizedEmails,
     allowSelfRegistration,
     setDemoAccountRole,
@@ -160,7 +161,11 @@ export const SettingsModal: React.FC<Props> = ({ open, onClose }) => {
                       : 'bg-[#1C1C22] border border-[#27272E] text-zinc-200'
                   }`}
                 >
-                  {accountRole === 'admin' ? 'ADMINISTRADOR' : 'MESERO (SOLO PEDIDOS)'}
+                  {isPrimaryAdmin
+                    ? 'ADMINISTRADOR PRINCIPAL'
+                    : accountRole === 'admin'
+                      ? 'ADMINISTRADOR'
+                      : 'MESERO (SOLO PEDIDOS)'}
                 </span>
               </div>
               <div className="flex items-center justify-between text-sm">
@@ -220,12 +225,12 @@ export const SettingsModal: React.FC<Props> = ({ open, onClose }) => {
             </div>
           </section>
 
-          {/* Admin-only Authorized Waiter Emails & Open Link Registration */}
-          {isAdmin && (
+          {/* Primary-Admin-only Authorized Waiter Emails & Open Link Registration */}
+          {isPrimaryAdmin && (
             <section className="space-y-2.5">
               <h3 className="text-xs font-bold text-amber-400 uppercase tracking-wide flex items-center gap-1.5">
                 <Shield className="w-4 h-4" />
-                <span>Acceso de meseros (Cloud)</span>
+                <span>Acceso de equipo (Administrador principal)</span>
               </h3>
 
               <div className="rounded-xl border border-[#27272E] bg-[#0A0A0A] p-3.5 flex items-center justify-between gap-3">
@@ -333,7 +338,14 @@ export const SettingsModal: React.FC<Props> = ({ open, onClose }) => {
               </div>
             )}
 
-            {isAdmin && (
+            {!isPrimaryAdmin && (
+              <p className="text-[11px] text-zinc-400 flex items-center gap-1.5">
+                <Lock className="w-3.5 h-3.5 text-zinc-500 shrink-0" />
+                <span>Solamente el administrador principal puede cambiar los roles de los usuarios o administrar el equipo.</span>
+              </p>
+            )}
+
+            {isPrimaryAdmin && (
               <form onSubmit={handleAddStaff} className="flex flex-col sm:flex-row gap-2">
                 <input
                   type="text"
@@ -374,6 +386,10 @@ export const SettingsModal: React.FC<Props> = ({ open, onClose }) => {
               )}
               {staff.map((member) => {
                 const confirming = confirmDeleteId === member.id;
+                const isMainAdminRow =
+                  (member.linkedEmail || '').toLowerCase() === ADMIN_BOOTSTRAP_EMAIL ||
+                  (Boolean(member.linkedUid) && member.linkedUid === member.ownerUid);
+
                 return (
                   <div
                     key={member.id}
@@ -385,7 +401,7 @@ export const SettingsModal: React.FC<Props> = ({ open, onClose }) => {
                         {member.linkedEmail ? `Cuenta: ${member.linkedEmail}` : 'Creado por administrador'}
                       </p>
                     </div>
-                    {isAdmin ? (
+                    {isPrimaryAdmin && !isMainAdminRow ? (
                       <div className="flex items-center gap-1.5 shrink-0">
                         <select
                           aria-label={`Rol de ${member.name}`}
@@ -442,7 +458,9 @@ export const SettingsModal: React.FC<Props> = ({ open, onClose }) => {
                       </div>
                     ) : (
                       <div className="text-right text-xs">
-                        <span className="text-zinc-300 capitalize">{member.role}</span>
+                        <span className={isMainAdminRow ? 'text-amber-400 font-bold' : 'text-zinc-300 capitalize'}>
+                          {isMainAdminRow ? 'Admin Principal' : member.role}
+                        </span>
                         <span className="text-zinc-500 mx-1">·</span>
                         <span className="text-zinc-400">
                           {member.active ? 'Activo' : 'Inactivo'}

@@ -60,17 +60,23 @@ service cloud.firestore {
         getAfter(memberPath(workspaceId, request.auth.uid)).data.active == true;
     }
 
-    function isWorkspaceAdmin(workspaceId) {
+    function isPrimaryAdmin(workspaceId) {
       return isVerifiedUser() && (
         isBootstrappedAdmin() ||
-        (workspaceExists(workspaceId) && get(workspacePath(workspaceId)).data.ownerUid == request.auth.uid) ||
+        (workspaceExists(workspaceId) && get(workspacePath(workspaceId)).data.ownerUid == request.auth.uid)
+      );
+    }
+
+    function isWorkspaceAdmin(workspaceId) {
+      return isVerifiedUser() && (
+        isPrimaryAdmin(workspaceId) ||
         (isActiveWorkspaceMember(workspaceId) && get(memberPath(workspaceId, request.auth.uid)).data.role == 'admin')
       );
     }
 
     function isAuthorizedWorkspaceUser(workspaceId) {
       return isVerifiedUser() && (
-        isBootstrappedAdmin() ||
+        isPrimaryAdmin(workspaceId) ||
         isActiveWorkspaceMember(workspaceId) ||
         (workspaceExists(workspaceId) && (
           get(workspacePath(workspaceId)).data.ownerUid == request.auth.uid ||
@@ -258,17 +264,17 @@ service cloud.firestore {
         data.createdAt is timestamp;
     }
 
-    // 4. Workspaces & Admin-Gated Catalog vs Waiter Order Operations
+    // 4. Workspaces & Primary-Admin Role Control vs Admin Catalog/Records vs Waiter Operations
     match /workspaceDirectory/{workspaceId} {
       allow get: if isVerifiedUser() && isValidId(workspaceId);
       allow list: if false;
       allow create: if isVerifiedUser() && isValidId(workspaceId) &&
-        isWorkspaceAdmin(workspaceId) &&
+        isPrimaryAdmin(workspaceId) &&
         isValidWorkspaceDirectory(incoming(), workspaceId) &&
         incoming().ownerUid == getAfter(workspacePath(workspaceId)).data.ownerUid &&
         incoming().updatedAt == request.time;
       allow update: if isVerifiedUser() && isValidId(workspaceId) &&
-        isWorkspaceAdmin(workspaceId) &&
+        isPrimaryAdmin(workspaceId) &&
         isValidWorkspaceDirectory(incoming(), workspaceId) &&
         incoming().ownerUid == existing().ownerUid &&
         incoming().updatedAt == request.time &&
@@ -296,7 +302,7 @@ service cloud.firestore {
         incoming().ownerUid == request.auth.uid &&
         incoming().createdAt == request.time &&
         incoming().updatedAt == request.time;
-      allow update: if isWorkspaceAdmin(workspaceId) && isValidId(workspaceId) &&
+      allow update: if isPrimaryAdmin(workspaceId) && isValidId(workspaceId) &&
         isValidWorkspace(incoming(), workspaceId) &&
         incoming().ownerUid == existing().ownerUid &&
         incoming().createdAt == existing().createdAt &&
@@ -304,9 +310,10 @@ service cloud.firestore {
         incoming().diff(existing()).affectedKeys().hasOnly(['name', 'authorizedEmails', 'updatedAt']);
       allow delete: if false;
 
+      // ONLY PRIMARY ADMIN CAN CHANGE USER ROLES OR DELETE MEMBERS
       match /members/{uid} {
         allow get: if isVerifiedUser() && isValidId(uid) && (
-          uid == request.auth.uid || isWorkspaceAdmin(workspaceId)
+          uid == request.auth.uid || isPrimaryAdmin(workspaceId)
         );
         allow list: if isVerifiedUser() && (
           isBootstrappedAdmin() ||
@@ -318,7 +325,7 @@ service cloud.firestore {
           incoming().ownerUid == getAfter(workspacePath(workspaceId)).data.ownerUid &&
           incoming().createdAt == request.time &&
           (
-            isWorkspaceAdmin(workspaceId) ||
+            isPrimaryAdmin(workspaceId) ||
             (
               uid == request.auth.uid &&
               incoming().role == 'mesero' &&
@@ -329,15 +336,16 @@ service cloud.firestore {
               )
             )
           );
-        allow update: if isWorkspaceAdmin(workspaceId) && isValidId(uid) &&
+        allow update: if isPrimaryAdmin(workspaceId) && isValidId(uid) &&
           isValidWorkspaceMember(incoming(), uid) &&
           incoming().ownerUid == existing().ownerUid &&
           incoming().createdAt == existing().createdAt &&
+          (uid != existing().ownerUid || (incoming().role == 'admin' && incoming().active == true)) &&
           incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'role', 'active']);
-        allow delete: if isWorkspaceAdmin(workspaceId) && isValidId(uid);
+        allow delete: if isPrimaryAdmin(workspaceId) && isValidId(uid) && uid != existing().ownerUid;
       }
 
-      // ADMIN-CONTROLLED ROSTER + SELF-ASSOCIATED WAITER PROFILE
+      // ONE-TIME SELF NAME REGISTRATION (PERMANENT ONCE CHOSEN) + PRIMARY-ADMIN-ONLY ROLE UPDATES
       match /staff/{staffId} {
         allow get: if isValidId(staffId) && isAuthorizedWorkspaceUser(workspaceId);
         allow list: if canListWorkspaceSubcollection(workspaceId);
@@ -349,7 +357,7 @@ service cloud.firestore {
           incoming().createdAt == request.time &&
           incoming().updatedAt == request.time &&
           (
-            isWorkspaceAdmin(workspaceId) ||
+            isPrimaryAdmin(workspaceId) ||
             (
               staffId == 'staff_' + request.auth.uid &&
               incoming().role == 'mesero' &&
@@ -359,27 +367,18 @@ service cloud.firestore {
             )
           );
         allow update: if isValidId(staffId) &&
-          isAuthorizedWorkspaceUser(workspaceId) &&
+          isPrimaryAdmin(workspaceId) &&
           isValidStaffMember(incoming(), staffId) &&
           incoming().ownerUid == existing().ownerUid &&
           incoming().createdByUid == existing().createdByUid &&
           incoming().createdAt == existing().createdAt &&
           incoming().updatedAt == request.time &&
-          (
-            (
-              isWorkspaceAdmin(workspaceId) &&
-              incoming().diff(existing()).affectedKeys().hasOnly(['name', 'role', 'active', 'linkedUid', 'linkedEmail', 'allowedEmails', 'updatedAt'])
-            ) ||
-            (
-              existing().linkedUid == request.auth.uid &&
-              existing().active == true &&
-              incoming().diff(existing()).affectedKeys().hasOnly(['name', 'updatedAt'])
-            )
-          );
-        allow delete: if isValidId(staffId) && isWorkspaceAdmin(workspaceId);
+          (existing().linkedUid != existing().ownerUid || (incoming().role == 'admin' && incoming().active == true)) &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['name', 'role', 'active', 'linkedUid', 'linkedEmail', 'allowedEmails', 'updatedAt']);
+        allow delete: if isValidId(staffId) && isPrimaryAdmin(workspaceId) && existing().linkedUid != existing().ownerUid;
       }
 
-      // ADMIN-ONLY WRITE: Sauces Catalog
+      // ADMIN-ONLY WRITE (Primary + Promoted Admins): Sauces Catalog
       match /sauces/{sauceId} {
         allow get: if isValidId(sauceId) && isAuthorizedWorkspaceUser(workspaceId);
         allow list: if canListWorkspaceSubcollection(workspaceId);
@@ -399,7 +398,7 @@ service cloud.firestore {
         allow delete: if isValidId(sauceId) && isWorkspaceAdmin(workspaceId);
       }
 
-      // ADMIN-ONLY WRITE: Menu Products, Recipes & Drinks
+      // ADMIN-ONLY WRITE (Primary + Promoted Admins): Menu Products, Recipes & Drinks
       match /products/{productId} {
         allow get: if isValidId(productId) && isAuthorizedWorkspaceUser(workspaceId);
         allow list: if canListWorkspaceSubcollection(workspaceId);
@@ -419,7 +418,7 @@ service cloud.firestore {
         allow delete: if isValidId(productId) && isWorkspaceAdmin(workspaceId);
       }
 
-      // ADMIN + AUTHORIZED WAITERS: Orders
+      // ADMIN + AUTHORIZED WAITERS: Orders (Admins can permanently purge annulled orders)
       match /orders/{orderId} {
         allow get: if isValidId(orderId) && isAuthorizedWorkspaceUser(workspaceId);
         allow list: if canListWorkspaceSubcollection(workspaceId);

@@ -133,6 +133,7 @@ interface PosContextValue {
 
   accountRole: AccountRole;
   isAdmin: boolean;
+  isPrimaryAdmin: boolean;
   authorizedEmails: string[];
   allowSelfRegistration: boolean;
 
@@ -299,6 +300,11 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return 'admin';
   });
 
+  const isSecondaryAdminDemo = useMemo(() => {
+    if (typeof window === 'undefined') return false;
+    return new URLSearchParams(window.location.search).get('secondaryAdmin') === '1';
+  }, []);
+
   const [authReady, setAuthReady] = useState(!isFirebaseConfigured);
   const [firebaseUser, setFirebaseUser] = useState<User | null>(null);
   const [cloudError, setCloudError] = useState<string | null>(null);
@@ -338,48 +344,93 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     ? firebaseUser.uid
     : demoAccountRole === 'mesero'
       ? 'demo_waiter'
-      : 'demo_owner';
+      : isSecondaryAdminDemo
+        ? 'demo_secondary_admin'
+        : 'demo_owner';
   const actorEmail = firebaseUser
     ? (firebaseUser.email || '').toLowerCase()
     : demoAccountRole === 'mesero'
       ? 'mesero1@ondeluigi.com'
-      : ADMIN_BOOTSTRAP_EMAIL;
+      : isSecondaryAdminDemo
+        ? 'admin2@ondeluigi.com'
+        : ADMIN_BOOTSTRAP_EMAIL;
 
   const myLinkedStaff = useMemo(
-    () => staff.find((s) => s.linkedUid && s.linkedUid === actorUid) || null,
-    [staff, actorUid]
+    () =>
+      staff.find(
+        (s) =>
+          (s.linkedUid && s.linkedUid === actorUid) ||
+          (s.linkedEmail && actorEmail && s.linkedEmail.toLowerCase() === actorEmail)
+      ) || null,
+    [staff, actorUid, actorEmail]
   );
 
-  // Determine effective account role & actor identity
+  // Determine effective account role & primary admin authority
+  const isPrimaryAdmin = useMemo(() => {
+    if (sessionMode === 'demo') {
+      return demoAccountRole === 'admin' && !isSecondaryAdminDemo;
+    }
+    if (!firebaseUser) return false;
+    const userEmail = (firebaseUser.email || '').toLowerCase();
+    return userEmail === ADMIN_BOOTSTRAP_EMAIL || firebaseUser.uid === workspaceOwnerUid;
+  }, [sessionMode, demoAccountRole, isSecondaryAdminDemo, firebaseUser, workspaceOwnerUid]);
+
   const accountRole: AccountRole = useMemo(() => {
     if (sessionMode === 'demo') return demoAccountRole;
     if (!firebaseUser) return 'mesero';
-    const userEmail = (firebaseUser.email || '').toLowerCase();
     if (
-      userEmail === ADMIN_BOOTSTRAP_EMAIL ||
-      firebaseUser.uid === workspaceOwnerUid ||
+      isPrimaryAdmin ||
       cloudMemberRole === 'admin' ||
       myLinkedStaff?.role === 'admin'
     ) {
       return 'admin';
     }
     return 'mesero';
-  }, [sessionMode, demoAccountRole, firebaseUser, workspaceOwnerUid, cloudMemberRole, myLinkedStaff]);
+  }, [sessionMode, demoAccountRole, firebaseUser, isPrimaryAdmin, cloudMemberRole, myLinkedStaff]);
 
   const isAdmin = accountRole === 'admin';
 
+  // Registered users (waiters AND promoted admins) keep their permanent assigned name/role.
+  // Only the principal admin can optionally pick/switch staff or use their own profile.
   const activeWaiter = useMemo(() => {
-    if (!isAdmin) {
+    if (!isPrimaryAdmin) {
       return myLinkedStaff && myLinkedStaff.active ? myLinkedStaff : null;
     }
-    return staff.find((s) => s.id === activeWaiterId && s.active) || null;
-  }, [isAdmin, myLinkedStaff, staff, activeWaiterId]);
+    return (
+      staff.find((s) => s.id === activeWaiterId && s.active) ||
+      (myLinkedStaff && myLinkedStaff.active ? myLinkedStaff : null) ||
+      null
+    );
+  }, [isPrimaryAdmin, myLinkedStaff, staff, activeWaiterId]);
 
-  // Auto-select linked profile (or first active waiter on ?autostart=1)
+  // Ensure demo secondary admin test profile exists when ?secondaryAdmin=1 is used
+  useEffect(() => {
+    if (sessionMode !== 'demo' || !isSecondaryAdminDemo) return;
+    if (staff.some((s) => s.linkedUid === 'demo_secondary_admin')) return;
+    const now = Date.now();
+    setStaff((prev) => [
+      ...prev,
+      {
+        id: 'staff_demo_secondary_admin',
+        name: 'Carla Admin Secundaria',
+        role: 'admin',
+        active: true,
+        linkedUid: 'demo_secondary_admin',
+        linkedEmail: 'admin2@ondeluigi.com',
+        ownerUid: 'demo_owner',
+        createdByUid: 'demo_owner',
+        allowedEmails: [ADMIN_BOOTSTRAP_EMAIL, 'admin2@ondeluigi.com'],
+        createdAtMs: now,
+        updatedAtMs: now,
+      },
+    ]);
+  }, [sessionMode, isSecondaryAdminDemo, staff]);
+
+  // Auto-select permanent linked profile for registered users (or first active admin on ?autostart=1)
   useEffect(() => {
     if (staff.length === 0) return;
 
-    if (!isAdmin) {
+    if (!isPrimaryAdmin) {
       if (myLinkedStaff && myLinkedStaff.active && activeWaiterId !== myLinkedStaff.id) {
         setActiveWaiterId(myLinkedStaff.id);
       }
@@ -402,7 +453,7 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         }
       }
     }
-  }, [isAdmin, myLinkedStaff, activeWaiter, activeWaiterId, staff, setActiveWaiterId]);
+  }, [isPrimaryAdmin, myLinkedStaff, activeWaiter, activeWaiterId, staff, setActiveWaiterId]);
 
   // Monitor Firebase Auth + test connection
   useEffect(() => {
@@ -1057,9 +1108,11 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const signOutSession = useCallback(async () => {
     safeRemoveStorage(DEMO_MODE_FLAG_KEY);
+    safeRemoveStorage(ACTIVE_WAITER_STORAGE_KEY);
     if (auth && firebaseUser) {
       await signOut(auth);
     }
+    setActiveWaiterIdState('');
     setSessionMode(null);
     setCloudError(null);
     setCloudMemberRole('mesero');
@@ -1073,16 +1126,22 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const requireWaiter = useCallback((): StaffMember => {
     if (!activeWaiter) {
-      throw new Error('Debes seleccionar tu nombre de mesero o encargado antes de registrar o editar pedidos.');
+      throw new Error('Debes elegir tu nombre antes de registrar o editar pedidos.');
     }
     return activeWaiter;
   }, [activeWaiter]);
 
   const requireAdmin = useCallback(() => {
     if (!isAdmin) {
-      throw new Error('Acceso restringido: solo la cuenta Administradora puede editar recetas, productos, salsas o equipo.');
+      throw new Error('Acceso restringido: solo la cuenta Administradora puede realizar esta acción.');
     }
   }, [isAdmin]);
+
+  const requirePrimaryAdmin = useCallback(() => {
+    if (!isPrimaryAdmin) {
+      throw new Error('Solo el administrador principal puede cambiar roles o administrar el equipo.');
+    }
+  }, [isPrimaryAdmin]);
 
   const syncDemoMutation = useCallback(
     (updater: (prev: DemoStatePayload) => DemoStatePayload) => {
@@ -2258,34 +2317,19 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       if (!cleanName) throw new Error('Escribe el nombre del integrante del equipo.');
       const now = Date.now();
 
-      // Non-admin accounts can ONLY associate/create their own deterministic profile locked to 'mesero'
-      if (!isAdmin) {
+      // Non-primary accounts can ONLY register their own permanent name ONCE (role locked to 'mesero')
+      if (!isPrimaryAdmin) {
         const ownId = `staff_${actorUid}`;
-        const existingOwn = staff.find((s) => s.id === ownId || s.linkedUid === actorUid);
+        const existingOwn = staff.find(
+          (s) =>
+            s.id === ownId ||
+            s.linkedUid === actorUid ||
+            (s.linkedEmail && actorEmail && s.linkedEmail.toLowerCase() === actorEmail)
+        );
         if (existingOwn) {
-          if (!existingOwn.active) {
-            throw new Error('Tu usuario fue desactivado por el administrador.');
-          }
-          if (sessionMode === 'cloud' && db && firebaseUser) {
-            const path = `workspaces/${workspaceId}/staff/${existingOwn.id}`;
-            try {
-              await updateDoc(doc(db, path), {
-                name: cleanName,
-                updatedAt: serverTimestamp(),
-              });
-            } catch (err) {
-              handleFirestoreError(err, OperationType.UPDATE, path);
-            }
-          } else {
-            syncDemoMutation((prev) => ({
-              ...prev,
-              staff: prev.staff.map((s) =>
-                s.id === existingOwn.id ? { ...s, name: cleanName, updatedAtMs: now } : s
-              ),
-            }));
-          }
-          setActiveWaiterId(existingOwn.id);
-          return;
+          throw new Error(
+            'Tu nombre y rol ya están asignados permanentemente. Solo el administrador principal puede modificarlos.'
+          );
         }
 
         const selfMember: StaffMember = {
@@ -2323,7 +2367,7 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         return;
       }
 
-      // Admin creating a new staff member (any role)
+      // Primary Admin creating a new staff member (any role)
       const id = createSafeId('staff');
       const member: StaffMember = {
         id,
@@ -2359,7 +2403,7 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       setActiveWaiterId(id);
     },
     [
-      isAdmin,
+      isPrimaryAdmin,
       staff,
       effectiveOwnerUid,
       actorUid,
@@ -2375,8 +2419,16 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const updateStaffRole = useCallback(
     async (staffId: string, role: StaffRole) => {
-      requireAdmin();
+      requirePrimaryAdmin();
       const target = staff.find((s) => s.id === staffId);
+      if (
+        target &&
+        ((target.linkedEmail || '').toLowerCase() === ADMIN_BOOTSTRAP_EMAIL ||
+          (target.linkedUid && target.linkedUid === effectiveOwnerUid))
+      ) {
+        throw new Error('No puedes cambiar ni degradar el rol del administrador principal.');
+      }
+
       const now = Date.now();
       if (sessionMode === 'cloud' && db && firebaseUser) {
         const path = `workspaces/${workspaceId}/staff/${staffId}`;
@@ -2408,36 +2460,26 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         }));
       }
     },
-    [requireAdmin, staff, effectiveOwnerUid, sessionMode, workspaceId, firebaseUser, syncDemoMutation]
+    [requirePrimaryAdmin, staff, effectiveOwnerUid, sessionMode, workspaceId, firebaseUser, syncDemoMutation]
   );
 
   const renameStaffMember = useCallback(
     async (staffId: string, name: string) => {
+      requirePrimaryAdmin();
       const cleanName = name.trim().slice(0, 80);
       if (!cleanName) throw new Error('Escribe un nombre válido.');
       const target = staff.find((s) => s.id === staffId);
       if (!target) throw new Error('Usuario no encontrado.');
-      if (!isAdmin && target.linkedUid !== actorUid) {
-        throw new Error('Solo puedes editar el nombre de tu propio usuario.');
-      }
       const now = Date.now();
       if (sessionMode === 'cloud' && db && firebaseUser) {
         const path = `workspaces/${workspaceId}/staff/${staffId}`;
         try {
-          await updateDoc(
-            doc(db, path),
-            isAdmin
-              ? {
-                  name: cleanName,
-                  linkedUid: target.linkedUid || '',
-                  linkedEmail: target.linkedEmail || '',
-                  updatedAt: serverTimestamp(),
-                }
-              : {
-                  name: cleanName,
-                  updatedAt: serverTimestamp(),
-                }
-          );
+          await updateDoc(doc(db, path), {
+            name: cleanName,
+            linkedUid: target.linkedUid || '',
+            linkedEmail: target.linkedEmail || '',
+            updatedAt: serverTimestamp(),
+          });
         } catch (err) {
           handleFirestoreError(err, OperationType.UPDATE, path);
         }
@@ -2450,13 +2492,22 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         }));
       }
     },
-    [staff, isAdmin, actorUid, sessionMode, workspaceId, firebaseUser, syncDemoMutation]
+    [requirePrimaryAdmin, staff, sessionMode, workspaceId, firebaseUser, syncDemoMutation]
   );
 
   const toggleStaffActive = useCallback(
     async (staffId: string, active: boolean) => {
-      requireAdmin();
+      requirePrimaryAdmin();
       const target = staff.find((s) => s.id === staffId);
+      if (
+        !active &&
+        target &&
+        ((target.linkedEmail || '').toLowerCase() === ADMIN_BOOTSTRAP_EMAIL ||
+          (target.linkedUid && target.linkedUid === effectiveOwnerUid))
+      ) {
+        throw new Error('No puedes desactivar la cuenta del administrador principal.');
+      }
+
       const now = Date.now();
       if (sessionMode === 'cloud' && db && firebaseUser) {
         const path = `workspaces/${workspaceId}/staff/${staffId}`;
@@ -2486,13 +2537,21 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         }));
       }
     },
-    [requireAdmin, staff, effectiveOwnerUid, sessionMode, workspaceId, firebaseUser, syncDemoMutation]
+    [requirePrimaryAdmin, staff, effectiveOwnerUid, sessionMode, workspaceId, firebaseUser, syncDemoMutation]
   );
 
   const deleteStaffMember = useCallback(
     async (staffId: string) => {
-      requireAdmin();
+      requirePrimaryAdmin();
       const target = staff.find((s) => s.id === staffId);
+      if (
+        target &&
+        ((target.linkedEmail || '').toLowerCase() === ADMIN_BOOTSTRAP_EMAIL ||
+          (target.linkedUid && target.linkedUid === effectiveOwnerUid))
+      ) {
+        throw new Error('No puedes eliminar al administrador principal.');
+      }
+
       if (sessionMode === 'cloud' && db && firebaseUser) {
         const path = `workspaces/${workspaceId}/staff/${staffId}`;
         try {
@@ -2519,7 +2578,7 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       }
     },
     [
-      requireAdmin,
+      requirePrimaryAdmin,
       sessionMode,
       workspaceId,
       firebaseUser,
@@ -2533,7 +2592,7 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const updateAuthorizedEmails = useCallback(
     async (emails: string[]) => {
-      requireAdmin();
+      requirePrimaryAdmin();
       const cleanList = Array.from(
         new Set(
           [ADMIN_BOOTSTRAP_EMAIL, ...emails]
@@ -2583,12 +2642,12 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         }));
       }
     },
-    [requireAdmin, sessionMode, workspaceId, firebaseUser, effectiveOwnerUid, syncDemoMutation]
+    [requirePrimaryAdmin, sessionMode, workspaceId, firebaseUser, effectiveOwnerUid, syncDemoMutation]
   );
 
   const updateAllowSelfRegistration = useCallback(
     async (allow: boolean) => {
-      requireAdmin();
+      requirePrimaryAdmin();
       if (sessionMode === 'cloud' && db && firebaseUser) {
         const dirPath = `workspaceDirectory/${workspaceId}`;
         try {
@@ -2616,7 +2675,7 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         setAllowSelfRegistration(allow);
       }
     },
-    [requireAdmin, sessionMode, workspaceId, firebaseUser, effectiveOwnerUid]
+    [requirePrimaryAdmin, sessionMode, workspaceId, firebaseUser, effectiveOwnerUid]
   );
 
   const value: PosContextValue = {
@@ -2631,6 +2690,7 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     accountRole,
     isAdmin,
+    isPrimaryAdmin,
     authorizedEmails,
     allowSelfRegistration,
 

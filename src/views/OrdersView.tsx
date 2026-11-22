@@ -1,5 +1,6 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
+  AlertTriangle,
   ArrowRight,
   Ban,
   CheckCircle2,
@@ -10,6 +11,8 @@ import {
   Image as ImageIcon,
   Plus,
   Search,
+  Trash2,
+  X,
   XCircle,
 } from 'lucide-react';
 import { usePosStore } from '../services/posStore';
@@ -73,13 +76,39 @@ export const OrdersView: React.FC<Props> = ({
   onViewOrderReceipt,
   onOpenWaiterPicker,
 }) => {
-  const { orders, activeWaiter, updateOrderStatus, loadingData } = usePosStore();
+  const {
+    orders,
+    activeWaiter,
+    isAdmin,
+    updateOrderStatus,
+    voidOrder,
+    deleteOrderRecord,
+    loadingData,
+  } = usePosStore();
 
   const [statusFilter, setStatusFilter] = useState<'activos' | 'todos' | OrderStatus>('activos');
   const [paymentFilter, setPaymentFilter] = useState<'todos' | 'pendiente' | 'pagado'>('todos');
   const [searchQuery, setSearchQuery] = useState('');
   const [busyOrderId, setBusyOrderId] = useState<string | null>(null);
   const [confirmCancelId, setConfirmCancelId] = useState<string | null>(null);
+
+  const [deleteTarget, setDeleteTarget] = useState<Order | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const handleBackIntercept = (e: Event) => {
+      if (deleteTarget) {
+        e.preventDefault();
+        if (!deleting) {
+          setDeleteTarget(null);
+          setDeleteError(null);
+        }
+      }
+    };
+    window.addEventListener('ondeluigi:back-intercept', handleBackIntercept);
+    return () => window.removeEventListener('ondeluigi:back-intercept', handleBackIntercept);
+  }, [deleteTarget, deleting]);
 
   const counts = useMemo(() => {
     const active = orders.filter(isOrderInCourse).length;
@@ -119,10 +148,28 @@ export const OrdersView: React.FC<Props> = ({
     }
     setBusyOrderId(orderId);
     try {
-      await updateOrderStatus(orderId, nextStatus);
+      if (nextStatus === 'cancelado') {
+        await voidOrder(orderId);
+      } else {
+        await updateOrderStatus(orderId, nextStatus);
+      }
       setConfirmCancelId(null);
     } finally {
       setBusyOrderId(null);
+    }
+  };
+
+  const handleConfirmHardDelete = async () => {
+    if (!deleteTarget) return;
+    setDeleting(true);
+    setDeleteError(null);
+    try {
+      await deleteOrderRecord(deleteTarget.id);
+      setDeleteTarget(null);
+    } catch (err) {
+      setDeleteError(err instanceof Error ? err.message : 'No se pudo eliminar la comanda.');
+    } finally {
+      setDeleting(false);
     }
   };
 
@@ -244,11 +291,14 @@ export const OrdersView: React.FC<Props> = ({
             const badge = STATUS_BADGE[order.status];
             const nextStatus = getNextStatus(order.status);
             const isBusy = busyOrderId === order.id;
+            const isVoided = order.status === 'cancelado';
 
             return (
               <article
                 key={order.id}
-                className="bg-[#141418] border border-[#27272E] rounded-2xl p-4 flex flex-col justify-between gap-4"
+                className={`bg-[#141418] border rounded-2xl p-4 flex flex-col justify-between gap-4 ${
+                  isVoided ? 'border-red-900/70' : 'border-[#27272E]'
+                }`}
               >
                 <div className="space-y-3">
                   {/* Card Top */}
@@ -276,19 +326,33 @@ export const OrdersView: React.FC<Props> = ({
                       </span>
                       <span
                         className={`text-xs font-bold ${
-                          order.paymentStatus === 'pagado'
-                            ? 'text-emerald-400'
-                            : 'text-amber-400'
+                          isVoided
+                            ? 'text-red-400'
+                            : order.paymentStatus === 'pagado'
+                              ? 'text-emerald-400'
+                              : 'text-amber-400'
                         }`}
                       >
-                        {order.paymentStatus === 'pagado'
-                          ? `Pagado · ${PAYMENT_METHOD_LABELS[order.paymentMethod]}`
-                          : order.status === 'entregado'
-                            ? 'Por cobrar (Entregado)'
-                            : 'Por cobrar'}
+                        {isVoided
+                          ? 'Venta anulada'
+                          : order.paymentStatus === 'pagado'
+                            ? `Pagado · ${PAYMENT_METHOD_LABELS[order.paymentMethod]}`
+                            : order.status === 'entregado'
+                              ? 'Por cobrar (Entregado)'
+                              : 'Por cobrar'}
                       </span>
                     </div>
                   </div>
+
+                  {isVoided && (order.voidedByName || order.voidReason) && (
+                    <div className="rounded-lg bg-red-950/40 border border-red-900/60 px-2.5 py-1.5 text-xs text-red-200 flex items-start gap-1.5">
+                      <Ban className="w-3.5 h-3.5 text-red-400 shrink-0 mt-0.5" />
+                      <span>
+                        Anulada{order.voidedByName ? ` por ${order.voidedByName}` : ''}
+                        {order.voidReason ? ` · ${order.voidReason}` : ''}
+                      </span>
+                    </div>
+                  )}
 
                   {/* Items List */}
                   <ul className="divide-y divide-[#27272E] border-t border-b border-[#27272E] py-1.5 space-y-1.5">
@@ -326,35 +390,40 @@ export const OrdersView: React.FC<Props> = ({
                 <div className="space-y-2.5 pt-1">
                   <div className="flex items-center justify-between">
                     <span className="text-xs font-medium text-zinc-400">Total comanda</span>
-                    <span className="font-mono text-lg font-extrabold text-amber-400 tabular-nums">
+                    <span
+                      className={`font-mono text-lg font-extrabold tabular-nums ${
+                        isVoided ? 'text-red-400 line-through' : 'text-amber-400'
+                      }`}
+                    >
                       {formatCurrency(order.total)}
                     </span>
                   </div>
 
-                  <div className="grid grid-cols-2 gap-2">
-                    <button
-                      type="button"
-                      onClick={() => onEditOrder(order)}
-                      disabled={order.status === 'cancelado'}
-                      className="min-h-[42px] px-3 rounded-xl border border-[#27272E] bg-[#1C1C22] text-xs font-semibold text-zinc-200 hover:border-zinc-500 disabled:opacity-45 flex items-center justify-center gap-1.5"
-                    >
-                      <Edit3 className="w-3.5 h-3.5" />
-                      <span>Editar</span>
-                    </button>
+                  {!isVoided && (
+                    <div className="grid grid-cols-2 gap-2">
+                      <button
+                        type="button"
+                        onClick={() => onEditOrder(order)}
+                        className="min-h-[42px] px-3 rounded-xl border border-[#27272E] bg-[#1C1C22] text-xs font-semibold text-zinc-200 hover:border-zinc-500 flex items-center justify-center gap-1.5"
+                      >
+                        <Edit3 className="w-3.5 h-3.5" />
+                        <span>Editar</span>
+                      </button>
 
-                    <button
-                      type="button"
-                      onClick={() => onOpenPayment(order)}
-                      className={`min-h-[42px] px-3 rounded-xl border text-xs font-bold flex items-center justify-center gap-1.5 transition-colors ${
-                        order.paymentStatus === 'pagado'
-                          ? 'border-emerald-700 bg-emerald-950/60 text-emerald-300 hover:bg-emerald-950'
-                          : 'border-amber-400 bg-amber-500 text-black hover:bg-amber-400'
-                      }`}
-                    >
-                      <CreditCard className="w-3.5 h-3.5" />
-                      <span>{order.paymentStatus === 'pagado' ? 'Pago / Foto' : 'Confirmar pago'}</span>
-                    </button>
-                  </div>
+                      <button
+                        type="button"
+                        onClick={() => onOpenPayment(order)}
+                        className={`min-h-[42px] px-3 rounded-xl border text-xs font-bold flex items-center justify-center gap-1.5 transition-colors ${
+                          order.paymentStatus === 'pagado'
+                            ? 'border-emerald-700 bg-emerald-950/60 text-emerald-300 hover:bg-emerald-950'
+                            : 'border-amber-400 bg-amber-500 text-black hover:bg-amber-400'
+                        }`}
+                      >
+                        <CreditCard className="w-3.5 h-3.5" />
+                        <span>{order.paymentStatus === 'pagado' ? 'Pago / Foto' : 'Confirmar pago'}</span>
+                      </button>
+                    </div>
+                  )}
 
                   <div className="flex items-center gap-2">
                     {nextStatus && (
@@ -369,7 +438,7 @@ export const OrdersView: React.FC<Props> = ({
                       </button>
                     )}
 
-                    {order.status !== 'cancelado' && order.status !== 'entregado' && (
+                    {!isVoided && order.status !== 'entregado' && (
                       confirmCancelId === order.id ? (
                         <button
                           type="button"
@@ -393,6 +462,21 @@ export const OrdersView: React.FC<Props> = ({
                       )
                     )}
 
+                    {isVoided && isAdmin && (
+                      <button
+                        type="button"
+                        aria-label={`Eliminar comanda anulada #${order.orderNumber}`}
+                        onClick={() => {
+                          setDeleteError(null);
+                          setDeleteTarget(order);
+                        }}
+                        className="flex-1 min-h-[42px] px-3 rounded-xl border border-red-800 bg-red-950/50 text-red-200 text-xs font-bold hover:bg-red-950 flex items-center justify-center gap-1.5"
+                      >
+                        <Trash2 className="w-3.5 h-3.5 text-red-400" />
+                        <span>Eliminar rastro</span>
+                      </button>
+                    )}
+
                     {order.receiptCount > 0 && (
                       <button
                         type="button"
@@ -410,6 +494,72 @@ export const OrdersView: React.FC<Props> = ({
           })}
         </div>
       )}
+
+      {/* Permanent Delete Modal for Annulled Comandas (Admin Only) */}
+      {deleteTarget && isAdmin && (
+        <div
+          className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/75 backdrop-blur-sm sm:p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="delete-comanda-modal-title"
+        >
+          <div className="w-full sm:max-w-md bg-[#141418] text-white rounded-t-3xl sm:rounded-2xl border border-[#27272E] shadow-2xl overflow-hidden">
+            <div className="px-5 py-4 border-b border-[#27272E] flex items-center justify-between bg-[#101014]">
+              <div className="flex items-center gap-2">
+                <AlertTriangle className="w-5 h-5 text-red-400 shrink-0" />
+                <h2 id="delete-comanda-modal-title" className="font-poster text-xl font-extrabold tracking-wide uppercase">
+                  ELIMINAR COMANDA ANULADA
+                </h2>
+              </div>
+              <button
+                type="button"
+                disabled={deleting}
+                onClick={() => setDeleteTarget(null)}
+                aria-label="Cerrar"
+                className="min-h-[44px] min-w-[44px] flex items-center justify-center rounded-xl text-zinc-400 hover:bg-[#1C1C22]"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="p-5 space-y-4">
+              {deleteError && (
+                <div className="rounded-xl bg-red-950/60 border border-red-700 px-3 py-2 text-xs font-medium text-red-200">
+                  {deleteError}
+                </div>
+              )}
+
+              <p className="text-sm text-zinc-200 leading-relaxed">
+                ¿Eliminar por completo la comanda anulada{' '}
+                <strong className="text-amber-400">
+                  #{deleteTarget.orderNumber} ({deleteTarget.reference})
+                </strong>{' '}
+                junto con toda su bitácora y comprobantes? Esta acción es permanente.
+              </p>
+
+              <div className="grid grid-cols-2 gap-2.5">
+                <button
+                  type="button"
+                  disabled={deleting}
+                  onClick={() => setDeleteTarget(null)}
+                  className="min-h-[44px] rounded-xl border border-[#27272E] bg-[#1C1C22] text-sm font-semibold text-zinc-200 hover:border-zinc-500"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="button"
+                  disabled={deleting}
+                  onClick={handleConfirmHardDelete}
+                  className="min-h-[44px] rounded-xl bg-red-600 text-white text-sm font-bold hover:bg-red-500 disabled:opacity-50"
+                >
+                  {deleting ? 'Eliminando...' : 'Eliminar rastro'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
+

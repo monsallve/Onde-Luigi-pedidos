@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
-import { Check, Edit2, Lock, Plus, Trash2, UserCheck, X } from 'lucide-react';
+import { Check, Lock, LogOut, Plus, Trash2, UserCheck, X } from 'lucide-react';
+import { ADMIN_BOOTSTRAP_EMAIL } from '../data/demoSeed';
 import { usePosStore } from '../services/posStore';
 import type { StaffRole } from '../types/pos';
 
@@ -22,12 +23,12 @@ export const WaiterSelectorModal: React.FC<Props> = ({ open, onClose, required =
     activeWaiterId,
     myLinkedStaff,
     firebaseUser,
+    isPrimaryAdmin,
     setActiveWaiterId,
     saveStaffMember,
     updateStaffRole,
-    renameStaffMember,
     deleteStaffMember,
-    isAdmin,
+    signOutSession,
   } = usePosStore();
 
   const [showAdd, setShowAdd] = useState(false);
@@ -37,25 +38,23 @@ export const WaiterSelectorModal: React.FC<Props> = ({ open, onClose, required =
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
 
-  // Self-association / rename state for non-admin accounts
+  // One-time permanent name selection for registered users
   const [selfName, setSelfName] = useState('');
-  const [editingSelfName, setEditingSelfName] = useState(false);
 
   useEffect(() => {
     if (!open) {
       setConfirmDeleteId(null);
       setErrorMsg(null);
-      setEditingSelfName(false);
       return;
     }
-    if (!isAdmin) {
+    if (!isPrimaryAdmin) {
       if (myLinkedStaff) {
         setSelfName(myLinkedStaff.name);
       } else {
         setSelfName(firebaseUser?.displayName || '');
       }
     }
-  }, [open, isAdmin, myLinkedStaff, firebaseUser]);
+  }, [open, isPrimaryAdmin, myLinkedStaff, firebaseUser]);
 
   if (!open) return null;
 
@@ -66,7 +65,7 @@ export const WaiterSelectorModal: React.FC<Props> = ({ open, onClose, required =
     onClose();
   };
 
-  const handleAdminAdd = async (e: React.FormEvent) => {
+  const handlePrimaryAdminAdd = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newName.trim()) {
       setErrorMsg('Escribe el nombre del mesero o encargado.');
@@ -87,22 +86,16 @@ export const WaiterSelectorModal: React.FC<Props> = ({ open, onClose, required =
     }
   };
 
-  const handleSelfAssociateOrRename = async (e: React.FormEvent) => {
+  const handleOneTimeAssociate = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!selfName.trim()) {
-      setErrorMsg('Escribe el nombre con el que quieres aparecer en los pedidos.');
+      setErrorMsg('Escribe el nombre permanente con el que aparecerás en el sistema.');
       return;
     }
     setSaving(true);
     setErrorMsg(null);
     try {
-      if (myLinkedStaff) {
-        await renameStaffMember(myLinkedStaff.id, selfName);
-        setActiveWaiterId(myLinkedStaff.id);
-        setEditingSelfName(false);
-      } else {
-        await saveStaffMember(selfName, 'mesero');
-      }
+      await saveStaffMember(selfName, 'mesero');
       onClose();
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : 'No se pudo guardar tu usuario.');
@@ -146,12 +139,12 @@ export const WaiterSelectorModal: React.FC<Props> = ({ open, onClose, required =
             <UserCheck className="w-5 h-5 text-amber-400 shrink-0" />
             <div>
               <h2 id="waiter-modal-title" className="font-poster text-xl font-extrabold text-white tracking-wide">
-                {isAdmin ? '¿QUIÉN ATIENDE ESTE TURNO?' : 'MI USUARIO DE TURNO'}
+                {isPrimaryAdmin ? '¿QUIÉN ATIENDE ESTE TURNO?' : 'MI PERFIL PERMANENTE'}
               </h2>
               <p className="text-xs text-zinc-400">
-                {isAdmin
-                  ? 'Selecciona el mesero en turno o gestiona nombres y roles.'
-                  : 'Asocia tu cuenta con tu nombre. Tu rol inicial siempre es Mesero.'}
+                {isPrimaryAdmin
+                  ? 'Administrador principal: selecciona turno o cambia los roles de los usuarios.'
+                  : 'Tu nombre y rol quedan asignados permanentemente a este correo.'}
               </p>
             </div>
           </div>
@@ -174,7 +167,7 @@ export const WaiterSelectorModal: React.FC<Props> = ({ open, onClose, required =
             </div>
           )}
 
-          {isAdmin ? (
+          {isPrimaryAdmin ? (
             <>
               <div className="space-y-2">
                 {activeStaff.length === 0 && (
@@ -185,6 +178,10 @@ export const WaiterSelectorModal: React.FC<Props> = ({ open, onClose, required =
                 {activeStaff.map((member) => {
                   const selected = member.id === activeWaiterId;
                   const confirmingDelete = confirmDeleteId === member.id;
+                  const isMainAdminRow =
+                    (member.linkedEmail || '').toLowerCase() === ADMIN_BOOTSTRAP_EMAIL ||
+                    (Boolean(member.linkedUid) && member.linkedUid === member.ownerUid);
+
                   return (
                     <div
                       key={member.id}
@@ -203,55 +200,61 @@ export const WaiterSelectorModal: React.FC<Props> = ({ open, onClose, required =
                           <div className="min-w-0 flex-1">
                             <p className="text-sm font-bold text-white truncate">{member.name}</p>
                             <p className="text-[11px] text-zinc-400 truncate">
-                              {ROLE_LABELS[member.role]}
+                              {isMainAdminRow ? 'Administrador principal' : ROLE_LABELS[member.role]}
                               {member.linkedEmail ? ` · ${member.linkedEmail}` : ''}
                             </p>
                           </div>
                           {selected && <Check className="w-4 h-4 text-amber-400 shrink-0" />}
                         </button>
 
-                        <div className="flex items-center gap-1.5 shrink-0">
-                          <select
-                            aria-label={`Cambiar rol de ${member.name}`}
-                            value={member.role}
-                            onChange={(e) => handleRoleChange(member.id, e.target.value as StaffRole)}
-                            className="min-h-[34px] rounded-lg border border-[#27272E] bg-[#0A0A0A] px-2 text-[11px] font-semibold text-zinc-200 focus:outline-none focus:ring-2 focus:ring-amber-500"
-                          >
-                            <option value="mesero">Mesero</option>
-                            <option value="cajero">Caja</option>
-                            <option value="cocina">Cocina</option>
-                            <option value="admin">Administrador</option>
-                          </select>
-
-                          {!confirmingDelete ? (
-                            <button
-                              type="button"
-                              onClick={() => setConfirmDeleteId(member.id)}
-                              aria-label={`Eliminar a ${member.name}`}
-                              className="min-h-[34px] min-w-[34px] flex items-center justify-center rounded-lg border border-[#27272E] bg-[#0A0A0A] text-red-400 hover:bg-red-950/60"
+                        {isMainAdminRow ? (
+                          <span className="px-2.5 py-1 rounded-lg bg-amber-500/20 border border-amber-500/40 text-amber-300 text-[11px] font-bold shrink-0">
+                            Principal
+                          </span>
+                        ) : (
+                          <div className="flex items-center gap-1.5 shrink-0">
+                            <select
+                              aria-label={`Cambiar rol de ${member.name}`}
+                              value={member.role}
+                              onChange={(e) => handleRoleChange(member.id, e.target.value as StaffRole)}
+                              className="min-h-[34px] rounded-lg border border-[#27272E] bg-[#0A0A0A] px-2 text-[11px] font-semibold text-zinc-200 focus:outline-none focus:ring-2 focus:ring-amber-500"
                             >
-                              <Trash2 className="w-3.5 h-3.5" />
-                            </button>
-                          ) : (
-                            <div className="flex items-center gap-1">
+                              <option value="mesero">Mesero</option>
+                              <option value="cajero">Caja</option>
+                              <option value="cocina">Cocina</option>
+                              <option value="admin">Administrador</option>
+                            </select>
+
+                            {!confirmingDelete ? (
                               <button
                                 type="button"
-                                disabled={saving}
-                                onClick={() => handleDelete(member.id)}
-                                className="min-h-[34px] px-2 rounded-lg bg-red-600 text-white text-[11px] font-bold hover:bg-red-500"
+                                onClick={() => setConfirmDeleteId(member.id)}
+                                aria-label={`Eliminar a ${member.name}`}
+                                className="min-h-[34px] min-w-[34px] flex items-center justify-center rounded-lg border border-[#27272E] bg-[#0A0A0A] text-red-400 hover:bg-red-950/60"
                               >
-                                Borrar
+                                <Trash2 className="w-3.5 h-3.5" />
                               </button>
-                              <button
-                                type="button"
-                                onClick={() => setConfirmDeleteId(null)}
-                                className="min-h-[34px] px-2 rounded-lg border border-[#27272E] bg-[#0A0A0A] text-[11px] text-zinc-300"
-                              >
-                                No
-                              </button>
-                            </div>
-                          )}
-                        </div>
+                            ) : (
+                              <div className="flex items-center gap-1">
+                                <button
+                                  type="button"
+                                  disabled={saving}
+                                  onClick={() => handleDelete(member.id)}
+                                  className="min-h-[34px] px-2 rounded-lg bg-red-600 text-white text-[11px] font-bold hover:bg-red-500"
+                                >
+                                  Borrar
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setConfirmDeleteId(null)}
+                                  className="min-h-[34px] px-2 rounded-lg border border-[#27272E] bg-[#0A0A0A] text-[11px] text-zinc-300"
+                                >
+                                  No
+                                </button>
+                              </div>
+                            )}
+                          </div>
+                        )}
                       </div>
                     </div>
                   );
@@ -268,7 +271,7 @@ export const WaiterSelectorModal: React.FC<Props> = ({ open, onClose, required =
                   <span>Agregar nuevo mesero / integrante</span>
                 </button>
               ) : (
-                <form onSubmit={handleAdminAdd} className="border border-[#27272E] rounded-xl p-4 space-y-3 bg-[#101014]">
+                <form onSubmit={handlePrimaryAdminAdd} className="border border-[#27272E] rounded-xl p-4 space-y-3 bg-[#101014]">
                   <div>
                     <label htmlFor="new-staff-name" className="block text-xs font-medium text-zinc-300 mb-1">
                       Nombre completo
@@ -318,40 +321,30 @@ export const WaiterSelectorModal: React.FC<Props> = ({ open, onClose, required =
               )}
             </>
           ) : (
-            /* Non-admin view: associate own Google account with custom name, locked to Mesero */
+            /* Registered users (Waiters AND Promoted Admins): permanent name & role locked to account */
             <div className="space-y-3">
               {myLinkedStaff && !myLinkedStaff.active && (
                 <div className="rounded-xl bg-red-950/60 border border-red-700 p-4 text-xs text-red-200">
-                  Tu usuario ({myLinkedStaff.name}) fue desactivado por el administrador. Pídele que vuelva a activarte.
+                  Tu usuario ({myLinkedStaff.name}) fue desactivado por el administrador principal.
                 </div>
               )}
 
-              {myLinkedStaff && myLinkedStaff.active && !editingSelfName && (
+              {myLinkedStaff && myLinkedStaff.active && (
                 <div className="rounded-xl border border-amber-500 bg-amber-500/10 p-4 space-y-3">
-                  <div className="flex items-start justify-between gap-2">
-                    <div>
-                      <p className="text-xs font-semibold text-amber-400">Cuenta asociada</p>
-                      <p className="text-base font-bold text-white mt-0.5">{myLinkedStaff.name}</p>
-                      <p className="text-xs text-zinc-300 mt-0.5">
-                        Rol actual: <strong className="text-white">{ROLE_LABELS[myLinkedStaff.role]}</strong>
+                  <div>
+                    <p className="text-xs font-semibold text-amber-400 flex items-center gap-1.5">
+                      <Lock className="w-3.5 h-3.5" />
+                      <span>Nombre y rol asignados permanentemente</span>
+                    </p>
+                    <p className="text-lg font-bold text-white mt-1">{myLinkedStaff.name}</p>
+                    <p className="text-xs text-zinc-300 mt-0.5">
+                      Rol actual: <strong className="text-white">{ROLE_LABELS[myLinkedStaff.role]}</strong>
+                    </p>
+                    {myLinkedStaff.linkedEmail && (
+                      <p className="text-[11px] font-mono text-zinc-400 mt-0.5">
+                        {myLinkedStaff.linkedEmail}
                       </p>
-                      {myLinkedStaff.linkedEmail && (
-                        <p className="text-[11px] font-mono text-zinc-400 mt-0.5">
-                          {myLinkedStaff.linkedEmail}
-                        </p>
-                      )}
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setSelfName(myLinkedStaff.name);
-                        setEditingSelfName(true);
-                      }}
-                      className="min-h-[36px] px-3 rounded-lg border border-[#27272E] bg-[#1C1C22] text-xs font-semibold text-zinc-200 hover:border-zinc-500 flex items-center gap-1.5"
-                    >
-                      <Edit2 className="w-3.5 h-3.5 text-amber-400" />
-                      <span>Cambiar nombre</span>
-                    </button>
+                    )}
                   </div>
 
                   <button
@@ -364,58 +357,58 @@ export const WaiterSelectorModal: React.FC<Props> = ({ open, onClose, required =
                 </div>
               )}
 
-              {(!myLinkedStaff || editingSelfName) && (
-                <form onSubmit={handleSelfAssociateOrRename} className="border border-[#27272E] rounded-xl p-4 space-y-3 bg-[#101014]">
+              {!myLinkedStaff && (
+                <form onSubmit={handleOneTimeAssociate} className="border border-[#27272E] rounded-xl p-4 space-y-3 bg-[#101014]">
                   <div>
                     <label htmlFor="self-staff-name" className="block text-xs font-medium text-zinc-300 mb-1">
-                      Tu nombre para mostrar en pedidos
+                      Elige tu nombre permanente (solo se configura una vez)
                     </label>
                     <input
                       id="self-staff-name"
                       type="text"
                       value={selfName}
                       onChange={(e) => setSelfName(e.target.value)}
-                      placeholder="Escribe el nombre que prefieras"
+                      placeholder="Ej. Gabriela Cárdenas"
                       className="w-full min-h-[44px] rounded-xl border border-[#27272E] bg-[#0A0A0A] px-3 text-sm text-white focus:outline-none focus:ring-2 focus:ring-amber-500"
                     />
                   </div>
 
                   <div className="rounded-xl border border-[#27272E] bg-[#0A0A0A] px-3 py-2.5 flex items-center justify-between text-xs">
-                    <span className="text-zinc-400">Rol asignado</span>
+                    <span className="text-zinc-400">Rol inicial asignado</span>
                     <span className="font-bold text-amber-400 flex items-center gap-1.5">
                       <Lock className="w-3.5 h-3.5" />
-                      <span>{myLinkedStaff ? ROLE_LABELS[myLinkedStaff.role] : 'Mesero'}</span>
+                      <span>Mesero</span>
                     </span>
                   </div>
 
-                  <div className="flex items-center gap-2">
+                  <p className="text-[11px] text-zinc-400 leading-relaxed">
+                    Al guardar, este nombre y tu rol quedarán vinculados de forma permanente a tu correo ({firebaseUser?.email || 'cuenta actual'}).
+                  </p>
+
+                  <button
+                    type="submit"
+                    disabled={saving}
+                    className="w-full min-h-[44px] rounded-xl bg-amber-500 text-black text-sm font-bold hover:bg-amber-400 disabled:opacity-60"
+                  >
+                    {saving ? 'Guardando...' : 'Confirmar nombre permanente'}
+                  </button>
+
+                  {required && (
                     <button
-                      type="submit"
-                      disabled={saving}
-                      className="flex-1 min-h-[44px] rounded-xl bg-amber-500 text-black text-sm font-bold hover:bg-amber-400 disabled:opacity-60"
+                      type="button"
+                      onClick={() => void signOutSession()}
+                      className="w-full min-h-[40px] rounded-xl border border-[#27272E] bg-[#1C1C22] text-xs font-semibold text-zinc-300 hover:text-white flex items-center justify-center gap-1.5"
                     >
-                      {saving
-                        ? 'Guardando...'
-                        : myLinkedStaff
-                          ? 'Actualizar mi nombre'
-                          : 'Asociar cuenta como Mesero'}
+                      <LogOut className="w-3.5 h-3.5" />
+                      <span>Cambiar de cuenta</span>
                     </button>
-                    {editingSelfName && (
-                      <button
-                        type="button"
-                        onClick={() => setEditingSelfName(false)}
-                        className="min-h-[44px] px-3 rounded-xl border border-[#27272E] bg-[#1C1C22] text-xs font-medium text-zinc-300"
-                      >
-                        Cancelar
-                      </button>
-                    )}
-                  </div>
+                  )}
                 </form>
               )}
 
               <p className="text-[11px] text-zinc-400 flex items-center gap-1.5 pt-1">
                 <Lock className="w-3.5 h-3.5 text-zinc-500 shrink-0" />
-                <span>Solo el administrador puede agregar o eliminar usuarios y cambiar roles.</span>
+                <span>Solamente el administrador principal puede cambiar los roles de los usuarios.</span>
               </p>
             </div>
           )}
@@ -424,3 +417,4 @@ export const WaiterSelectorModal: React.FC<Props> = ({ open, onClose, required =
     </div>
   );
 };
+

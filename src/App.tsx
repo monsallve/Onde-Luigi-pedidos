@@ -53,7 +53,9 @@ const PosShell: React.FC = () => {
     authReady,
     loadingData,
     activeWaiter,
+    myLinkedStaff,
     isAdmin,
+    isPrimaryAdmin,
     orders,
     transfers,
     cloudError,
@@ -113,14 +115,17 @@ const PosShell: React.FC = () => {
     hasViewer: false,
     settingsOpen: false,
     waiterModalOpen: false,
+    waiterModalRequired: false,
     hasPaymentOrder: false,
     composerOpen: false,
   });
+  const requiresOneTimeName = !isPrimaryAdmin && !myLinkedStaff && !loadingData && !cloudError;
   modalStateRef.current = {
     exitConfirmOpen,
     hasViewer: Boolean(viewerState),
     settingsOpen,
     waiterModalOpen,
+    waiterModalRequired: requiresOneTimeName,
     hasPaymentOrder: Boolean(paymentOrder),
     composerOpen,
   };
@@ -180,7 +185,7 @@ const PosShell: React.FC = () => {
         pushGuard();
         return;
       }
-      if (ms.waiterModalOpen) {
+      if (ms.waiterModalOpen && !ms.waiterModalRequired) {
         setWaiterModalOpen(false);
         pushGuard();
         return;
@@ -222,23 +227,23 @@ const PosShell: React.FC = () => {
     return () => window.removeEventListener('popstate', handlePopState);
   }, [sessionMode]);
 
-  // Auto-open WaiterSelectorModal once for newly signed-in waiters so they can pick their name immediately
+  // Auto-open WaiterSelectorModal once for newly registered users so they choose their permanent name
   useEffect(() => {
     if (
       sessionMode === 'cloud' &&
       !loadingData &&
       !cloudError &&
-      !isAdmin &&
-      !activeWaiter &&
+      !isPrimaryAdmin &&
+      !myLinkedStaff &&
       !autoPromptedRef.current
     ) {
       autoPromptedRef.current = true;
       setWaiterModalOpen(true);
     }
-    if (!sessionMode || activeWaiter) {
+    if (!sessionMode || myLinkedStaff) {
       autoPromptedRef.current = false;
     }
-  }, [sessionMode, loadingData, cloudError, isAdmin, activeWaiter]);
+  }, [sessionMode, loadingData, cloudError, isPrimaryAdmin, myLinkedStaff]);
 
   const viewerReceipts = useMemo(() => {
     if (!viewerState) return [];
@@ -577,6 +582,7 @@ const PosShell: React.FC = () => {
       <WaiterSelectorModal
         open={waiterModalOpen}
         onClose={() => setWaiterModalOpen(false)}
+        required={requiresOneTimeName}
       />
 
       <SettingsModal
