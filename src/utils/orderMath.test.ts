@@ -7,19 +7,22 @@ import {
   calculateItemUnitPrice,
   calculateOrderTotals,
   diffOrderItems,
+  formatAutoOrderReference,
   formatCustomizationSummary,
+  getNextCyclicOrderRefNumber,
+  isOrderInCourse,
   validateItemSauces,
   validateOrderItemsSauces,
 } from './orderMath';
 import type { Product } from '../types/pos';
 
-test('calculates unit price and line total including paid extras', () => {
+test('calculates unit price and line total including paid extras and multiple extra quantities', () => {
   const extras = [
-    { id: 'ex1', name: 'Extra queso', price: 4500 },
-    { id: 'ex2', name: 'Tocineta', price: 6000 },
+    { id: 'ex1', name: 'Extra queso', price: 4500, quantity: 2 },
+    { id: 'ex2', name: 'Tocineta', price: 6000, quantity: 1 },
   ];
-  assert.equal(calculateItemUnitPrice(26000, extras), 36500);
-  assert.equal(calculateItemLineTotal(26000, extras, 2), 73000);
+  assert.equal(calculateItemUnitPrice(26000, extras), 41000);
+  assert.equal(calculateItemLineTotal(26000, extras, 2), 82000);
 });
 
 test('calculates order subtotal and total across multiple customized items', () => {
@@ -52,22 +55,30 @@ test('calculates order subtotal and total across multiple customized items', () 
   assert.equal(totals.total, 65500);
 });
 
-test('produces distinct signatures for same product with different sauces or removed ingredients', () => {
+test('produces distinct signatures for same product with different sauces, removed ingredients, or extra quantities', () => {
   const sigA = buildItemSignature({
     productId: 'p1',
     removedIngredients: ['Cebolla'],
-    addedExtras: [],
+    addedExtras: [{ id: 'ex1', name: 'Queso', price: 4500, quantity: 1 }],
     selectedSauces: ['Tártara', 'Piña'],
     customNote: '',
   });
   const sigB = buildItemSignature({
     productId: 'p1',
     removedIngredients: ['Cebolla'],
-    addedExtras: [],
+    addedExtras: [{ id: 'ex1', name: 'Queso', price: 4500, quantity: 2 }],
+    selectedSauces: ['Tártara', 'Piña'],
+    customNote: '',
+  });
+  const sigC = buildItemSignature({
+    productId: 'p1',
+    removedIngredients: ['Cebolla'],
+    addedExtras: [{ id: 'ex1', name: 'Queso', price: 4500, quantity: 1 }],
     selectedSauces: ['BBQ'],
     customNote: '',
   });
   assert.notEqual(sigA, sigB);
+  assert.notEqual(sigA, sigC);
 });
 
 test('validates 1 to 4 sauce rules per product', () => {
@@ -144,7 +155,7 @@ test('validates 1 to 4 sauce rules per product', () => {
   assert.deepEqual(fullValidation.invalidLineIds, ['l1']);
 });
 
-test('formats customization summary with sauces and diffs edited order items cleanly', () => {
+test('formats customization summary with sauces, extra quantities, and diffs edited order items cleanly', () => {
   const original = buildOrderItem({
     lineId: 'l1',
     productId: 'p1',
@@ -165,7 +176,7 @@ test('formats customization summary with sauces and diffs edited order items cle
     quantity: 2,
     basePrice: 16000,
     removedIngredients: ['Tomate', 'Cebolla'],
-    addedExtras: [{ id: 'ex1', name: 'Extra queso', price: 4500 }],
+    addedExtras: [{ id: 'ex1', name: 'Extra queso', price: 4500, quantity: 3 }],
     selectedSauces: ['Tártara', 'Piña'],
     customNote: 'Bien asada',
   });
@@ -185,8 +196,27 @@ test('formats customization summary with sauces and diffs edited order items cle
   const summary = formatCustomizationSummary(updated);
   assert.match(summary, /Sin Cebolla/);
   assert.match(summary, /Salsas \(2\): Piña, Tártara/);
+  assert.match(summary, /\+3x Extra queso/);
   const diff = diffOrderItems([original], [updated, added]);
   assert.match(diff, /Cambió cantidad de Hamburguesa Sencilla: 1 -> 2/);
   assert.match(diff, /Ajustó receta de Hamburguesa Sencilla/);
   assert.match(diff, /Agregó 1x Gaseosa/);
+});
+
+test('keeps orders in Comandas until BOTH delivered and paid', () => {
+  assert.equal(isOrderInCourse({ status: 'tomado', paymentStatus: 'pagado' }), true);
+  assert.equal(isOrderInCourse({ status: 'entregado', paymentStatus: 'pendiente' }), true);
+  assert.equal(isOrderInCourse({ status: 'listo', paymentStatus: 'pendiente' }), true);
+  assert.equal(isOrderInCourse({ status: 'entregado', paymentStatus: 'pagado' }), false);
+  assert.equal(isOrderInCourse({ status: 'cancelado', paymentStatus: 'pendiente' }), false);
+  assert.equal(isOrderInCourse({ status: 'cancelado', paymentStatus: 'pagado' }), false);
+});
+
+test('generates cyclic 1..99 auto reference numbers wrapping cleanly from 99 to 1', () => {
+  assert.equal(getNextCyclicOrderRefNumber(0), 1);
+  assert.equal(getNextCyclicOrderRefNumber(1), 2);
+  assert.equal(getNextCyclicOrderRefNumber(98), 99);
+  assert.equal(getNextCyclicOrderRefNumber(99), 1);
+  assert.equal(formatAutoOrderReference(1), 'Pedido #1');
+  assert.equal(formatAutoOrderReference(99), 'Pedido #99');
 });

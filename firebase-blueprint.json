@@ -15,6 +15,19 @@
       },
       "required": ["id", "name", "ownerUid", "ownerEmail", "authorizedEmails", "createdAt", "updatedAt"]
     },
+    "WorkspaceDirectory": {
+      "title": "WorkspaceDirectory",
+      "description": "Non-PII workspace metadata enabling verified waiters to enroll into the POS.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "allowSelfRegistration": { "type": "boolean" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "name", "ownerUid", "allowSelfRegistration", "updatedAt"]
+    },
     "WorkspaceMember": {
       "title": "WorkspaceMember",
       "description": "Authorized Firebase Auth member of a workspace.",
@@ -108,6 +121,9 @@
         "notes": { "type": "string", "maxLength": 400 },
         "receiptCount": { "type": "number" },
         "latestReceiptUrl": { "type": "string", "maxLength": 250000 },
+        "voidReason": { "type": "string", "maxLength": 240 },
+        "voidedByName": { "type": "string", "maxLength": 80 },
+        "voidedAtMs": { "type": "number" },
         "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128 },
         "createdByUid": { "type": "string", "minLength": 1, "maxLength": 128 },
         "allowedEmails": { "type": "array" },
@@ -154,6 +170,10 @@
         "waiterName": { "type": "string", "minLength": 1, "maxLength": 80 },
         "paymentStatus": { "type": "string", "enum": ["pagado", "pendiente"] },
         "notes": { "type": "string", "maxLength": 300 },
+        "annulled": { "type": "boolean" },
+        "annulledByName": { "type": "string", "maxLength": 80 },
+        "annulledReason": { "type": "string", "maxLength": 240 },
+        "annulledAtMs": { "type": "number" },
         "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128 },
         "createdByUid": { "type": "string", "minLength": 1, "maxLength": 128 },
         "allowedEmails": { "type": "array" },
@@ -166,6 +186,10 @@
     "/workspaces/{workspaceId}": {
       "schema": { "$ref": "#/entities/Workspace" },
       "description": "O'NDE LUIGI business workspace root document."
+    },
+    "/workspaceDirectory/{workspaceId}": {
+      "schema": { "$ref": "#/entities/WorkspaceDirectory" },
+      "description": "Public non-PII workspace enrollment descriptor."
     },
     "/workspaces/{workspaceId}/members/{uid}": {
       "schema": { "$ref": "#/entities/WorkspaceMember" },

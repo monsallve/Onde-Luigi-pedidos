@@ -1,5 +1,7 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
+  AlertTriangle,
+  Ban,
   CheckCircle2,
   Clock,
   CreditCard,
@@ -8,9 +10,11 @@ import {
   History,
   PlusCircle,
   Search,
+  Trash2,
+  X,
 } from 'lucide-react';
 import { usePosStore } from '../services/posStore';
-import type { MovementType } from '../types/pos';
+import type { MovementType, Order } from '../types/pos';
 import {
   formatCurrency,
   formatDateTimeShort,
@@ -47,11 +51,38 @@ const MOVEMENT_META: Record<MovementType, { label: string; icon: React.ReactNode
 };
 
 export const HistoryView: React.FC = () => {
-  const { orders, movements } = usePosStore();
-  const [subTab, setSubTab] = useState<'bitacora' | 'pedidos'>('bitacora');
+  const { orders, movements, isAdmin, voidOrder, deleteOrderRecord } = usePosStore();
+  const [subTab, setSubTab] = useState<'pedidos' | 'bitacora'>('pedidos');
   const [typeFilter, setTypeFilter] = useState<'todos' | MovementType>('todos');
   const [searchTerm, setSearchTerm] = useState('');
   const [expandedOrderId, setExpandedOrderId] = useState<string | null>(null);
+
+  const [voidTarget, setVoidTarget] = useState<Order | null>(null);
+  const [voidReason, setVoidReason] = useState('');
+  const [deleteTarget, setDeleteTarget] = useState<Order | null>(null);
+  const [actionBusy, setActionBusy] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const handleBackIntercept = (e: Event) => {
+      if (deleteTarget) {
+        e.preventDefault();
+        if (!actionBusy) {
+          setDeleteTarget(null);
+          setActionError(null);
+        }
+      } else if (voidTarget) {
+        e.preventDefault();
+        if (!actionBusy) {
+          setVoidTarget(null);
+          setVoidReason('');
+          setActionError(null);
+        }
+      }
+    };
+    window.addEventListener('ondeluigi:back-intercept', handleBackIntercept);
+    return () => window.removeEventListener('ondeluigi:back-intercept', handleBackIntercept);
+  }, [deleteTarget, voidTarget, actionBusy]);
 
   const filteredMovements = useMemo(() => {
     const q = searchTerm.trim().toLowerCase();
@@ -81,6 +112,36 @@ export const HistoryView: React.FC = () => {
     });
   }, [orders, searchTerm]);
 
+  const handleConfirmVoid = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!voidTarget) return;
+    setActionBusy(true);
+    setActionError(null);
+    try {
+      await voidOrder(voidTarget.id, voidReason);
+      setVoidTarget(null);
+      setVoidReason('');
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : 'No se pudo anular la venta.');
+    } finally {
+      setActionBusy(false);
+    }
+  };
+
+  const handleConfirmHardDelete = async () => {
+    if (!deleteTarget) return;
+    setActionBusy(true);
+    setActionError(null);
+    try {
+      await deleteOrderRecord(deleteTarget.id);
+      setDeleteTarget(null);
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : 'No se pudo eliminar el registro.');
+    } finally {
+      setActionBusy(false);
+    }
+  };
+
   return (
     <div className="space-y-5">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
@@ -89,11 +150,25 @@ export const HistoryView: React.FC = () => {
             HISTORIAL Y BITÁCORA
           </h1>
           <p className="text-xs text-zinc-400 mt-1 tabular-nums">
-            Auditoría cronológica de {movements.length} movimientos en {orders.length} pedidos
+            {orders.length} pedidos · {movements.length} movimientos ·{' '}
+            {isAdmin
+              ? 'Administrador: puede anular ventas o eliminar rastros permanentes'
+              : 'Mesero: puede visualizar el historial y anular ventas'}
           </p>
         </div>
 
         <div className="flex items-center gap-1 p-1 bg-[#141418] border border-[#27272E] rounded-xl self-start sm:self-auto">
+          <button
+            type="button"
+            onClick={() => setSubTab('pedidos')}
+            className={`min-h-[38px] px-4 rounded-lg text-xs font-semibold transition-colors whitespace-nowrap ${
+              subTab === 'pedidos'
+                ? 'bg-amber-500 text-black font-bold'
+                : 'text-zinc-300 hover:text-white'
+            }`}
+          >
+            Historial por pedido
+          </button>
           <button
             type="button"
             onClick={() => setSubTab('bitacora')}
@@ -104,17 +179,6 @@ export const HistoryView: React.FC = () => {
             }`}
           >
             Bitácora de movimientos
-          </button>
-          <button
-            type="button"
-            onClick={() => setSubTab('pedidos')}
-            className={`min-h-[38px] px-4 rounded-lg text-xs font-semibold transition-colors whitespace-nowrap ${
-              subTab === 'pedidos'
-                ? 'bg-amber-500 text-black font-bold'
-                : 'text-zinc-300 hover:text-white'
-            }`}
-          >
-            Línea por pedido
           </button>
         </div>
       </div>
@@ -208,11 +272,14 @@ export const HistoryView: React.FC = () => {
             filteredOrders.map((order) => {
               const orderMovs = movements.filter((m) => m.orderId === order.id);
               const isOpen = expandedOrderId === order.id;
+              const isVoided = order.status === 'cancelado';
 
               return (
                 <div
                   key={order.id}
-                  className="bg-[#141418] border border-[#27272E] rounded-2xl overflow-hidden"
+                  className={`bg-[#141418] border rounded-2xl overflow-hidden ${
+                    isVoided ? 'border-red-900/70' : 'border-[#27272E]'
+                  }`}
                 >
                   <button
                     type="button"
@@ -220,23 +287,34 @@ export const HistoryView: React.FC = () => {
                     aria-expanded={isOpen}
                     className="w-full p-4 text-left flex flex-col sm:flex-row sm:items-center justify-between gap-2 hover:bg-[#1C1C22] transition-colors"
                   >
-                    <div>
-                      <div className="flex items-center gap-2 text-xs text-zinc-400 font-mono tabular-nums">
+                    <div className="min-w-0">
+                      <div className="flex flex-wrap items-center gap-2 text-xs text-zinc-400 font-mono tabular-nums">
                         <span className="font-bold text-amber-400">#{order.orderNumber}</span>
                         <span aria-hidden="true">·</span>
                         <span>{formatDateTimeShort(order.createdAtMs)}</span>
                         <span aria-hidden="true">·</span>
                         <span>{orderMovs.length} eventos</span>
+                        {isVoided && (
+                          <span className="px-2 py-0.5 rounded bg-red-950/80 border border-red-700 text-red-300 font-sans font-bold uppercase text-[10px]">
+                            Venta Anulada
+                          </span>
+                        )}
                       </div>
-                      <p className="font-poster text-xl font-extrabold text-white mt-0.5 uppercase">
+                      <p className="font-poster text-xl font-extrabold text-white mt-0.5 uppercase truncate">
                         {order.reference}
+                      </p>
+                      <p className="text-xs text-zinc-400">
+                        Atendió: <span className="text-zinc-200 font-medium">{order.waiterName}</span>
                       </p>
                     </div>
 
-                    <div className="flex items-center gap-4">
+                    <div className="flex items-center gap-4 shrink-0">
                       <div className="text-left sm:text-right">
                         <p className="text-xs font-semibold text-zinc-300">
-                          {ORDER_STATUS_LABELS[order.status]} ·{' '}
+                          <span className={isVoided ? 'text-red-400 font-bold' : ''}>
+                            {ORDER_STATUS_LABELS[order.status]}
+                          </span>{' '}
+                          ·{' '}
                           <span
                             className={
                               order.paymentStatus === 'pagado'
@@ -249,13 +327,69 @@ export const HistoryView: React.FC = () => {
                               : 'Pendiente'}
                           </span>
                         </p>
-                        <p className="font-mono text-sm font-bold text-amber-400 tabular-nums">
+                        <p
+                          className={`font-mono text-sm font-bold tabular-nums ${
+                            isVoided ? 'text-red-400 line-through' : 'text-amber-400'
+                          }`}
+                        >
                           {formatCurrency(order.total)}
                         </p>
                       </div>
                       <History className="w-4 h-4 text-zinc-400 shrink-0" />
                     </div>
                   </button>
+
+                  {isVoided && (order.voidReason || order.voidedByName) && (
+                    <div className="px-4 py-2 bg-red-950/30 border-t border-red-900/50 text-xs text-red-200 flex flex-wrap items-center gap-2">
+                      <Ban className="w-3.5 h-3.5 text-red-400 shrink-0" />
+                      <span>
+                        Anulada{order.voidedByName ? ` por ${order.voidedByName}` : ''}
+                        {order.voidReason ? ` · Motivo: ${order.voidReason}` : ''}
+                      </span>
+                    </div>
+                  )}
+
+                  {/* Row Actions: Non-admin can Anular venta; ONLY Admin can Eliminar rastro */}
+                  <div className="px-4 py-2.5 border-t border-[#27272E] bg-[#101014] flex flex-wrap items-center justify-between gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setExpandedOrderId(isOpen ? null : order.id)}
+                      className="text-xs font-semibold text-zinc-400 hover:text-white"
+                    >
+                      {isOpen ? 'Ocultar bitácora' : 'Ver detalle y movimientos'}
+                    </button>
+
+                    <div className="flex items-center gap-2">
+                      {!isVoided && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setActionError(null);
+                            setVoidReason('');
+                            setVoidTarget(order);
+                          }}
+                          className="min-h-[36px] px-3 rounded-lg border border-amber-700/80 bg-amber-950/40 text-amber-300 text-xs font-semibold hover:bg-amber-950 flex items-center gap-1.5"
+                        >
+                          <Ban className="w-3.5 h-3.5" />
+                          <span>Anular venta</span>
+                        </button>
+                      )}
+
+                      {isAdmin && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setActionError(null);
+                            setDeleteTarget(order);
+                          }}
+                          className="min-h-[36px] px-3 rounded-lg border border-red-800 bg-red-950/40 text-red-300 text-xs font-semibold hover:bg-red-950 flex items-center gap-1.5"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                          <span>Eliminar rastro</span>
+                        </button>
+                      )}
+                    </div>
+                  </div>
 
                   {isOpen && (
                     <div className="border-t border-[#27272E] bg-[#0A0A0A] p-4 space-y-3">
@@ -284,6 +418,151 @@ export const HistoryView: React.FC = () => {
           )}
         </div>
       )}
+
+      {/* Void Order Confirmation Modal (Available to Waiters & Admins) */}
+      {voidTarget && (
+        <div
+          className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/75 backdrop-blur-sm sm:p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="void-order-modal-title"
+        >
+          <form
+            onSubmit={handleConfirmVoid}
+            className="w-full sm:max-w-md bg-[#141418] text-white rounded-t-3xl sm:rounded-2xl border border-[#27272E] shadow-2xl overflow-hidden"
+          >
+            <div className="px-5 py-4 border-b border-[#27272E] flex items-center justify-between bg-[#101014]">
+              <div className="flex items-center gap-2">
+                <Ban className="w-5 h-5 text-amber-400 shrink-0" />
+                <h2 id="void-order-modal-title" className="font-poster text-xl font-extrabold tracking-wide uppercase">
+                  ANULAR VENTA #{voidTarget.orderNumber}
+                </h2>
+              </div>
+              <button
+                type="button"
+                disabled={actionBusy}
+                onClick={() => setVoidTarget(null)}
+                aria-label="Cerrar"
+                className="min-h-[44px] min-w-[44px] flex items-center justify-center rounded-xl text-zinc-400 hover:bg-[#1C1C22]"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="p-5 space-y-4">
+              {actionError && (
+                <div className="rounded-xl bg-red-950/60 border border-red-700 px-3 py-2 text-xs font-medium text-red-200">
+                  {actionError}
+                </div>
+              )}
+
+              <p className="text-xs text-zinc-300 leading-relaxed">
+                El pedido <strong>#{voidTarget.orderNumber} ({voidTarget.reference})</strong> por{' '}
+                <strong className="text-amber-400">{formatCurrency(voidTarget.total)}</strong> quedará registrado en el historial como <strong>Venta Anulada</strong> sin borrar su rastro de auditoría.
+              </p>
+
+              <div>
+                <label htmlFor="void-order-reason" className="block text-xs font-semibold text-zinc-300 mb-1">
+                  Motivo de anulación (opcional)
+                </label>
+                <input
+                  id="void-order-reason"
+                  type="text"
+                  maxLength={160}
+                  value={voidReason}
+                  onChange={(e) => setVoidReason(e.target.value)}
+                  placeholder="Ej. Cliente canceló, error al registrar..."
+                  className="w-full min-h-[42px] rounded-xl border border-[#27272E] bg-[#0A0A0A] px-3 text-sm text-white placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-amber-500"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-2.5">
+                <button
+                  type="button"
+                  disabled={actionBusy}
+                  onClick={() => setVoidTarget(null)}
+                  className="min-h-[44px] rounded-xl border border-[#27272E] bg-[#1C1C22] text-sm font-semibold text-zinc-200 hover:border-zinc-500"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  disabled={actionBusy}
+                  className="min-h-[44px] rounded-xl bg-amber-500 text-black text-sm font-bold hover:bg-amber-400 disabled:opacity-50"
+                >
+                  {actionBusy ? 'Anulando...' : 'Confirmar anulación'}
+                </button>
+              </div>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {/* Permanent Hard Delete Confirmation Modal (Admin Only) */}
+      {deleteTarget && isAdmin && (
+        <div
+          className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/75 backdrop-blur-sm sm:p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="delete-order-modal-title"
+        >
+          <div className="w-full sm:max-w-md bg-[#141418] text-white rounded-t-3xl sm:rounded-2xl border border-[#27272E] shadow-2xl overflow-hidden">
+            <div className="px-5 py-4 border-b border-[#27272E] flex items-center justify-between bg-[#101014]">
+              <div className="flex items-center gap-2">
+                <AlertTriangle className="w-5 h-5 text-red-400 shrink-0" />
+                <h2 id="delete-order-modal-title" className="font-poster text-xl font-extrabold tracking-wide uppercase">
+                  ELIMINAR RASTRO COMPLETO
+                </h2>
+              </div>
+              <button
+                type="button"
+                disabled={actionBusy}
+                onClick={() => setDeleteTarget(null)}
+                aria-label="Cerrar"
+                className="min-h-[44px] min-w-[44px] flex items-center justify-center rounded-xl text-zinc-400 hover:bg-[#1C1C22]"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="p-5 space-y-4">
+              {actionError && (
+                <div className="rounded-xl bg-red-950/60 border border-red-700 px-3 py-2 text-xs font-medium text-red-200">
+                  {actionError}
+                </div>
+              )}
+
+              <p className="text-sm text-zinc-200 leading-relaxed">
+                ¿Eliminar por completo el pedido{' '}
+                <strong className="text-amber-400">
+                  #{deleteTarget.orderNumber} ({deleteTarget.reference})
+                </strong>{' '}
+                junto con toda su bitácora y comprobantes asociados? Esta acción es permanente.
+              </p>
+
+              <div className="grid grid-cols-2 gap-2.5">
+                <button
+                  type="button"
+                  disabled={actionBusy}
+                  onClick={() => setDeleteTarget(null)}
+                  className="min-h-[44px] rounded-xl border border-[#27272E] bg-[#1C1C22] text-sm font-semibold text-zinc-200 hover:border-zinc-500"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="button"
+                  disabled={actionBusy}
+                  onClick={handleConfirmHardDelete}
+                  className="min-h-[44px] rounded-xl bg-red-600 text-white text-sm font-bold hover:bg-red-500 disabled:opacity-50"
+                >
+                  {actionBusy ? 'Eliminando...' : 'Eliminar rastro'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
+

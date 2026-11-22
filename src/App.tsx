@@ -1,9 +1,10 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   BarChart3,
   ClipboardList,
   History,
   Image as ImageIcon,
+  LogOut,
   PlusCircle,
   Settings,
   UserCheck,
@@ -21,6 +22,7 @@ import { WhatsAppReceiptViewer } from './components/WhatsAppReceiptViewer';
 import { PosProvider, usePosStore } from './services/posStore';
 import type { AppTab, Order } from './types/pos';
 import { resolveAssetUrl } from './utils/assetPath';
+import { isOrderInCourse } from './utils/orderMath';
 import { HistoryView } from './views/HistoryView';
 import { MenuManagerView } from './views/MenuManagerView';
 import { OrdersView } from './views/OrdersView';
@@ -41,7 +43,7 @@ const ALL_NAV_ITEMS: NavDef[] = [
   { id: 'comandas', label: 'Comandas', shortLabel: 'Comandas', icon: <ClipboardList className="w-5 h-5" /> },
   { id: 'historial', label: 'Historial', shortLabel: 'Historial', icon: <History className="w-5 h-5" /> },
   { id: 'transferencias', label: 'Transferencias', shortLabel: 'Pagos', icon: <ImageIcon className="w-5 h-5" /> },
-  { id: 'ventas', label: 'Ventas', shortLabel: 'Ventas', icon: <BarChart3 className="w-5 h-5" /> },
+  { id: 'ventas', label: 'Ventas', shortLabel: 'Ventas', icon: <BarChart3 className="w-5 h-5" />, adminOnly: true },
   { id: 'menu', label: 'Menú y Salsas', shortLabel: 'Menú', icon: <UtensilsCrossed className="w-5 h-5" />, adminOnly: true },
 ];
 
@@ -49,11 +51,15 @@ const PosShell: React.FC = () => {
   const {
     sessionMode,
     authReady,
+    loadingData,
     activeWaiter,
     isAdmin,
     orders,
     transfers,
     cloudError,
+    voidTransferReceipt,
+    deleteTransferReceipt,
+    signOutSession,
   } = usePosStore();
 
   const [activeTab, setActiveTab] = useState<AppTab>('pedidos');
@@ -62,23 +68,177 @@ const PosShell: React.FC = () => {
   const [paymentOrder, setPaymentOrder] = useState<Order | null>(null);
   const [waiterModalOpen, setWaiterModalOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [exitConfirmOpen, setExitConfirmOpen] = useState(false);
+  const autoPromptedRef = useRef(false);
 
   const [viewerState, setViewerState] = useState<{
     index: number;
     receiptIds?: string[];
   } | null>(null);
 
+  const tabHistoryRef = useRef<AppTab[]>([]);
+  const activeTabRef = useRef<AppTab>('pedidos');
+  const allowExitRef = useRef(false);
+  const guardAnchoredRef = useRef(false);
+
+  activeTabRef.current = activeTab;
+
+  const navigateToTab = useCallback((nextTab: AppTab) => {
+    setActiveTab((prev) => {
+      if (prev !== nextTab) {
+        const currentStack = tabHistoryRef.current;
+        if (currentStack[currentStack.length - 1] !== prev) {
+          tabHistoryRef.current = [...currentStack.slice(-19), prev];
+        }
+      }
+      return nextTab;
+    });
+  }, []);
+
   const navItems = useMemo(
     () => ALL_NAV_ITEMS.filter((item) => !item.adminOnly || isAdmin),
     [isAdmin]
   );
 
-  // Redirect away from admin-only Menú tab if account is Waiter
+  // Redirect away from admin-only tabs (Menú & Ventas) if account is Waiter
   useEffect(() => {
-    if (!isAdmin && activeTab === 'menu') {
+    if (!isAdmin && (activeTab === 'menu' || activeTab === 'ventas')) {
       setActiveTab('pedidos');
     }
   }, [isAdmin, activeTab]);
+
+  // Anchor Android/Browser back button sentinel and handle popstate consistently across views/modals
+  const modalStateRef = useRef({
+    exitConfirmOpen: false,
+    hasViewer: false,
+    settingsOpen: false,
+    waiterModalOpen: false,
+    hasPaymentOrder: false,
+    composerOpen: false,
+  });
+  modalStateRef.current = {
+    exitConfirmOpen,
+    hasViewer: Boolean(viewerState),
+    settingsOpen,
+    waiterModalOpen,
+    hasPaymentOrder: Boolean(paymentOrder),
+    composerOpen,
+  };
+
+  useEffect(() => {
+    if (!sessionMode) {
+      guardAnchoredRef.current = false;
+      tabHistoryRef.current = [];
+      return;
+    }
+
+    if (!guardAnchoredRef.current) {
+      guardAnchoredRef.current = true;
+      try {
+        if (!window.history.state || !window.history.state.olGuard) {
+          window.history.replaceState({ olRoot: true }, '');
+          window.history.pushState({ olGuard: true }, '');
+        }
+      } catch {
+        // ignore restricted history environments
+      }
+    }
+
+    const pushGuard = () => {
+      try {
+        window.history.pushState({ olGuard: true }, '');
+      } catch {
+        // ignore restricted history environments
+      }
+    };
+
+    const handlePopState = () => {
+      if (allowExitRef.current) return;
+
+      // 1. Let active child overlays/modals intercept Back first
+      const childIntercept = new CustomEvent('ondeluigi:back-intercept', { cancelable: true });
+      window.dispatchEvent(childIntercept);
+      if (childIntercept.defaultPrevented) {
+        pushGuard();
+        return;
+      }
+
+      // 2. Step back through App-level modals in top-most order
+      const ms = modalStateRef.current;
+      if (ms.exitConfirmOpen) {
+        setExitConfirmOpen(false);
+        pushGuard();
+        return;
+      }
+      if (ms.hasViewer) {
+        setViewerState(null);
+        pushGuard();
+        return;
+      }
+      if (ms.settingsOpen) {
+        setSettingsOpen(false);
+        pushGuard();
+        return;
+      }
+      if (ms.waiterModalOpen) {
+        setWaiterModalOpen(false);
+        pushGuard();
+        return;
+      }
+      if (ms.hasPaymentOrder) {
+        setPaymentOrder(null);
+        pushGuard();
+        return;
+      }
+      if (ms.composerOpen) {
+        setComposerOpen(false);
+        setEditingOrder(null);
+        pushGuard();
+        return;
+      }
+
+      // 3. Step back through tab navigation history
+      if (tabHistoryRef.current.length > 0) {
+        const nextStack = [...tabHistoryRef.current];
+        const prevTab = nextStack.pop() as AppTab;
+        tabHistoryRef.current = nextStack;
+        setActiveTab(prevTab);
+        pushGuard();
+        return;
+      }
+
+      if (activeTabRef.current !== 'pedidos') {
+        setActiveTab('pedidos');
+        pushGuard();
+        return;
+      }
+
+      // 4. At root screen: ask confirmation before leaving the app
+      setExitConfirmOpen(true);
+      pushGuard();
+    };
+
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, [sessionMode]);
+
+  // Auto-open WaiterSelectorModal once for newly signed-in waiters so they can pick their name immediately
+  useEffect(() => {
+    if (
+      sessionMode === 'cloud' &&
+      !loadingData &&
+      !cloudError &&
+      !isAdmin &&
+      !activeWaiter &&
+      !autoPromptedRef.current
+    ) {
+      autoPromptedRef.current = true;
+      setWaiterModalOpen(true);
+    }
+    if (!sessionMode || activeWaiter) {
+      autoPromptedRef.current = false;
+    }
+  }, [sessionMode, loadingData, cloudError, isAdmin, activeWaiter]);
 
   const viewerReceipts = useMemo(() => {
     if (!viewerState) return [];
@@ -86,11 +246,11 @@ const PosShell: React.FC = () => {
       const set = new Set(viewerState.receiptIds);
       return transfers.filter((t) => set.has(t.id));
     }
-    return transfers;
+    return transfers.filter((t) => !t.annulled);
   }, [viewerState, transfers]);
 
   const activeOrderCount = useMemo(
-    () => orders.filter((o) => o.status !== 'entregado' && o.status !== 'cancelado').length,
+    () => orders.filter(isOrderInCourse).length,
     [orders]
   );
 
@@ -111,7 +271,7 @@ const PosShell: React.FC = () => {
       setWaiterModalOpen(true);
       return;
     }
-    setActiveTab('pedidos');
+    navigateToTab('pedidos');
   };
 
   const handleEditOrder = (order: Order) => {
@@ -124,14 +284,14 @@ const PosShell: React.FC = () => {
   };
 
   const handleViewOrderReceipt = (orderId: string) => {
-    const matching = transfers.filter((t) => t.orderId === orderId);
+    const matching = transfers.filter((t) => t.orderId === orderId && !t.annulled);
     if (matching.length > 0) {
       setViewerState({
         index: 0,
         receiptIds: matching.map((m) => m.id),
       });
     } else {
-      setActiveTab('transferencias');
+      navigateToTab('transferencias');
     }
   };
 
@@ -139,8 +299,18 @@ const PosShell: React.FC = () => {
     setViewerState(null);
     const target = orders.find((o) => o.id === orderId);
     if (target) {
-      setActiveTab('comandas');
+      navigateToTab('comandas');
       setPaymentOrder(target);
+    }
+  };
+
+  const handleConfirmAppExit = () => {
+    allowExitRef.current = true;
+    setExitConfirmOpen(false);
+    try {
+      window.history.go(-2);
+    } catch {
+      // ignore if browser blocks history exit
     }
   };
 
@@ -152,7 +322,7 @@ const PosShell: React.FC = () => {
           {/* Zone 1: O'NDE LUIGI Brand Emblem + Wordmark */}
           <button
             type="button"
-            onClick={() => setActiveTab('pedidos')}
+            onClick={() => navigateToTab('pedidos')}
             className="flex items-center gap-2.5 shrink-0 text-left"
           >
             <img
@@ -176,7 +346,7 @@ const PosShell: React.FC = () => {
                 <button
                   key={item.id}
                   type="button"
-                  onClick={() => setActiveTab(item.id)}
+                  onClick={() => navigateToTab(item.id)}
                   className={`py-1.5 border-b-2 whitespace-nowrap shrink-0 flex items-center gap-1.5 ${
                     active
                       ? 'border-amber-500 text-amber-400 font-bold'
@@ -222,7 +392,7 @@ const PosShell: React.FC = () => {
 
             <button
               type="button"
-              onClick={() => setActiveTab('comandas')}
+              onClick={() => navigateToTab('comandas')}
               className="hidden lg:inline-flex min-h-[38px] px-4 rounded-xl bg-red-600 text-white text-xs font-bold hover:bg-red-500 transition-colors items-center gap-2 whitespace-nowrap shrink-0"
             >
               <ClipboardList className="w-4 h-4" />
@@ -278,9 +448,18 @@ const PosShell: React.FC = () => {
         {cloudError && (
           <div
             role="alert"
-            className="mb-4 rounded-xl bg-red-950/60 border border-red-700 px-4 py-3 text-xs font-medium text-red-200"
+            className="mb-4 rounded-xl bg-red-950/60 border border-red-700 px-4 py-3 text-xs font-medium text-red-200 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5"
           >
-            {cloudError}
+            <span>{cloudError}</span>
+            {sessionMode === 'cloud' && (
+              <button
+                type="button"
+                onClick={() => void signOutSession()}
+                className="min-h-[36px] px-3 rounded-lg bg-red-600/30 border border-red-500/60 text-white font-bold hover:bg-red-600/50 whitespace-nowrap shrink-0"
+              >
+                Cambiar cuenta
+              </button>
+            )}
           </div>
         )}
 
@@ -311,7 +490,7 @@ const PosShell: React.FC = () => {
         {activeTab === 'pedidos' && (
           <PosOrderWorkspaceView
             onOpenWaiterPicker={() => setWaiterModalOpen(true)}
-            onGoToOrders={() => setActiveTab('comandas')}
+            onGoToOrders={() => navigateToTab('comandas')}
           />
         )}
 
@@ -346,7 +525,11 @@ const PosShell: React.FC = () => {
       >
         <div
           className={`grid h-16 items-center ${
-            navItems.length === 6 ? 'grid-cols-6' : 'grid-cols-5'
+            navItems.length === 6
+              ? 'grid-cols-6'
+              : navItems.length === 5
+                ? 'grid-cols-5'
+                : 'grid-cols-4'
           }`}
         >
           {navItems.map((item) => {
@@ -355,7 +538,7 @@ const PosShell: React.FC = () => {
               <button
                 key={item.id}
                 type="button"
-                onClick={() => setActiveTab(item.id)}
+                onClick={() => navigateToTab(item.id)}
                 className={`h-full flex flex-col items-center justify-center gap-0.5 ${
                   active ? 'text-amber-400' : 'text-zinc-400 hover:text-white'
                 }`}
@@ -405,9 +588,59 @@ const PosShell: React.FC = () => {
         <WhatsAppReceiptViewer
           receipts={viewerReceipts}
           initialIndex={viewerState.index}
+          isAdmin={isAdmin}
           onClose={() => setViewerState(null)}
           onInspectOrder={handleInspectOrderFromViewer}
+          onVoidReceipt={async (transferId) => {
+            await voidTransferReceipt(transferId);
+          }}
+          onDeleteReceipt={async (transferId) => {
+            await deleteTransferReceipt(transferId);
+          }}
         />
+      )}
+
+      {/* In-App Confirmation Modal before exiting via Android/Browser Back */}
+      {exitConfirmOpen && (
+        <div
+          className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/75 backdrop-blur-sm sm:p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="exit-app-modal-title"
+        >
+          <div className="w-full sm:max-w-sm bg-[#141418] text-white rounded-t-3xl sm:rounded-2xl border border-[#27272E] shadow-2xl overflow-hidden p-5 space-y-4">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-amber-500/15 border border-amber-500/40 flex items-center justify-center shrink-0">
+                <LogOut className="w-5 h-5 text-amber-400" />
+              </div>
+              <div>
+                <h2 id="exit-app-modal-title" className="font-poster text-xl font-extrabold tracking-wide uppercase">
+                  ¿SALIR DE O&apos;NDE LUIGI?
+                </h2>
+                <p className="text-xs text-zinc-400 mt-0.5">
+                  Si tienes un pedido en curso, tu borrador queda guardado automáticamente.
+                </p>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-2.5">
+              <button
+                type="button"
+                onClick={() => setExitConfirmOpen(false)}
+                className="min-h-[44px] rounded-xl bg-amber-500 text-black text-sm font-bold hover:bg-amber-400"
+              >
+                Seguir en la app
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmAppExit}
+                className="min-h-[44px] rounded-xl border border-[#27272E] bg-[#1C1C22] text-sm font-semibold text-zinc-200 hover:border-zinc-500"
+              >
+                Salir
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       <OfflineIndicator />
@@ -424,3 +657,4 @@ export default function App() {
     </ErrorBoundary>
   );
 }
+

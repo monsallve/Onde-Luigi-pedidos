@@ -1,4 +1,4 @@
-import React, { useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertCircle,
   Camera,
@@ -101,6 +101,22 @@ export const OrderComposerModal: React.FC<Props> = ({
   const totals = useMemo(() => calculateOrderTotals(items), [items]);
   const totalUnits = useMemo(() => items.reduce((s, i) => s + i.quantity, 0), [items]);
   const sauceValidation = useMemo(() => validateOrderItemsSauces(items, products), [items, products]);
+
+  useEffect(() => {
+    if (!open) return;
+    const handleBackIntercept = (e: Event) => {
+      if (customizingProduct) {
+        e.preventDefault();
+        setCustomizingProduct(null);
+        setEditingLineItem(null);
+      } else if (mobileCartExpanded && !editingOrder) {
+        e.preventDefault();
+        setMobileCartExpanded(false);
+      }
+    };
+    window.addEventListener('ondeluigi:back-intercept', handleBackIntercept);
+    return () => window.removeEventListener('ondeluigi:back-intercept', handleBackIntercept);
+  }, [open, customizingProduct, mobileCartExpanded, editingOrder]);
 
   if (!open) return null;
 
@@ -223,10 +239,6 @@ export const OrderComposerModal: React.FC<Props> = ({
       onOpenWaiterPicker();
       return;
     }
-    if (!reference.trim()) {
-      setErrorMsg('Indica la mesa, cliente o referencia del pedido.');
-      return;
-    }
     if (items.length === 0) {
       setErrorMsg('Agrega al menos un producto al pedido.');
       return;
@@ -240,7 +252,12 @@ export const OrderComposerModal: React.FC<Props> = ({
     setSubmitting(true);
     try {
       if (editingOrder) {
-        await updateOrderItems(editingOrder.id, items, reference, notes);
+        await updateOrderItems(
+          editingOrder.id,
+          items,
+          reference.trim() || editingOrder.reference,
+          notes
+        );
       } else {
         await createOrder({
           reference,
@@ -325,7 +342,8 @@ export const OrderComposerModal: React.FC<Props> = ({
                   htmlFor="order-reference-input"
                   className="block text-xs font-semibold text-zinc-300 mb-1.5"
                 >
-                  Mesa / Cliente / Referencia
+                  Mesa / Cliente / Referencia{' '}
+                  <span className="text-zinc-400 font-normal">(opcional · auto #1–#99)</span>
                 </label>
                 <input
                   id="order-reference-input"
@@ -333,7 +351,7 @@ export const OrderComposerModal: React.FC<Props> = ({
                   maxLength={100}
                   value={reference}
                   onChange={(e) => setReference(e.target.value)}
-                  placeholder="Ej. Mesa 4 · Terraza o Juan Pérez"
+                  placeholder="Ej. Mesa 4 · Si queda vacío asigna #1–#99"
                   className="w-full min-h-[44px] rounded-xl border border-[#27272E] bg-[#0A0A0A] px-3.5 text-sm text-white placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-amber-500"
                 />
                 <div className="flex items-center gap-1.5 overflow-x-auto pt-2 pb-0.5">
@@ -392,7 +410,7 @@ export const OrderComposerModal: React.FC<Props> = ({
                   No hay productos activos que coincidan con la búsqueda.
                 </div>
               ) : (
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div className="grid grid-cols-2 gap-2.5 sm:gap-3">
                   {filteredProducts.map((product) => {
                     const hasCustom =
                       product.removableOptions.length > 0 ||
@@ -401,26 +419,26 @@ export const OrderComposerModal: React.FC<Props> = ({
                     return (
                       <div
                         key={product.id}
-                        className="bg-[#141418] border border-[#27272E] rounded-xl p-3.5 flex flex-col justify-between gap-3"
+                        className="bg-[#141418] border border-[#27272E] rounded-xl p-2.5 sm:p-3.5 flex flex-col justify-between gap-2.5 sm:gap-3"
                       >
-                        <div className="flex items-start gap-3">
+                        <div className="flex flex-col sm:flex-row sm:items-start gap-2 sm:gap-3">
                           {product.imageUrl && (
                             <img
                               src={resolveAssetUrl(product.imageUrl)}
                               alt={product.name}
-                              className="w-16 h-16 rounded-lg object-cover object-top border border-[#27272E] shrink-0"
+                              className="w-full h-20 sm:w-16 sm:h-16 rounded-lg object-cover object-top border border-[#27272E] shrink-0"
                             />
                           )}
                           <div className="min-w-0 flex-1">
-                            <div className="flex items-start justify-between gap-2">
-                              <h3 className="font-poster text-base font-extrabold text-white leading-tight uppercase">
+                            <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-0.5 sm:gap-2">
+                              <h3 className="font-poster text-sm sm:text-base font-extrabold text-white leading-tight uppercase line-clamp-2">
                                 {product.name}
                               </h3>
-                              <span className="font-mono text-sm font-bold text-amber-400 tabular-nums shrink-0">
+                              <span className="font-mono text-xs sm:text-sm font-bold text-amber-400 tabular-nums shrink-0">
                                 {formatCurrency(product.basePrice)}
                               </span>
                             </div>
-                            <p className="text-xs text-zinc-400 mt-1 line-clamp-2">
+                            <p className="hidden sm:block text-xs text-zinc-400 mt-1 line-clamp-2">
                               {product.baseRecipe.length > 0
                                 ? product.baseRecipe.join(' · ')
                                 : product.category}
@@ -428,13 +446,13 @@ export const OrderComposerModal: React.FC<Props> = ({
                           </div>
                         </div>
 
-                        <div className="flex items-center gap-2">
+                        <div className="flex items-center gap-1.5 sm:gap-2">
                           <button
                             type="button"
                             onClick={() => handleQuickAdd(product)}
-                            className="flex-1 min-h-[42px] rounded-xl bg-amber-500 text-black text-xs font-bold hover:bg-amber-400 transition-colors flex items-center justify-center gap-1.5"
+                            className="flex-1 min-w-0 min-h-[40px] sm:min-h-[42px] px-2 rounded-xl bg-amber-500 text-black text-[11px] sm:text-xs font-bold hover:bg-amber-400 transition-colors flex items-center justify-center gap-1"
                           >
-                            <Plus className="w-4 h-4" />
+                            <Plus className="w-3.5 h-3.5 sm:w-4 sm:h-4 shrink-0" />
                             <span>Agregar</span>
                           </button>
                           {hasCustom && (
@@ -445,9 +463,9 @@ export const OrderComposerModal: React.FC<Props> = ({
                                 setCustomizingProduct(product);
                               }}
                               aria-label={`Personalizar ${product.name}`}
-                              className="min-h-[42px] px-3 rounded-xl border border-[#27272E] bg-[#1C1C22] text-zinc-200 text-xs font-semibold hover:border-zinc-500 flex items-center gap-1.5 whitespace-nowrap shrink-0"
+                              className="min-h-[40px] sm:min-h-[42px] px-2 sm:px-3 rounded-xl border border-[#27272E] bg-[#1C1C22] text-zinc-200 text-[11px] sm:text-xs font-semibold hover:border-zinc-500 flex items-center gap-1 whitespace-nowrap shrink-0"
                             >
-                              <SlidersHorizontal className="w-3.5 h-3.5 text-amber-400" />
+                              <SlidersHorizontal className="w-3.5 h-3.5 text-amber-400 shrink-0" />
                               <span>Receta</span>
                             </button>
                           )}

@@ -1,10 +1,16 @@
-import React, { useMemo, useState } from 'react';
-import { Droplets, Edit3, Lock, Plus, Search } from 'lucide-react';
+import React, { useEffect, useMemo, useState } from 'react';
+import { AlertTriangle, Droplets, Edit3, Lock, Plus, Search, Trash2, X } from 'lucide-react';
 import { usePosStore } from '../services/posStore';
 import type { Product } from '../types/pos';
 import { formatCurrency } from '../utils/orderMath';
 import { resolveAssetUrl } from '../utils/assetPath';
 import { ProductEditorModal } from '../components/ProductEditorModal';
+
+interface PendingMenuDelete {
+  kind: 'product' | 'sauce';
+  id: string;
+  name: string;
+}
 
 export const MenuManagerView: React.FC = () => {
   const {
@@ -12,8 +18,10 @@ export const MenuManagerView: React.FC = () => {
     sauces,
     isAdmin,
     toggleProductActive,
+    deleteProduct,
     saveSauce,
     toggleSauceActive,
+    deleteSauce,
   } = usePosStore();
 
   const [selectedCategory, setSelectedCategory] = useState('Todas');
@@ -23,6 +31,27 @@ export const MenuManagerView: React.FC = () => {
   const [newSauceName, setNewSauceName] = useState('');
   const [savingSauce, setSavingSauce] = useState(false);
   const [sauceError, setSauceError] = useState<string | null>(null);
+
+  const [pendingDelete, setPendingDelete] = useState<PendingMenuDelete | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const handleBackIntercept = (e: Event) => {
+      if (pendingDelete) {
+        e.preventDefault();
+        if (!deleting) {
+          setPendingDelete(null);
+          setDeleteError(null);
+        }
+      } else if (editingProduct !== undefined) {
+        e.preventDefault();
+        setEditingProduct(undefined);
+      }
+    };
+    window.addEventListener('ondeluigi:back-intercept', handleBackIntercept);
+    return () => window.removeEventListener('ondeluigi:back-intercept', handleBackIntercept);
+  }, [pendingDelete, deleting, editingProduct]);
 
   const categories = useMemo(() => {
     const set = new Set(products.map((p) => p.category));
@@ -47,7 +76,7 @@ export const MenuManagerView: React.FC = () => {
           ACCESO ADMINISTRATIVO REQUERIDO
         </h1>
         <p className="text-sm text-zinc-400">
-          Solo la cuenta Administradora puede agregar o editar productos, recetas, bebidas y salsas del sistema. Tu cuenta actual tiene permisos de Mesero.
+          Solo las cuentas Administradoras pueden agregar, editar o eliminar productos, recetas, bebidas y salsas del sistema. Tu cuenta actual tiene permisos de Mesero.
         </p>
       </div>
     );
@@ -65,6 +94,24 @@ export const MenuManagerView: React.FC = () => {
       setSauceError(err instanceof Error ? err.message : 'No se pudo agregar la salsa.');
     } finally {
       setSavingSauce(false);
+    }
+  };
+
+  const handleConfirmDelete = async () => {
+    if (!pendingDelete) return;
+    setDeleting(true);
+    setDeleteError(null);
+    try {
+      if (pendingDelete.kind === 'product') {
+        await deleteProduct(pendingDelete.id);
+      } else {
+        await deleteSauce(pendingDelete.id);
+      }
+      setPendingDelete(null);
+    } catch (err) {
+      setDeleteError(err instanceof Error ? err.message : 'No se pudo eliminar del menú.');
+    } finally {
+      setDeleting(false);
     }
   };
 
@@ -101,7 +148,7 @@ export const MenuManagerView: React.FC = () => {
                 SALSAS DEL SISTEMA (SELECCIÓN 1 A 4 POR PRODUCTO)
               </h2>
               <p className="text-xs text-zinc-400 mt-0.5">
-                Las salsas activas aparecen para que los meseros elijan entre 1 y 4 salsas al tomar pedidos.
+                Toca el nombre para activar/desactivar, o usa el ícono de papelera para eliminar una salsa definitivamente.
               </p>
             </div>
           </div>
@@ -134,25 +181,42 @@ export const MenuManagerView: React.FC = () => {
 
         <div className="flex flex-wrap gap-2">
           {sauces.map((sauce) => (
-            <button
+            <div
               key={sauce.id}
-              type="button"
-              onClick={() => toggleSauceActive(sauce.id, !sauce.active)}
-              className={`min-h-[38px] px-3 rounded-xl border text-xs font-semibold flex items-center gap-2 transition-colors ${
+              className={`inline-flex items-center rounded-xl border overflow-hidden transition-colors ${
                 sauce.active
-                  ? 'bg-[#1C1C22] border-amber-500/60 text-white hover:border-amber-400'
-                  : 'bg-[#0A0A0A] border-[#27272E] text-zinc-500 line-through'
+                  ? 'bg-[#1C1C22] border-amber-500/60 text-white'
+                  : 'bg-[#0A0A0A] border-[#27272E] text-zinc-500'
               }`}
             >
-              <span>{sauce.name}</span>
-              <span
-                className={`text-[10px] font-mono uppercase px-1.5 py-0.5 rounded ${
-                  sauce.active ? 'bg-emerald-950 text-emerald-300' : 'bg-zinc-900 text-zinc-500'
+              <button
+                type="button"
+                onClick={() => toggleSauceActive(sauce.id, !sauce.active)}
+                className={`min-h-[38px] px-3 text-xs font-semibold flex items-center gap-2 hover:bg-white/5 ${
+                  !sauce.active ? 'line-through' : ''
                 }`}
               >
-                {sauce.active ? 'Activa' : 'Inactiva'}
-              </span>
-            </button>
+                <span>{sauce.name}</span>
+                <span
+                  className={`text-[10px] font-mono uppercase px-1.5 py-0.5 rounded ${
+                    sauce.active ? 'bg-emerald-950 text-emerald-300' : 'bg-zinc-900 text-zinc-500'
+                  }`}
+                >
+                  {sauce.active ? 'Activa' : 'Inactiva'}
+                </span>
+              </button>
+              <button
+                type="button"
+                aria-label={`Eliminar salsa ${sauce.name}`}
+                onClick={() => {
+                  setDeleteError(null);
+                  setPendingDelete({ kind: 'sauce', id: sauce.id, name: sauce.name });
+                }}
+                className="min-h-[38px] min-w-[36px] flex items-center justify-center border-l border-[#27272E] text-red-400 hover:bg-red-950/60"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+              </button>
+            </div>
           ))}
         </div>
       </section>
@@ -244,7 +308,10 @@ export const MenuManagerView: React.FC = () => {
                 <p className="text-xs text-emerald-300 leading-relaxed">
                   <strong>Adiciones:</strong>{' '}
                   {product.addonOptions
-                    .map((a) => `${a.name} (+${formatCurrency(a.price)})`)
+                    .map(
+                      (a) =>
+                        `${a.name} (+${formatCurrency(a.price)}${a.allowMultiple === false ? ', máx. 1' : ''})`
+                    )
                     .join(', ')}
                 </p>
               )}
@@ -263,13 +330,25 @@ export const MenuManagerView: React.FC = () => {
               <button
                 type="button"
                 onClick={() => toggleProductActive(product.id, !product.active)}
-                className={`min-h-[42px] px-3.5 rounded-xl border text-xs font-semibold transition-colors ${
+                className={`min-h-[42px] px-3 rounded-xl border text-xs font-semibold transition-colors ${
                   product.active
                     ? 'border-emerald-700 bg-emerald-950/60 text-emerald-300 hover:bg-emerald-950'
                     : 'border-[#27272E] bg-[#1C1C22] text-zinc-400'
                 }`}
               >
                 {product.active ? 'Activo' : 'Inactivo'}
+              </button>
+
+              <button
+                type="button"
+                aria-label={`Eliminar producto ${product.name}`}
+                onClick={() => {
+                  setDeleteError(null);
+                  setPendingDelete({ kind: 'product', id: product.id, name: product.name });
+                }}
+                className="min-h-[42px] min-w-[42px] flex items-center justify-center rounded-xl border border-red-900/70 bg-red-950/40 text-red-400 hover:bg-red-950"
+              >
+                <Trash2 className="w-4 h-4" />
               </button>
             </div>
           </article>
@@ -282,6 +361,69 @@ export const MenuManagerView: React.FC = () => {
           onClose={() => setEditingProduct(undefined)}
         />
       )}
+
+      {/* Confirmation Modal for Product or Sauce Deletion */}
+      {pendingDelete && (
+        <div
+          className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/75 backdrop-blur-sm sm:p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="confirm-menu-delete-title"
+        >
+          <div className="w-full sm:max-w-md bg-[#141418] text-white rounded-t-3xl sm:rounded-2xl border border-[#27272E] shadow-2xl overflow-hidden">
+            <div className="px-5 py-4 border-b border-[#27272E] flex items-center justify-between bg-[#101014]">
+              <div className="flex items-center gap-2">
+                <AlertTriangle className="w-5 h-5 text-red-400 shrink-0" />
+                <h2 id="confirm-menu-delete-title" className="font-poster text-xl font-extrabold tracking-wide uppercase">
+                  {pendingDelete.kind === 'product' ? 'ELIMINAR PRODUCTO' : 'ELIMINAR SALSA'}
+                </h2>
+              </div>
+              <button
+                type="button"
+                disabled={deleting}
+                onClick={() => setPendingDelete(null)}
+                aria-label="Cerrar confirmación"
+                className="min-h-[44px] min-w-[44px] flex items-center justify-center rounded-xl text-zinc-400 hover:bg-[#1C1C22]"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="p-5 space-y-4">
+              {deleteError && (
+                <div className="rounded-xl bg-red-950/60 border border-red-700 px-3 py-2 text-xs font-medium text-red-200">
+                  {deleteError}
+                </div>
+              )}
+
+              <p className="text-sm text-zinc-200 leading-relaxed">
+                ¿Seguro que deseas eliminar{' '}
+                <strong className="text-amber-400">{pendingDelete.name}</strong> del menú? Esta acción no se puede deshacer.
+              </p>
+
+              <div className="grid grid-cols-2 gap-2.5 pt-1">
+                <button
+                  type="button"
+                  disabled={deleting}
+                  onClick={() => setPendingDelete(null)}
+                  className="min-h-[44px] rounded-xl border border-[#27272E] bg-[#1C1C22] text-sm font-semibold text-zinc-200 hover:border-zinc-500"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="button"
+                  disabled={deleting}
+                  onClick={handleConfirmDelete}
+                  className="min-h-[44px] rounded-xl bg-red-600 text-white text-sm font-bold hover:bg-red-500 disabled:opacity-50"
+                >
+                  {deleting ? 'Eliminando...' : 'Sí, eliminar'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
+

@@ -1,8 +1,10 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
+  Ban,
   ChevronLeft,
   ChevronRight,
   RotateCcw,
+  Trash2,
   X,
   ZoomIn,
   ZoomOut,
@@ -13,15 +15,21 @@ import { formatCurrency, formatDateTimeShort } from '../utils/orderMath';
 interface Props {
   receipts: TransferReceipt[];
   initialIndex: number;
+  isAdmin?: boolean;
   onClose: () => void;
   onInspectOrder?: (orderId: string) => void;
+  onVoidReceipt?: (transferId: string) => Promise<void>;
+  onDeleteReceipt?: (transferId: string) => Promise<void>;
 }
 
 export const WhatsAppReceiptViewer: React.FC<Props> = ({
   receipts,
   initialIndex,
+  isAdmin = false,
   onClose,
   onInspectOrder,
+  onVoidReceipt,
+  onDeleteReceipt,
 }) => {
   const [index, setIndex] = useState(
     Math.max(0, Math.min(initialIndex, receipts.length - 1))
@@ -29,11 +37,14 @@ export const WhatsAppReceiptViewer: React.FC<Props> = ({
   const [zoom, setZoom] = useState(1);
   const [offset, setOffset] = useState({ x: 0, y: 0 });
   const [dragging, setDragging] = useState(false);
+  const [confirmMode, setConfirmMode] = useState<'void' | 'delete' | null>(null);
+  const [busyAction, setBusyAction] = useState(false);
 
   const dragStartRef = useRef({ x: 0, y: 0, origX: 0, origY: 0 });
   const touchStartRef = useRef<{ x: number; y: number; time: number } | null>(null);
 
-  const current = receipts[index];
+  const safeIndex = Math.max(0, Math.min(index, Math.max(0, receipts.length - 1)));
+  const current = receipts[safeIndex];
 
   const resetZoom = useCallback(() => {
     setZoom(1);
@@ -243,12 +254,18 @@ export const WhatsAppReceiptViewer: React.FC<Props> = ({
               </span>
               <span
                 className={`px-2 py-0.5 rounded text-xs font-semibold ${
-                  current.paymentStatus === 'pagado'
-                    ? 'bg-emerald-600 text-white'
-                    : 'bg-amber-600 text-white'
+                  current.annulled
+                    ? 'bg-red-600 text-white'
+                    : current.paymentStatus === 'pagado'
+                      ? 'bg-emerald-600 text-white'
+                      : 'bg-amber-600 text-white'
                 }`}
               >
-                {current.paymentStatus === 'pagado' ? 'Pagado' : 'Pendiente'}
+                {current.annulled
+                  ? 'Anulado'
+                  : current.paymentStatus === 'pagado'
+                    ? 'Pagado'
+                    : 'Pendiente'}
               </span>
               <span className="text-xs text-slate-300">
                 Registró: <strong className="text-white">{current.waiterName}</strong>
@@ -259,15 +276,99 @@ export const WhatsAppReceiptViewer: React.FC<Props> = ({
             )}
           </div>
 
-          {onInspectOrder && (
-            <button
-              type="button"
-              onClick={() => onInspectOrder(current.orderId)}
-              className="min-h-[42px] px-4 rounded-xl bg-white text-slate-900 text-xs font-semibold hover:bg-slate-200 transition-colors whitespace-nowrap shrink-0"
-            >
-              Ver pedido #{current.orderNumber}
-            </button>
-          )}
+          <div className="flex flex-wrap items-center gap-2 shrink-0">
+            {onInspectOrder && (
+              <button
+                type="button"
+                onClick={() => onInspectOrder(current.orderId)}
+                className="min-h-[40px] px-3.5 rounded-xl bg-white text-slate-900 text-xs font-semibold hover:bg-slate-200 transition-colors whitespace-nowrap"
+              >
+                Ver pedido #{current.orderNumber}
+              </button>
+            )}
+
+            {!current.annulled && onVoidReceipt && (
+              confirmMode === 'void' ? (
+                <div className="flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    disabled={busyAction}
+                    onClick={async () => {
+                      setBusyAction(true);
+                      try {
+                        await onVoidReceipt(current.id);
+                        setConfirmMode(null);
+                        if (receipts.length <= 1) onClose();
+                      } finally {
+                        setBusyAction(false);
+                      }
+                    }}
+                    className="min-h-[40px] px-3 rounded-xl bg-amber-500 text-black text-xs font-bold"
+                  >
+                    ¿Confirmar anular?
+                  </button>
+                  <button
+                    type="button"
+                    disabled={busyAction}
+                    onClick={() => setConfirmMode(null)}
+                    className="min-h-[40px] px-2.5 rounded-xl bg-white/10 text-xs text-white"
+                  >
+                    No
+                  </button>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => setConfirmMode('void')}
+                  className="min-h-[40px] px-3 rounded-xl border border-amber-500/70 bg-amber-500/20 text-amber-300 text-xs font-semibold hover:bg-amber-500/30 flex items-center gap-1.5"
+                >
+                  <Ban className="w-3.5 h-3.5" />
+                  <span>Anular</span>
+                </button>
+              )
+            )}
+
+            {isAdmin && onDeleteReceipt && (
+              confirmMode === 'delete' ? (
+                <div className="flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    disabled={busyAction}
+                    onClick={async () => {
+                      setBusyAction(true);
+                      try {
+                        await onDeleteReceipt(current.id);
+                        setConfirmMode(null);
+                        if (receipts.length <= 1) onClose();
+                      } finally {
+                        setBusyAction(false);
+                      }
+                    }}
+                    className="min-h-[40px] px-3 rounded-xl bg-red-600 text-white text-xs font-bold"
+                  >
+                    ¿Eliminar rastro?
+                  </button>
+                  <button
+                    type="button"
+                    disabled={busyAction}
+                    onClick={() => setConfirmMode(null)}
+                    className="min-h-[40px] px-2.5 rounded-xl bg-white/10 text-xs text-white"
+                  >
+                    No
+                  </button>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => setConfirmMode('delete')}
+                  className="min-h-[40px] px-3 rounded-xl border border-red-600/80 bg-red-600/20 text-red-300 text-xs font-semibold hover:bg-red-600/30 flex items-center gap-1.5"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                  <span>Eliminar rastro</span>
+                </button>
+              )
+            )}
+          </div>
         </div>
       </div>
     </div>

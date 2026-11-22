@@ -25,6 +25,7 @@ export interface AddonOption {
   id: string;
   name: string;
   price: number;
+  allowMultiple?: boolean;
 }
 
 export interface Sauce {
@@ -62,6 +63,7 @@ export interface OrderItemAddon {
   id: string;
   name: string;
   price: number;
+  quantity?: number;
 }
 
 export interface OrderItem {
@@ -94,6 +96,9 @@ export interface Order {
   notes: string;
   receiptCount: number;
   latestReceiptUrl: string;
+  voidReason?: string;
+  voidedByName?: string;
+  voidedAtMs?: number;
   ownerUid: string;
   createdByUid: string;
   allowedEmails: string[];
@@ -130,6 +135,10 @@ export interface TransferReceipt {
   waiterName: string;
   paymentStatus: PaymentStatus;
   notes: string;
+  annulled?: boolean;
+  annulledByName?: string;
+  annulledReason?: string;
+  annulledAtMs?: number;
   ownerUid: string;
   createdByUid: string;
   allowedEmails: string[];

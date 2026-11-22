@@ -39,10 +39,13 @@ export const ProductEditorModal: React.FC<Props> = ({ product, onClose }) => {
   const [removableInput, setRemovableInput] = useState('');
 
   const [addonOptions, setAddonOptions] = useState<AddonOption[]>(
-    product ? [...product.addonOptions] : []
+    product
+      ? product.addonOptions.map((a) => ({ ...a, allowMultiple: a.allowMultiple !== false }))
+      : []
   );
   const [addonName, setAddonName] = useState('');
   const [addonPrice, setAddonPrice] = useState('');
+  const [addonAllowMultiple, setAddonAllowMultiple] = useState(true);
 
   const [saving, setSaving] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -67,10 +70,16 @@ export const ProductEditorModal: React.FC<Props> = ({ product, onClose }) => {
     if (!cleanName || Number.isNaN(priceNum) || priceNum < 0) return;
     setAddonOptions((prev) => [
       ...prev,
-      { id: createSafeId('ext'), name: cleanName, price: Math.round(priceNum) },
+      {
+        id: createSafeId('ext'),
+        name: cleanName,
+        price: Math.round(priceNum),
+        allowMultiple: addonAllowMultiple,
+      },
     ]);
     setAddonName('');
     setAddonPrice('');
+    setAddonAllowMultiple(true);
   };
 
   const handleCategoryChange = (val: string) => {
@@ -386,7 +395,7 @@ export const ProductEditorModal: React.FC<Props> = ({ product, onClose }) => {
           {/* Add-on extras */}
           <section className="space-y-2 border-t border-[#27272E] pt-4">
             <p className="text-xs font-semibold text-zinc-300">
-              Adiciones o extras que se pueden PONER (con precio adicional)
+              Adiciones o extras que se pueden PONER (con precio adicional y cantidad)
             </p>
             <div className="flex flex-col sm:flex-row gap-2">
               <input
@@ -405,8 +414,20 @@ export const ProductEditorModal: React.FC<Props> = ({ product, onClose }) => {
                 value={addonPrice}
                 onChange={(e) => setAddonPrice(e.target.value)}
                 placeholder="Precio ($)"
-                className="sm:w-32 min-h-[42px] rounded-xl border border-[#27272E] bg-[#0A0A0A] px-3 font-mono text-sm text-amber-400 placeholder:text-zinc-500"
+                className="sm:w-28 min-h-[42px] rounded-xl border border-[#27272E] bg-[#0A0A0A] px-3 font-mono text-sm text-amber-400 placeholder:text-zinc-500"
               />
+              <button
+                type="button"
+                onClick={() => setAddonAllowMultiple((v) => !v)}
+                title="Alternar si el cliente puede repetir esta adición varias veces"
+                className={`min-h-[42px] px-3 rounded-xl border text-xs font-bold whitespace-nowrap shrink-0 transition-colors ${
+                  addonAllowMultiple
+                    ? 'border-emerald-700 bg-emerald-950/60 text-emerald-300'
+                    : 'border-[#27272E] bg-[#1C1C22] text-zinc-300'
+                }`}
+              >
+                {addonAllowMultiple ? 'Varias veces' : 'Solo 1 vez'}
+              </button>
               <button
                 type="button"
                 onClick={addAddon}
@@ -419,27 +440,47 @@ export const ProductEditorModal: React.FC<Props> = ({ product, onClose }) => {
 
             {addonOptions.length > 0 && (
               <div className="divide-y divide-[#27272E] border border-[#27272E] rounded-xl overflow-hidden mt-2 bg-[#0A0A0A]">
-                {addonOptions.map((ex) => (
-                  <div
-                    key={ex.id}
-                    className="flex items-center justify-between px-3.5 py-2.5 text-sm"
-                  >
-                    <span className="font-medium text-zinc-200">{ex.name}</span>
-                    <div className="flex items-center gap-3">
-                      <span className="font-mono text-xs font-semibold text-amber-400 tabular-nums">
-                        +{formatCurrency(ex.price)}
-                      </span>
-                      <button
-                        type="button"
-                        aria-label={`Quitar extra ${ex.name}`}
-                        onClick={() => setAddonOptions((p) => p.filter((x) => x.id !== ex.id))}
-                        className="min-h-[34px] min-w-[34px] flex items-center justify-center text-red-400 hover:bg-red-950/60 rounded-lg"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </button>
+                {addonOptions.map((ex) => {
+                  const multi = ex.allowMultiple !== false;
+                  return (
+                    <div
+                      key={ex.id}
+                      className="flex flex-wrap items-center justify-between gap-2 px-3.5 py-2.5 text-sm"
+                    >
+                      <span className="font-medium text-zinc-200">{ex.name}</span>
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setAddonOptions((p) =>
+                              p.map((x) =>
+                                x.id === ex.id ? { ...x, allowMultiple: !multi } : x
+                              )
+                            )
+                          }
+                          className={`min-h-[30px] px-2.5 rounded-lg border text-[11px] font-semibold transition-colors ${
+                            multi
+                              ? 'border-emerald-700 bg-emerald-950/50 text-emerald-300'
+                              : 'border-[#27272E] bg-[#1C1C22] text-zinc-300'
+                          }`}
+                        >
+                          {multi ? 'Múltiple' : 'Solo 1 vez'}
+                        </button>
+                        <span className="font-mono text-xs font-semibold text-amber-400 tabular-nums">
+                          +{formatCurrency(ex.price)}
+                        </span>
+                        <button
+                          type="button"
+                          aria-label={`Quitar extra ${ex.name}`}
+                          onClick={() => setAddonOptions((p) => p.filter((x) => x.id !== ex.id))}
+                          className="min-h-[34px] min-w-[34px] flex items-center justify-center text-red-400 hover:bg-red-950/60 rounded-lg"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </div>
                     </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             )}
           </section>

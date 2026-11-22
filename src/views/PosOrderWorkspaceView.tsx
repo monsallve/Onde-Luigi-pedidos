@@ -1,4 +1,4 @@
-import React, { useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertCircle,
   Camera,
@@ -32,6 +32,7 @@ import {
   createSafeId,
   formatCurrency,
   formatCustomizationSummary,
+  getAddonQuantity,
   validateOrderItemsSauces,
 } from '../utils/orderMath';
 import { RecipeCustomizeModal } from '../components/RecipeCustomizeModal';
@@ -42,6 +43,52 @@ interface Props {
 }
 
 const QUICK_REFS = ['Mesa 1', 'Mesa 2', 'Mesa 3', 'Mesa 4', 'Barra', 'Para llevar', 'Domicilio'];
+export const ORDER_DRAFT_STORAGE_KEY = 'ondeluigi_order_draft_v1';
+
+interface OrderDraftPayload {
+  reference: string;
+  notes: string;
+  items: OrderItem[];
+  paymentStatus: PaymentStatus;
+  paymentMethod: PaymentMethod;
+  receiptNotes: string;
+}
+
+function loadOrderDraft(): OrderDraftPayload | null {
+  try {
+    if (typeof window === 'undefined') return null;
+    const raw = window.localStorage.getItem(ORDER_DRAFT_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<OrderDraftPayload>;
+    if (!parsed || typeof parsed !== 'object') return null;
+    return {
+      reference: typeof parsed.reference === 'string' ? parsed.reference : '',
+      notes: typeof parsed.notes === 'string' ? parsed.notes : '',
+      items: Array.isArray(parsed.items) ? parsed.items : [],
+      paymentStatus: parsed.paymentStatus === 'pagado' ? 'pagado' : 'pendiente',
+      paymentMethod:
+        parsed.paymentMethod === 'efectivo' ||
+        parsed.paymentMethod === 'transferencia' ||
+        parsed.paymentMethod === 'tarjeta' ||
+        parsed.paymentMethod === 'otro'
+          ? parsed.paymentMethod
+          : 'transferencia',
+      receiptNotes: typeof parsed.receiptNotes === 'string' ? parsed.receiptNotes : '',
+    };
+  } catch {
+    return null;
+  }
+}
+
+function clearOrderDraftStorage() {
+  try {
+    if (typeof window !== 'undefined') {
+      window.localStorage.removeItem(ORDER_DRAFT_STORAGE_KEY);
+    }
+  } catch {
+    // ignore storage errors
+  }
+}
 
 export const PosOrderWorkspaceView: React.FC<Props> = ({
   onOpenWaiterPicker,
@@ -49,15 +96,20 @@ export const PosOrderWorkspaceView: React.FC<Props> = ({
 }) => {
   const { products, sauces, activeWaiter, createOrder } = usePosStore();
 
-  const [reference, setReference] = useState('');
-  const [notes, setNotes] = useState('');
-  const [items, setItems] = useState<OrderItem[]>([]);
+  const initialDraft = useMemo(() => loadOrderDraft(), []);
+  const [reference, setReference] = useState(initialDraft?.reference ?? '');
+  const [notes, setNotes] = useState(initialDraft?.notes ?? '');
+  const [items, setItems] = useState<OrderItem[]>(initialDraft?.items ?? []);
 
-  const [paymentStatus, setPaymentStatus] = useState<PaymentStatus>('pendiente');
-  const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('transferencia');
+  const [paymentStatus, setPaymentStatus] = useState<PaymentStatus>(
+    initialDraft?.paymentStatus ?? 'pendiente'
+  );
+  const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>(
+    initialDraft?.paymentMethod ?? 'transferencia'
+  );
   const [receiptFile, setReceiptFile] = useState<File | null>(null);
   const [receiptPreview, setReceiptPreview] = useState<string>('');
-  const [receiptNotes, setReceiptNotes] = useState<string>('');
+  const [receiptNotes, setReceiptNotes] = useState<string>(initialDraft?.receiptNotes ?? '');
 
   const [selectedCategory, setSelectedCategory] = useState<string>('Todas');
   const [searchTerm, setSearchTerm] = useState('');
@@ -71,6 +123,51 @@ export const PosOrderWorkspaceView: React.FC<Props> = ({
 
   const cameraRef = useRef<HTMLInputElement>(null);
   const galleryRef = useRef<HTMLInputElement>(null);
+
+  // Persist unfinished order draft so exiting and re-opening restores work automatically
+  useEffect(() => {
+    const hasDraft =
+      items.length > 0 ||
+      Boolean(reference.trim()) ||
+      Boolean(notes.trim()) ||
+      paymentStatus === 'pagado' ||
+      Boolean(receiptNotes.trim());
+
+    if (!hasDraft) {
+      clearOrderDraftStorage();
+      return;
+    }
+
+    try {
+      const payload: OrderDraftPayload = {
+        reference,
+        notes,
+        items,
+        paymentStatus,
+        paymentMethod,
+        receiptNotes,
+      };
+      window.localStorage.setItem(ORDER_DRAFT_STORAGE_KEY, JSON.stringify(payload));
+    } catch {
+      // ignore quota/private-mode storage errors
+    }
+  }, [reference, notes, items, paymentStatus, paymentMethod, receiptNotes]);
+
+  // Intercept Android/browser Back gesture for local overlays first
+  useEffect(() => {
+    const handleBackIntercept = (e: Event) => {
+      if (customizingProduct) {
+        e.preventDefault();
+        setCustomizingProduct(null);
+        setEditingLineItem(null);
+      } else if (mobileComandaOpen) {
+        e.preventDefault();
+        setMobileComandaOpen(false);
+      }
+    };
+    window.addEventListener('ondeluigi:back-intercept', handleBackIntercept);
+    return () => window.removeEventListener('ondeluigi:back-intercept', handleBackIntercept);
+  }, [customizingProduct, mobileComandaOpen]);
 
   const activeProducts = useMemo(() => products.filter((p) => p.active), [products]);
   const activeSauceCount = useMemo(() => sauces.filter((s) => s.active).length, [sauces]);
@@ -211,16 +308,24 @@ export const PosOrderWorkspaceView: React.FC<Props> = ({
     reader.readAsDataURL(file);
   };
 
+  const handleClearDraft = () => {
+    setReference('');
+    setNotes('');
+    setItems([]);
+    setPaymentStatus('pendiente');
+    setPaymentMethod('transferencia');
+    setReceiptFile(null);
+    setReceiptPreview('');
+    setReceiptNotes('');
+    setErrorMsg(null);
+    clearOrderDraftStorage();
+  };
+
   const handleSubmit = async () => {
     setErrorMsg(null);
     if (!activeWaiter) {
       setErrorMsg('Selecciona tu nombre de mesero o encargado antes de enviar el pedido.');
       onOpenWaiterPicker();
-      return;
-    }
-    if (!reference.trim()) {
-      setErrorMsg('Indica la mesa, cliente o referencia del pedido.');
-      setMobileComandaOpen(true);
       return;
     }
     if (items.length === 0) {
@@ -248,14 +353,7 @@ export const PosOrderWorkspaceView: React.FC<Props> = ({
         receiptNotes,
       });
       setLastCreatedOrder(created);
-      setReference('');
-      setNotes('');
-      setItems([]);
-      setPaymentStatus('pendiente');
-      setPaymentMethod('transferencia');
-      setReceiptFile(null);
-      setReceiptPreview('');
-      setReceiptNotes('');
+      handleClearDraft();
       setMobileComandaOpen(false);
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : 'No se pudo enviar el pedido.');
@@ -337,17 +435,22 @@ export const PosOrderWorkspaceView: React.FC<Props> = ({
             </div>
           </div>
 
-          {/* Menu Grid */}
+          {/* Menu Grid: 2 columns on mobile/Android for higher catalog density */}
           {filteredProducts.length === 0 ? (
             <div className="bg-[#141418] border border-[#27272E] rounded-2xl p-10 text-center text-sm text-zinc-400">
               No hay productos activos que coincidan con tu búsqueda.
             </div>
           ) : (
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div className="grid grid-cols-2 gap-2.5 sm:gap-3.5">
               {filteredProducts.map((product) => {
                 const countInOrder = items
                   .filter((i) => i.productId === product.id)
                   .reduce((s, i) => s + i.quantity, 0);
+
+                const hasCustomization =
+                  product.allowSauces ||
+                  product.removableOptions.length > 0 ||
+                  product.addonOptions.length > 0;
 
                 return (
                   <article
@@ -357,57 +460,55 @@ export const PosOrderWorkspaceView: React.FC<Props> = ({
                     }`}
                   >
                     {product.imageUrl && (
-                      <div className="relative h-36 bg-[#0A0A0A] overflow-hidden border-b border-[#27272E]">
+                      <div className="relative h-24 sm:h-36 bg-[#0A0A0A] overflow-hidden border-b border-[#27272E]">
                         <img
                           src={resolveAssetUrl(product.imageUrl)}
                           alt={product.name}
                           className="w-full h-full object-cover object-top"
                         />
                         {countInOrder > 0 && (
-                          <span className="absolute top-2.5 right-2.5 px-2.5 py-1 rounded-lg bg-amber-500 text-black font-mono text-xs font-extrabold tabular-nums shadow">
+                          <span className="absolute top-1.5 right-1.5 sm:top-2.5 sm:right-2.5 px-2 sm:px-2.5 py-0.5 sm:py-1 rounded-lg bg-amber-500 text-black font-mono text-[10px] sm:text-xs font-extrabold tabular-nums shadow">
                             {countInOrder} en pedido
                           </span>
                         )}
                       </div>
                     )}
 
-                    <div className="p-3.5 flex-1 flex flex-col justify-between gap-3">
+                    <div className="p-2.5 sm:p-3.5 flex-1 flex flex-col justify-between gap-2 sm:gap-3">
                       <div>
-                        <div className="flex items-start justify-between gap-2">
-                          <div>
-                            <p className="text-[11px] font-semibold text-zinc-400 uppercase tracking-wide">
+                        <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-0.5 sm:gap-2">
+                          <div className="min-w-0">
+                            <p className="text-[10px] sm:text-[11px] font-semibold text-zinc-400 uppercase tracking-wide truncate">
                               {product.category}
-                              {!product.imageUrl && countInOrder > 0 ? ` · ${countInOrder} en pedido` : ''}
+                              {!product.imageUrl && countInOrder > 0 ? ` · ${countInOrder}` : ''}
                             </p>
-                            <h2 className="font-poster text-xl font-extrabold text-white leading-tight uppercase mt-0.5">
+                            <h2 className="font-poster text-sm sm:text-xl font-extrabold text-white leading-tight uppercase mt-0.5 line-clamp-2">
                               {product.name}
                             </h2>
                           </div>
-                          <span className="font-mono text-base font-bold text-amber-400 tabular-nums shrink-0">
+                          <span className="font-mono text-xs sm:text-base font-bold text-amber-400 tabular-nums shrink-0">
                             {formatCurrency(product.basePrice)}
                           </span>
                         </div>
 
                         {product.baseRecipe.length > 0 && (
-                          <p className="text-xs text-zinc-400 mt-1.5 line-clamp-2 leading-relaxed">
+                          <p className="hidden sm:block text-xs text-zinc-400 mt-1.5 line-clamp-2 leading-relaxed">
                             {product.baseRecipe.join(' · ')}
                           </p>
                         )}
                       </div>
 
-                      <div className="flex items-center gap-2 pt-1">
+                      <div className="flex items-center gap-1.5 sm:gap-2 pt-0.5">
                         <button
                           type="button"
                           onClick={() => handleQuickAdd(product)}
-                          className="flex-1 min-h-[44px] rounded-xl bg-amber-500 text-black text-xs font-bold hover:bg-amber-400 transition-colors flex items-center justify-center gap-1.5"
+                          className="flex-1 min-w-0 min-h-[40px] sm:min-h-[44px] px-2 rounded-xl bg-amber-500 text-black text-[11px] sm:text-xs font-bold hover:bg-amber-400 transition-colors flex items-center justify-center gap-1"
                         >
-                          <Plus className="w-4 h-4" />
+                          <Plus className="w-3.5 h-3.5 sm:w-4 sm:h-4 shrink-0" />
                           <span>Agregar</span>
                         </button>
 
-                        {(product.allowSauces ||
-                          product.removableOptions.length > 0 ||
-                          product.addonOptions.length > 0) && (
+                        {hasCustomization && (
                           <button
                             type="button"
                             onClick={() => {
@@ -415,9 +516,9 @@ export const PosOrderWorkspaceView: React.FC<Props> = ({
                               setCustomizingProduct(product);
                             }}
                             aria-label={`Personalizar ${product.name}`}
-                            className="min-h-[44px] px-3 rounded-xl border border-[#27272E] bg-[#1C1C22] text-zinc-200 text-xs font-semibold hover:border-zinc-500 flex items-center gap-1.5 whitespace-nowrap shrink-0"
+                            className="min-h-[40px] sm:min-h-[44px] px-2 sm:px-3 rounded-xl border border-[#27272E] bg-[#1C1C22] text-zinc-200 text-[11px] sm:text-xs font-semibold hover:border-zinc-500 flex items-center gap-1 whitespace-nowrap shrink-0"
                           >
-                            <SlidersHorizontal className="w-3.5 h-3.5 text-amber-400" />
+                            <SlidersHorizontal className="w-3.5 h-3.5 text-amber-400 shrink-0" />
                             <span>Receta</span>
                           </button>
                         )}
@@ -446,13 +547,10 @@ export const PosOrderWorkspaceView: React.FC<Props> = ({
               </h2>
             </div>
             <div className="flex items-center gap-2">
-              {items.length > 0 && (
+              {(items.length > 0 || reference.trim() || notes.trim()) && (
                 <button
                   type="button"
-                  onClick={() => {
-                    setItems([]);
-                    setErrorMsg(null);
-                  }}
+                  onClick={handleClearDraft}
                   className="text-xs font-medium text-zinc-400 hover:text-red-400"
                 >
                   Limpiar
@@ -480,13 +578,13 @@ export const PosOrderWorkspaceView: React.FC<Props> = ({
               </div>
             )}
 
-            {/* Mesa / Cliente Reference */}
+            {/* Mesa / Cliente Reference (optional, cyclic 1..99 if left blank) */}
             <div>
               <label
                 htmlFor="pos-reference-input"
                 className="block text-xs font-bold text-zinc-300 mb-1.5"
               >
-                Mesa o Nombre del Cliente
+                Mesa o Nombre del Cliente <span className="text-zinc-400 font-normal">(opcional · auto #1–#99)</span>
               </label>
               <input
                 id="pos-reference-input"
@@ -494,7 +592,7 @@ export const PosOrderWorkspaceView: React.FC<Props> = ({
                 maxLength={100}
                 value={reference}
                 onChange={(e) => setReference(e.target.value)}
-                placeholder="Ej. Mesa 3 o Laura Gómez"
+                placeholder="Ej. Mesa 3 · Si lo dejas vacío asigna #1–#99 automático"
                 className="w-full min-h-[42px] rounded-xl border border-[#27272E] bg-[#0A0A0A] px-3 text-sm text-white placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-amber-500"
               />
               <div className="flex flex-wrap items-center gap-1.5 pt-2">
@@ -557,7 +655,10 @@ export const PosOrderWorkspaceView: React.FC<Props> = ({
                           {(item.addedExtras.length > 0 || item.customNote) && (
                             <p className="text-xs text-emerald-300 mt-0.5">
                               {[
-                                ...item.addedExtras.map((e) => `+${e.name}`),
+                                ...item.addedExtras.map((e) => {
+                                  const qty = getAddonQuantity(e);
+                                  return qty > 1 ? `+${qty}x ${e.name}` : `+${e.name}`;
+                                }),
                                 item.customNote ? `Nota: "${item.customNote}"` : '',
                               ]
                                 .filter(Boolean)
@@ -833,3 +934,4 @@ export const PosOrderWorkspaceView: React.FC<Props> = ({
     </div>
   );
 };
+

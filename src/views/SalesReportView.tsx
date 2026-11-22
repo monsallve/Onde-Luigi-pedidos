@@ -1,5 +1,5 @@
-import React, { useMemo, useState } from 'react';
-import { Calendar, ChevronRight, Package, Users, Wallet, X } from 'lucide-react';
+import React, { useEffect, useMemo, useState } from 'react';
+import { Calendar, ChevronRight, Lock, Package, Users, Wallet, X } from 'lucide-react';
 import { usePosStore } from '../services/posStore';
 import type { DateRangePreset } from '../types/pos';
 import { formatCurrency, formatDateTimeShort, PAYMENT_METHOD_LABELS } from '../utils/orderMath';
@@ -11,12 +11,23 @@ import {
 } from '../utils/salesAnalytics';
 
 export const SalesReportView: React.FC = () => {
-  const { orders } = usePosStore();
+  const { orders, isAdmin } = usePosStore();
 
   const [preset, setPreset] = useState<DateRangePreset>('hoy');
   const [customFrom, setCustomFrom] = useState(() => toInputDateString(Date.now()));
   const [customTo, setCustomTo] = useState(() => toInputDateString(Date.now()));
   const [inspectedProduct, setInspectedProduct] = useState<ProductSalesRow | null>(null);
+
+  useEffect(() => {
+    const handleBackIntercept = (e: Event) => {
+      if (inspectedProduct) {
+        e.preventDefault();
+        setInspectedProduct(null);
+      }
+    };
+    window.addEventListener('ondeluigi:back-intercept', handleBackIntercept);
+    return () => window.removeEventListener('ondeluigi:back-intercept', handleBackIntercept);
+  }, [inspectedProduct]);
 
   const bounds = useMemo(
     () => resolveDateRange(preset, customFrom, customTo),
@@ -33,6 +44,20 @@ export const SalesReportView: React.FC = () => {
     const idSet = new Set(inspectedProduct.orderIds);
     return orders.filter((o) => idSet.has(o.id));
   }, [inspectedProduct, orders]);
+
+  if (!isAdmin) {
+    return (
+      <div className="bg-[#141418] border border-[#27272E] rounded-2xl p-10 text-center max-w-lg mx-auto my-8 space-y-3">
+        <Lock className="w-10 h-10 text-amber-400 mx-auto" />
+        <h1 className="font-poster text-2xl font-extrabold text-white tracking-wide">
+          ACCESO ADMINISTRATIVO REQUERIDO
+        </h1>
+        <p className="text-sm text-zinc-400">
+          Solo las cuentas con rol Administrador pueden ver el resumen de ventas, ingresos y conteo de productos vendidos.
+        </p>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-5">

@@ -1,10 +1,14 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import {
+  createUserWithEmailAndPassword,
   GoogleAuthProvider,
   onAuthStateChanged,
+  sendEmailVerification,
+  sendPasswordResetEmail,
   signInWithEmailAndPassword,
   signInWithPopup,
   signOut,
+  updateProfile,
   type User,
 } from 'firebase/auth';
 import {
@@ -52,6 +56,8 @@ import {
   calculateOrderTotals,
   createSafeId,
   diffOrderItems,
+  formatAutoOrderReference,
+  getNextCyclicOrderRefNumber,
   ORDER_STATUS_LABELS,
   PAYMENT_METHOD_LABELS,
 } from '../utils/orderMath';
@@ -61,6 +67,7 @@ const DEMO_STORAGE_KEY = 'ondeluigi_demo_state_v2';
 const ACTIVE_WAITER_STORAGE_KEY = 'ondeluigi_active_waiter_v2';
 const DEMO_MODE_FLAG_KEY = 'ondeluigi_demo_active_v2';
 const DEMO_ROLE_STORAGE_KEY = 'ondeluigi_demo_role_v2';
+const CYCLIC_REF_COUNTER_KEY = 'ondeluigi_cyclic_ref_counter_v1';
 const SHARED_WORKSPACE_ID = 'ws_onde_luigi';
 
 interface DemoStatePayload {
@@ -127,6 +134,7 @@ interface PosContextValue {
   accountRole: AccountRole;
   isAdmin: boolean;
   authorizedEmails: string[];
+  allowSelfRegistration: boolean;
 
   staff: StaffMember[];
   sauces: Sauce[];
@@ -145,6 +153,8 @@ interface PosContextValue {
   resetDemoData: () => void;
   signInWithGoogle: () => Promise<void>;
   signInWithEmail: (email: string, password: string) => Promise<void>;
+  registerWithEmail: (name: string, email: string, password: string) => Promise<void>;
+  resetPassword: (email: string) => Promise<void>;
   signOutSession: () => Promise<void>;
 
   createOrder: (input: CreateOrderInput) => Promise<Order>;
@@ -155,6 +165,8 @@ interface PosContextValue {
     nextNotes: string
   ) => Promise<void>;
   updateOrderStatus: (orderId: string, nextStatus: OrderStatus) => Promise<void>;
+  voidOrder: (orderId: string, reason?: string) => Promise<void>;
+  deleteOrderRecord: (orderId: string) => Promise<void>;
   updateOrderPayment: (params: {
     orderId: string;
     paymentStatus: PaymentStatus;
@@ -168,17 +180,22 @@ interface PosContextValue {
     amount: number;
     notes?: string;
   }) => Promise<{ usedFallbackInline?: boolean }>;
+  voidTransferReceipt: (transferId: string, reason?: string) => Promise<void>;
+  deleteTransferReceipt: (transferId: string) => Promise<void>;
 
   saveProduct: (input: SaveProductInput) => Promise<void>;
   toggleProductActive: (productId: string, active: boolean) => Promise<void>;
+  deleteProduct: (productId: string) => Promise<void>;
   saveSauce: (name: string, id?: string, active?: boolean) => Promise<void>;
   toggleSauceActive: (sauceId: string, active: boolean) => Promise<void>;
+  deleteSauce: (sauceId: string) => Promise<void>;
   saveStaffMember: (name: string, role?: StaffRole) => Promise<void>;
   updateStaffRole: (staffId: string, role: StaffRole) => Promise<void>;
   renameStaffMember: (staffId: string, name: string) => Promise<void>;
   toggleStaffActive: (staffId: string, active: boolean) => Promise<void>;
   deleteStaffMember: (staffId: string) => Promise<void>;
   updateAuthorizedEmails: (emails: string[]) => Promise<void>;
+  updateAllowSelfRegistration: (allow: boolean) => Promise<void>;
 }
 
 const PosContext = createContext<PosContextValue | null>(null);
@@ -249,6 +266,14 @@ function safeRemoveStorage(key: string): void {
   }
 }
 
+function claimNextAutoReference(): string {
+  const raw = safeGetStorage(CYCLIC_REF_COUNTER_KEY);
+  const last = raw ? Number(raw) : 0;
+  const next = getNextCyclicOrderRefNumber(last);
+  safeSetStorage(CYCLIC_REF_COUNTER_KEY, String(next));
+  return formatAutoOrderReference(next);
+}
+
 export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [sessionMode, setSessionMode] = useState<ConnectionMode | null>(() => {
     if (typeof window !== 'undefined') {
@@ -281,6 +306,8 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const [workspaceOwnerUid, setWorkspaceOwnerUid] = useState<string>('demo_owner');
   const [authorizedEmails, setAuthorizedEmails] = useState<string[]>([ADMIN_BOOTSTRAP_EMAIL]);
+  const [allowSelfRegistration, setAllowSelfRegistration] = useState<boolean>(true);
+  const [cloudMemberRole, setCloudMemberRole] = useState<AccountRole>('mesero');
 
   const [staff, setStaff] = useState<StaffMember[]>([]);
   const [sauces, setSauces] = useState<Sauce[]>([]);
@@ -307,18 +334,6 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   }, []);
 
-  // Determine effective account role & actor identity
-  const accountRole: AccountRole = useMemo(() => {
-    if (sessionMode === 'demo') return demoAccountRole;
-    if (!firebaseUser) return 'mesero';
-    const userEmail = (firebaseUser.email || '').toLowerCase();
-    if (userEmail === ADMIN_BOOTSTRAP_EMAIL || firebaseUser.uid === workspaceOwnerUid) {
-      return 'admin';
-    }
-    return 'mesero';
-  }, [sessionMode, demoAccountRole, firebaseUser, workspaceOwnerUid]);
-
-  const isAdmin = accountRole === 'admin';
   const actorUid = firebaseUser
     ? firebaseUser.uid
     : demoAccountRole === 'mesero'
@@ -334,6 +349,24 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     () => staff.find((s) => s.linkedUid && s.linkedUid === actorUid) || null,
     [staff, actorUid]
   );
+
+  // Determine effective account role & actor identity
+  const accountRole: AccountRole = useMemo(() => {
+    if (sessionMode === 'demo') return demoAccountRole;
+    if (!firebaseUser) return 'mesero';
+    const userEmail = (firebaseUser.email || '').toLowerCase();
+    if (
+      userEmail === ADMIN_BOOTSTRAP_EMAIL ||
+      firebaseUser.uid === workspaceOwnerUid ||
+      cloudMemberRole === 'admin' ||
+      myLinkedStaff?.role === 'admin'
+    ) {
+      return 'admin';
+    }
+    return 'mesero';
+  }, [sessionMode, demoAccountRole, firebaseUser, workspaceOwnerUid, cloudMemberRole, myLinkedStaff]);
+
+  const isAdmin = accountRole === 'admin';
 
   const activeWaiter = useMemo(() => {
     if (!isAdmin) {
@@ -426,115 +459,257 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const workspaceId = sessionMode === 'cloud' ? SHARED_WORKSPACE_ID : 'demo_ws';
   const effectiveOwnerUid = sessionMode === 'cloud' ? workspaceOwnerUid : 'demo_owner';
 
-  // Ensure Shared Cloud Workspace exists & seed O'NDE LUIGI catalog for admin
+  // Ensure Shared Cloud Workspace exists & enroll verified waiters via workspaceDirectory + members
   const resolveOrBootstrapCloudWorkspace = useCallback(async (user: User) => {
     if (!db) return null;
     const wsRef = doc(db, 'workspaces', SHARED_WORKSPACE_ID);
+    const dirRef = doc(db, 'workspaceDirectory', SHARED_WORKSPACE_ID);
+    const memberRef = doc(db, 'workspaces', SHARED_WORKSPACE_ID, 'members', user.uid);
     const userEmail = (user.email || '').toLowerCase();
     const isAdminEmail = userEmail === ADMIN_BOOTSTRAP_EMAIL;
 
-    try {
-      const snap = await getDoc(wsRef);
-      if (!snap.exists()) {
-        if (!isAdminEmail) {
+    // 1. Admin bootstrap or backfill (when workspace already exists without directory/member doc)
+    if (isAdminEmail) {
+      try {
+        const snap = await getDoc(wsRef);
+        if (!snap.exists()) {
+          const batch = writeBatch(db);
+          const initialEmails = [userEmail];
+          batch.set(wsRef, {
+            id: SHARED_WORKSPACE_ID,
+            name: "O'NDE LUIGI",
+            ownerUid: user.uid,
+            ownerEmail: userEmail,
+            authorizedEmails: initialEmails,
+            createdAt: serverTimestamp(),
+            updatedAt: serverTimestamp(),
+          });
+
+          batch.set(dirRef, {
+            id: SHARED_WORKSPACE_ID,
+            name: "O'NDE LUIGI",
+            ownerUid: user.uid,
+            allowSelfRegistration: true,
+            updatedAt: serverTimestamp(),
+          });
+
+          batch.set(memberRef, {
+            uid: user.uid,
+            displayName: (user.displayName || userEmail || 'Administrador').trim().slice(0, 100),
+            role: 'admin',
+            active: true,
+            ownerUid: user.uid,
+            createdAt: serverTimestamp(),
+          });
+
+          // Seed only the Administrator's own staff profile (no predetermined fake waiters)
+          const adminStaffId = `staff_${user.uid}`;
+          batch.set(doc(db, 'workspaces', SHARED_WORKSPACE_ID, 'staff', adminStaffId), {
+            id: adminStaffId,
+            name: (user.displayName || 'Administrador').trim().slice(0, 80),
+            role: 'admin',
+            active: true,
+            linkedUid: user.uid,
+            linkedEmail: user.email || userEmail,
+            ownerUid: user.uid,
+            createdByUid: user.uid,
+            allowedEmails: initialEmails,
+            createdAt: serverTimestamp(),
+            updatedAt: serverTimestamp(),
+          });
+
+          const seed = buildDemoSeedData(user.uid, userEmail);
+          for (const sauce of seed.sauces) {
+            batch.set(doc(db, 'workspaces', SHARED_WORKSPACE_ID, 'sauces', sauce.id), {
+              id: sauce.id,
+              name: sauce.name,
+              active: sauce.active,
+              ownerUid: user.uid,
+              createdByUid: user.uid,
+              allowedEmails: initialEmails,
+              createdAt: serverTimestamp(),
+              updatedAt: serverTimestamp(),
+            });
+          }
+          for (const prod of seed.products) {
+            batch.set(doc(db, 'workspaces', SHARED_WORKSPACE_ID, 'products', prod.id), {
+              id: prod.id,
+              name: prod.name,
+              category: prod.category,
+              basePrice: prod.basePrice,
+              imageUrl: prod.imageUrl,
+              baseRecipe: prod.baseRecipe,
+              removableOptions: prod.removableOptions,
+              addonOptions: prod.addonOptions,
+              allowSauces: prod.allowSauces,
+              minSauces: prod.minSauces,
+              maxSauces: prod.maxSauces,
+              active: prod.active,
+              ownerUid: user.uid,
+              createdByUid: user.uid,
+              allowedEmails: initialEmails,
+              createdAt: serverTimestamp(),
+              updatedAt: serverTimestamp(),
+            });
+          }
+
+          await batch.commit();
+          return {
+            ownerUid: user.uid,
+            authorizedEmails: initialEmails,
+            allowSelfRegistration: true,
+            memberRole: 'admin' as AccountRole,
+          };
+        }
+
+        const data = snap.data() as {
+          name?: string;
+          ownerUid: string;
+          authorizedEmails?: string[];
+        };
+        const emails = Array.isArray(data.authorizedEmails)
+          ? data.authorizedEmails.map((e) => e.toLowerCase())
+          : [ADMIN_BOOTSTRAP_EMAIL];
+
+        const [dirSnap, memberSnap] = await Promise.all([getDoc(dirRef), getDoc(memberRef)]);
+        let currentAllowSelf = true;
+        if (!dirSnap.exists()) {
+          await setDoc(dirRef, {
+            id: SHARED_WORKSPACE_ID,
+            name: (data.name || "O'NDE LUIGI").slice(0, 120),
+            ownerUid: data.ownerUid,
+            allowSelfRegistration: true,
+            updatedAt: serverTimestamp(),
+          });
+        } else {
+          currentAllowSelf = Boolean((dirSnap.data() as { allowSelfRegistration?: boolean }).allowSelfRegistration);
+        }
+
+        if (!memberSnap.exists()) {
+          await setDoc(memberRef, {
+            uid: user.uid,
+            displayName: (user.displayName || userEmail || 'Administrador').trim().slice(0, 100),
+            role: 'admin',
+            active: true,
+            ownerUid: data.ownerUid,
+            createdAt: serverTimestamp(),
+          });
+        }
+
+        return {
+          ownerUid: data.ownerUid,
+          authorizedEmails: emails,
+          allowSelfRegistration: currentAllowSelf,
+          memberRole: 'admin' as AccountRole,
+        };
+      } catch (error) {
+        handleFirestoreError(error, OperationType.GET, `workspaces/${SHARED_WORKSPACE_ID}`);
+        return null;
+      }
+    }
+
+    // 2. Non-admin user flow: check own member doc and public workspaceDirectory FIRST (never hit workspaces/ws_onde_luigi unauthenticated)
+    const [memberSnap, dirSnap] = await Promise.all([
+      getDoc(memberRef).catch((err) => {
+        handleFirestoreError(err, OperationType.GET, `workspaces/${SHARED_WORKSPACE_ID}/members/${user.uid}`);
+        throw err;
+      }),
+      getDoc(dirRef).catch((err) => {
+        handleFirestoreError(err, OperationType.GET, `workspaceDirectory/${SHARED_WORKSPACE_ID}`);
+        throw err;
+      }),
+    ]);
+
+    let dirAllowSelf = dirSnap.exists()
+      ? Boolean((dirSnap.data() as { allowSelfRegistration?: boolean }).allowSelfRegistration)
+      : false;
+    let resolvedRole: AccountRole = 'mesero';
+
+    if (memberSnap.exists()) {
+      const mData = memberSnap.data() as { active?: boolean; role?: string };
+      if (mData.active === false) {
+        throw new Error(
+          'Tu acceso fue desactivado por el administrador. Pídele que vuelva a activarte en Ajustes.'
+        );
+      }
+      resolvedRole = mData.role === 'admin' ? 'admin' : 'mesero';
+    } else if (dirSnap.exists() && dirAllowSelf) {
+      const dirData = dirSnap.data() as { ownerUid: string };
+      try {
+        await setDoc(memberRef, {
+          uid: user.uid,
+          displayName: (user.displayName || userEmail || 'Mesero').trim().slice(0, 100),
+          role: 'mesero',
+          active: true,
+          ownerUid: dirData.ownerUid,
+          createdAt: serverTimestamp(),
+        });
+      } catch (err) {
+        handleFirestoreError(err, OperationType.CREATE, `workspaces/${SHARED_WORKSPACE_ID}/members/${user.uid}`);
+      }
+    } else {
+      // Directory missing or self-registration disabled: check if admin pre-authorized this email on workspace
+      let preAuthorizedSnap;
+      try {
+        preAuthorizedSnap = await getDoc(wsRef);
+      } catch {
+        if (!dirSnap.exists()) {
           throw new Error(
-            `El espacio O'NDE LUIGI aún no ha sido inicializado por el administrador (${ADMIN_BOOTSTRAP_EMAIL}).`
+            `El administrador (${ADMIN_BOOTSTRAP_EMAIL}) debe abrir la aplicación una vez para activar el acceso de meseros.`
           );
         }
-        const batch = writeBatch(db);
-        const initialEmails = [userEmail];
-        batch.set(wsRef, {
-          id: SHARED_WORKSPACE_ID,
-          name: "O'NDE LUIGI",
-          ownerUid: user.uid,
-          ownerEmail: userEmail,
-          authorizedEmails: initialEmails,
-          createdAt: serverTimestamp(),
-          updatedAt: serverTimestamp(),
-        });
-
-        const memberRef = doc(db, 'workspaces', SHARED_WORKSPACE_ID, 'members', user.uid);
-        batch.set(memberRef, {
-          uid: user.uid,
-          displayName: user.displayName || userEmail || 'Administrador',
-          role: 'admin',
-          active: true,
-          ownerUid: user.uid,
-          createdAt: serverTimestamp(),
-        });
-
-        // Seed only the Administrator's own staff profile (no predetermined fake waiters)
-        const adminStaffId = `staff_${user.uid}`;
-        batch.set(doc(db, 'workspaces', SHARED_WORKSPACE_ID, 'staff', adminStaffId), {
-          id: adminStaffId,
-          name: (user.displayName || 'Administrador').trim().slice(0, 80),
-          role: 'admin',
-          active: true,
-          linkedUid: user.uid,
-          linkedEmail: userEmail,
-          ownerUid: user.uid,
-          createdByUid: user.uid,
-          allowedEmails: initialEmails,
-          createdAt: serverTimestamp(),
-          updatedAt: serverTimestamp(),
-        });
-
-        const seed = buildDemoSeedData(user.uid, userEmail);
-        for (const sauce of seed.sauces) {
-          batch.set(doc(db, 'workspaces', SHARED_WORKSPACE_ID, 'sauces', sauce.id), {
-            id: sauce.id,
-            name: sauce.name,
-            active: sauce.active,
-            ownerUid: user.uid,
-            createdByUid: user.uid,
-            allowedEmails: initialEmails,
-            createdAt: serverTimestamp(),
-            updatedAt: serverTimestamp(),
-          });
-        }
-        for (const prod of seed.products) {
-          batch.set(doc(db, 'workspaces', SHARED_WORKSPACE_ID, 'products', prod.id), {
-            id: prod.id,
-            name: prod.name,
-            category: prod.category,
-            basePrice: prod.basePrice,
-            imageUrl: prod.imageUrl,
-            baseRecipe: prod.baseRecipe,
-            removableOptions: prod.removableOptions,
-            addonOptions: prod.addonOptions,
-            allowSauces: prod.allowSauces,
-            minSauces: prod.minSauces,
-            maxSauces: prod.maxSauces,
-            active: prod.active,
-            ownerUid: user.uid,
-            createdByUid: user.uid,
-            allowedEmails: initialEmails,
-            createdAt: serverTimestamp(),
-            updatedAt: serverTimestamp(),
-          });
-        }
-
-        await batch.commit();
-        return { ownerUid: user.uid, authorizedEmails: initialEmails };
-      }
-
-      const data = snap.data() as {
-        ownerUid: string;
-        authorizedEmails?: string[];
-      };
-      const emails = Array.isArray(data.authorizedEmails)
-        ? data.authorizedEmails.map((e) => e.toLowerCase())
-        : [ADMIN_BOOTSTRAP_EMAIL];
-
-      if (!isAdminEmail && data.ownerUid !== user.uid && !emails.includes(userEmail)) {
         throw new Error(
-          `La cuenta ${userEmail} no está autorizada como mesero. Pide al administrador (${ADMIN_BOOTSTRAP_EMAIL}) que agregue tu correo en Ajustes.`
+          `El registro abierto está desactivado. Pide al administrador (${ADMIN_BOOTSTRAP_EMAIL}) que active el acceso con enlace o agregue tu correo (${userEmail}) en Ajustes.`
         );
       }
 
-      return { ownerUid: data.ownerUid, authorizedEmails: emails };
+      if (!preAuthorizedSnap.exists()) {
+        throw new Error(
+          `El espacio O'NDE LUIGI aún no ha sido inicializado por el administrador (${ADMIN_BOOTSTRAP_EMAIL}).`
+        );
+      }
+
+      const preData = preAuthorizedSnap.data() as { ownerUid: string; authorizedEmails?: string[] };
+      const preEmails = Array.isArray(preData.authorizedEmails)
+        ? preData.authorizedEmails.map((e) => e.toLowerCase())
+        : [ADMIN_BOOTSTRAP_EMAIL];
+
+      if (preData.ownerUid !== user.uid && !preEmails.includes(userEmail)) {
+        throw new Error(
+          `La cuenta ${userEmail} no está autorizada. Pide al administrador (${ADMIN_BOOTSTRAP_EMAIL}) que agregue tu correo en Ajustes.`
+        );
+      }
+
+      await setDoc(memberRef, {
+        uid: user.uid,
+        displayName: (user.displayName || userEmail || 'Mesero').trim().slice(0, 100),
+        role: preData.ownerUid === user.uid ? 'admin' : 'mesero',
+        active: true,
+        ownerUid: preData.ownerUid,
+        createdAt: serverTimestamp(),
+      });
+      resolvedRole = preData.ownerUid === user.uid ? 'admin' : 'mesero';
+    }
+
+    try {
+      const wsSnap = await getDoc(wsRef);
+      if (!wsSnap.exists()) {
+        throw new Error(
+          `El espacio O'NDE LUIGI aún no ha sido inicializado por el administrador (${ADMIN_BOOTSTRAP_EMAIL}).`
+        );
+      }
+      const wsData = wsSnap.data() as { ownerUid: string; authorizedEmails?: string[] };
+      const emails = Array.isArray(wsData.authorizedEmails)
+        ? wsData.authorizedEmails.map((e) => e.toLowerCase())
+        : [ADMIN_BOOTSTRAP_EMAIL];
+      return {
+        ownerUid: wsData.ownerUid,
+        authorizedEmails: emails,
+        allowSelfRegistration: dirAllowSelf,
+        memberRole: wsData.ownerUid === user.uid ? ('admin' as AccountRole) : resolvedRole,
+      };
     } catch (error) {
-      if (error instanceof Error && error.message.includes('no está autorizada')) {
+      if (error instanceof Error && error.message.includes('no ha sido inicializado')) {
         throw error;
       }
       handleFirestoreError(error, OperationType.GET, `workspaces/${SHARED_WORKSPACE_ID}`);
@@ -551,6 +726,7 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setCloudError(null);
 
     const userEmail = (firebaseUser.email || '').toLowerCase();
+    const isBootstrapAdmin = userEmail === ADMIN_BOOTSTRAP_EMAIL;
     const unsubs: Array<() => void> = [];
 
     resolveOrBootstrapCloudWorkspace(firebaseUser)
@@ -559,6 +735,8 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
         setWorkspaceOwnerUid(wsInfo.ownerUid);
         setAuthorizedEmails(wsInfo.authorizedEmails);
+        setAllowSelfRegistration(wsInfo.allowSelfRegistration);
+        setCloudMemberRole(wsInfo.memberRole);
 
         // Listen to workspace doc for authorizedEmails updates
         const wsUnsub = onSnapshot(
@@ -578,8 +756,45 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         );
         unsubs.push(wsUnsub);
 
-        const isOwnerOrBootstrap =
-          userEmail === ADMIN_BOOTSTRAP_EMAIL || firebaseUser.uid === wsInfo.ownerUid;
+        // Listen to directory doc for allowSelfRegistration updates
+        const dirUnsub = onSnapshot(
+          doc(db, 'workspaceDirectory', SHARED_WORKSPACE_ID),
+          (snap) => {
+            if (snap.exists()) {
+              const d = snap.data() as { allowSelfRegistration?: boolean };
+              setAllowSelfRegistration(Boolean(d.allowSelfRegistration));
+            }
+          },
+          () => {
+            // ignore non-fatal directory listener errors
+          }
+        );
+        unsubs.push(dirUnsub);
+
+        // Listen to own member doc for live role changes or admin deactivation/removal
+        const memberUnsub = onSnapshot(
+          doc(db, 'workspaces', SHARED_WORKSPACE_ID, 'members', firebaseUser.uid),
+          (snap) => {
+            if (!snap.exists()) {
+              if (!isBootstrapAdmin && firebaseUser.uid !== wsInfo.ownerUid) {
+                setCloudError('Tu usuario fue eliminado del equipo por el administrador.');
+                setLoadingData(false);
+              }
+              return;
+            }
+            const d = snap.data() as { active?: boolean; role?: string };
+            if (d.active === false && !isBootstrapAdmin && firebaseUser.uid !== wsInfo.ownerUid) {
+              setCloudError('Tu acceso fue desactivado por el administrador.');
+              setLoadingData(false);
+              return;
+            }
+            setCloudMemberRole(d.role === 'admin' ? 'admin' : 'mesero');
+          },
+          () => {
+            // handled by primary workspace listeners
+          }
+        );
+        unsubs.push(memberUnsub);
 
         const subCollection = <T extends { createdAtMs?: number }>(
           subName: string,
@@ -588,9 +803,7 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           sortDesc = true
         ) => {
           const path = `workspaces/${SHARED_WORKSPACE_ID}/${subName}`;
-          const q = isOwnerOrBootstrap
-            ? query(collection(db!, path), where('ownerUid', '==', wsInfo.ownerUid))
-            : query(collection(db!, path), where('allowedEmails', 'array-contains', userEmail));
+          const q = query(collection(db!, path), where('ownerUid', '==', wsInfo.ownerUid));
 
           const unsub = onSnapshot(
             q,
@@ -657,7 +870,10 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
               ? (d.removableOptions as string[])
               : [],
             addonOptions: Array.isArray(d.addonOptions)
-              ? (d.addonOptions as AddonOption[])
+              ? (d.addonOptions as AddonOption[]).map((ex) => ({
+                  ...ex,
+                  allowMultiple: ex.allowMultiple !== false,
+                }))
               : [],
             allowSauces: d.allowSauces !== undefined ? Boolean(d.allowSauces) : true,
             minSauces: d.minSauces !== undefined ? Number(d.minSauces) : 1,
@@ -695,6 +911,9 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             notes: String(d.notes || ''),
             receiptCount: Number(d.receiptCount) || 0,
             latestReceiptUrl: String(d.latestReceiptUrl || ''),
+            voidReason: d.voidReason ? String(d.voidReason) : undefined,
+            voidedByName: d.voidedByName ? String(d.voidedByName) : undefined,
+            voidedAtMs: d.voidedAtMs ? Number(d.voidedAtMs) : undefined,
             ownerUid: String(d.ownerUid),
             createdByUid: String(d.createdByUid),
             allowedEmails: Array.isArray(d.allowedEmails) ? (d.allowedEmails as string[]) : [],
@@ -741,6 +960,10 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             waiterName: String(d.waiterName),
             paymentStatus: d.paymentStatus as PaymentStatus,
             notes: String(d.notes || ''),
+            annulled: Boolean(d.annulled),
+            annulledByName: d.annulledByName ? String(d.annulledByName) : undefined,
+            annulledReason: d.annulledReason ? String(d.annulledReason) : undefined,
+            annulledAtMs: d.annulledAtMs ? Number(d.annulledAtMs) : undefined,
             ownerUid: String(d.ownerUid),
             createdByUid: String(d.createdByUid),
             allowedEmails: Array.isArray(d.allowedEmails) ? (d.allowedEmails as string[]) : [],
@@ -787,7 +1010,7 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   }, []);
 
   const signInWithGoogle = useCallback(async () => {
-    if (!auth) throw new Error('Firebase Auth no está configurado.');
+    if (!auth) throw new Error('El inicio de sesión no está disponible.');
     const provider = new GoogleAuthProvider();
     provider.setCustomParameters({ prompt: 'select_account' });
     const cred = await signInWithPopup(auth, provider);
@@ -798,16 +1021,38 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   }, []);
 
   const signInWithEmail = useCallback(async (email: string, password: string) => {
-    if (!auth) throw new Error('Firebase Auth no está configurado.');
+    if (!auth) throw new Error('El inicio de sesión no está disponible.');
     const cred = await signInWithEmailAndPassword(auth, email.trim(), password);
     if (cred.user && !cred.user.emailVerified) {
+      await sendEmailVerification(cred.user).catch(() => undefined);
       await signOut(auth);
-      throw new Error('Tu correo aún no está verificado. Verifica tu bandeja o inicia sesión con Google.');
+      throw new Error(
+        'Tu correo aún no está verificado. Te reenviamos el enlace de verificación a tu bandeja.'
+      );
     }
     if (cred.user) {
       safeRemoveStorage(DEMO_MODE_FLAG_KEY);
       setSessionMode('cloud');
     }
+  }, []);
+
+  const registerWithEmail = useCallback(async (name: string, email: string, password: string) => {
+    if (!auth) throw new Error('El registro no está disponible.');
+    const cleanName = name.trim().slice(0, 80);
+    if (!cleanName) throw new Error('Ingresa tu nombre completo.');
+    const cred = await createUserWithEmailAndPassword(auth, email.trim(), password);
+    if (cred.user) {
+      await updateProfile(cred.user, { displayName: cleanName }).catch(() => undefined);
+      await sendEmailVerification(cred.user);
+      await signOut(auth);
+    }
+  }, []);
+
+  const resetPassword = useCallback(async (email: string) => {
+    if (!auth) throw new Error('La recuperación de contraseña no está disponible.');
+    const cleanEmail = email.trim();
+    if (!cleanEmail) throw new Error('Ingresa tu correo electrónico.');
+    await sendPasswordResetEmail(auth, cleanEmail);
   }, []);
 
   const signOutSession = useCallback(async () => {
@@ -816,6 +1061,8 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       await signOut(auth);
     }
     setSessionMode(null);
+    setCloudError(null);
+    setCloudMemberRole('mesero');
     setStaff([]);
     setSauces([]);
     setProducts([]);
@@ -858,9 +1105,6 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const createOrder = useCallback(
     async (input: CreateOrderInput): Promise<Order> => {
       const waiter = requireWaiter();
-      if (!input.reference.trim()) {
-        throw new Error('Indica la mesa o nombre del cliente.');
-      }
       if (input.items.length === 0) {
         throw new Error('Agrega al menos un producto al pedido.');
       }
@@ -869,6 +1113,8 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       const orderId = createSafeId('ord');
       const maxNum = orders.reduce((m, o) => Math.max(m, o.orderNumber), 100);
       const orderNumber = maxNum + 1;
+      const resolvedReference =
+        input.reference.trim().slice(0, 100) || claimNextAutoReference();
       const { subtotal, total } = calculateOrderTotals(input.items);
 
       let receiptUrl = '';
@@ -889,7 +1135,7 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           id: transferId,
           orderId,
           orderNumber,
-          orderReference: input.reference.trim().slice(0, 100),
+          orderReference: resolvedReference,
           amount: total,
           imageUrl: uploadRes.imageUrl,
           storagePath: uploadRes.storagePath,
@@ -907,7 +1153,7 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       const newOrder: Order = {
         id: orderId,
         orderNumber,
-        reference: input.reference.trim().slice(0, 100),
+        reference: resolvedReference,
         waiterId: waiter.id,
         waiterName: waiter.name,
         status: 'tomado',
@@ -1192,6 +1438,132 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     ]
   );
 
+  const voidOrder = useCallback(
+    async (orderId: string, reason = '') => {
+      const waiter = requireWaiter();
+      const target = orders.find((o) => o.id === orderId);
+      if (!target) throw new Error('Pedido no encontrado.');
+      if (target.status === 'cancelado') return;
+
+      const now = Date.now();
+      const cleanReason = reason.trim().slice(0, 240);
+      const mov: Movement = {
+        id: createSafeId('mov'),
+        orderId: target.id,
+        orderNumber: target.orderNumber,
+        orderReference: target.reference,
+        type: 'estado_pedido',
+        description: `Anuló venta #${target.orderNumber}${cleanReason ? ` · Motivo: ${cleanReason}` : ''}`,
+        waiterId: waiter.id,
+        waiterName: waiter.name,
+        actorUid,
+        details: { from: target.status, to: 'cancelado', voided: true },
+        ownerUid: effectiveOwnerUid,
+        createdByUid: actorUid,
+        allowedEmails: authorizedEmails,
+        createdAtMs: now,
+      };
+
+      if (sessionMode === 'cloud' && db && firebaseUser) {
+        const orderPath = `workspaces/${workspaceId}/orders/${orderId}`;
+        try {
+          const batch = writeBatch(db);
+          batch.update(doc(db, orderPath), {
+            status: 'cancelado',
+            voidReason: cleanReason,
+            voidedByName: waiter.name.slice(0, 80),
+            voidedAtMs: now,
+            waiterId: waiter.id,
+            waiterName: waiter.name,
+            updatedAt: serverTimestamp(),
+          });
+          batch.set(doc(db, `workspaces/${workspaceId}/movements/${mov.id}`), {
+            ...stripClientTimestamps(mov),
+            createdAt: serverTimestamp(),
+          });
+          await batch.commit();
+        } catch (err) {
+          handleFirestoreError(err, OperationType.UPDATE, orderPath);
+        }
+      } else {
+        syncDemoMutation((prev) => ({
+          ...prev,
+          orders: prev.orders.map((o) =>
+            o.id === orderId
+              ? {
+                  ...o,
+                  status: 'cancelado',
+                  voidReason: cleanReason,
+                  voidedByName: waiter.name,
+                  voidedAtMs: now,
+                  waiterId: waiter.id,
+                  waiterName: waiter.name,
+                  updatedAtMs: now,
+                }
+              : o
+          ),
+          movements: [mov, ...prev.movements],
+        }));
+      }
+    },
+    [
+      requireWaiter,
+      orders,
+      actorUid,
+      effectiveOwnerUid,
+      authorizedEmails,
+      sessionMode,
+      workspaceId,
+      firebaseUser,
+      syncDemoMutation,
+    ]
+  );
+
+  const deleteOrderRecord = useCallback(
+    async (orderId: string) => {
+      requireAdmin();
+      const target = orders.find((o) => o.id === orderId);
+      if (!target) return;
+
+      const relatedMovements = movements.filter((m) => m.orderId === orderId);
+      const relatedTransfers = transfers.filter((t) => t.orderId === orderId);
+
+      if (sessionMode === 'cloud' && db && firebaseUser) {
+        const orderPath = `workspaces/${workspaceId}/orders/${orderId}`;
+        try {
+          const batch = writeBatch(db);
+          batch.delete(doc(db, orderPath));
+          for (const mov of relatedMovements) {
+            batch.delete(doc(db, `workspaces/${workspaceId}/movements/${mov.id}`));
+          }
+          for (const tr of relatedTransfers) {
+            batch.delete(doc(db, `workspaces/${workspaceId}/transfers/${tr.id}`));
+          }
+          await batch.commit();
+        } catch (err) {
+          handleFirestoreError(err, OperationType.DELETE, orderPath);
+        }
+      } else {
+        syncDemoMutation((prev) => ({
+          ...prev,
+          orders: prev.orders.filter((o) => o.id !== orderId),
+          movements: prev.movements.filter((m) => m.orderId !== orderId),
+          transfers: prev.transfers.filter((t) => t.orderId !== orderId),
+        }));
+      }
+    },
+    [
+      requireAdmin,
+      orders,
+      movements,
+      transfers,
+      sessionMode,
+      workspaceId,
+      firebaseUser,
+      syncDemoMutation,
+    ]
+  );
+
   const updateOrderPayment = useCallback(
     async ({
       orderId,
@@ -1461,6 +1833,177 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     ]
   );
 
+  const voidTransferReceipt = useCallback(
+    async (transferId: string, reason = '') => {
+      const waiter = requireWaiter();
+      const target = transfers.find((t) => t.id === transferId);
+      if (!target || target.annulled) return;
+
+      const now = Date.now();
+      const cleanReason = reason.trim().slice(0, 240);
+      const parentOrder = orders.find((o) => o.id === target.orderId);
+      const remainingActive = transfers.filter(
+        (t) => t.orderId === target.orderId && t.id !== transferId && !t.annulled
+      );
+
+      const mov: Movement | null = parentOrder
+        ? {
+            id: createSafeId('mov'),
+            orderId: parentOrder.id,
+            orderNumber: parentOrder.orderNumber,
+            orderReference: parentOrder.reference,
+            type: 'comprobante',
+            description: `Anuló comprobante por $${target.amount.toLocaleString('es-CO')}${
+              cleanReason ? ` · Motivo: ${cleanReason}` : ''
+            }`,
+            waiterId: waiter.id,
+            waiterName: waiter.name,
+            actorUid,
+            details: { transferId, annulled: true },
+            ownerUid: effectiveOwnerUid,
+            createdByUid: actorUid,
+            allowedEmails: authorizedEmails,
+            createdAtMs: now,
+          }
+        : null;
+
+      if (sessionMode === 'cloud' && db && firebaseUser) {
+        const path = `workspaces/${workspaceId}/transfers/${transferId}`;
+        try {
+          const batch = writeBatch(db);
+          batch.update(doc(db, path), {
+            annulled: true,
+            annulledByName: waiter.name.slice(0, 80),
+            annulledReason: cleanReason,
+            annulledAtMs: now,
+          });
+          if (parentOrder) {
+            batch.update(doc(db, `workspaces/${workspaceId}/orders/${parentOrder.id}`), {
+              receiptCount: remainingActive.length,
+              latestReceiptUrl: remainingActive[0]?.imageUrl || '',
+              waiterId: waiter.id,
+              waiterName: waiter.name,
+              updatedAt: serverTimestamp(),
+            });
+          }
+          if (mov) {
+            batch.set(doc(db, `workspaces/${workspaceId}/movements/${mov.id}`), {
+              ...stripClientTimestamps(mov),
+              createdAt: serverTimestamp(),
+            });
+          }
+          await batch.commit();
+        } catch (err) {
+          handleFirestoreError(err, OperationType.UPDATE, path);
+        }
+      } else {
+        syncDemoMutation((prev) => ({
+          ...prev,
+          transfers: prev.transfers.map((t) =>
+            t.id === transferId
+              ? {
+                  ...t,
+                  annulled: true,
+                  annulledByName: waiter.name,
+                  annulledReason: cleanReason,
+                  annulledAtMs: now,
+                }
+              : t
+          ),
+          orders: parentOrder
+            ? prev.orders.map((o) =>
+                o.id === parentOrder.id
+                  ? {
+                      ...o,
+                      receiptCount: remainingActive.length,
+                      latestReceiptUrl: remainingActive[0]?.imageUrl || '',
+                      updatedAtMs: now,
+                    }
+                  : o
+              )
+            : prev.orders,
+          movements: mov ? [mov, ...prev.movements] : prev.movements,
+        }));
+      }
+    },
+    [
+      requireWaiter,
+      transfers,
+      orders,
+      actorUid,
+      effectiveOwnerUid,
+      authorizedEmails,
+      sessionMode,
+      workspaceId,
+      firebaseUser,
+      syncDemoMutation,
+    ]
+  );
+
+  const deleteTransferReceipt = useCallback(
+    async (transferId: string) => {
+      requireAdmin();
+      const target = transfers.find((t) => t.id === transferId);
+      if (!target) return;
+
+      const parentOrder = orders.find((o) => o.id === target.orderId);
+      const remainingActive = transfers.filter(
+        (t) => t.orderId === target.orderId && t.id !== transferId && !t.annulled
+      );
+      const relatedMovements = movements.filter(
+        (m) => m.details && m.details.transferId === transferId
+      );
+
+      if (sessionMode === 'cloud' && db && firebaseUser) {
+        const path = `workspaces/${workspaceId}/transfers/${transferId}`;
+        try {
+          const batch = writeBatch(db);
+          batch.delete(doc(db, path));
+          for (const mov of relatedMovements) {
+            batch.delete(doc(db, `workspaces/${workspaceId}/movements/${mov.id}`));
+          }
+          if (parentOrder) {
+            batch.update(doc(db, `workspaces/${workspaceId}/orders/${parentOrder.id}`), {
+              receiptCount: remainingActive.length,
+              latestReceiptUrl: remainingActive[0]?.imageUrl || '',
+              updatedAt: serverTimestamp(),
+            });
+          }
+          await batch.commit();
+        } catch (err) {
+          handleFirestoreError(err, OperationType.DELETE, path);
+        }
+      } else {
+        syncDemoMutation((prev) => ({
+          ...prev,
+          transfers: prev.transfers.filter((t) => t.id !== transferId),
+          movements: prev.movements.filter((m) => m.details?.transferId !== transferId),
+          orders: parentOrder
+            ? prev.orders.map((o) =>
+                o.id === parentOrder.id
+                  ? {
+                      ...o,
+                      receiptCount: remainingActive.length,
+                      latestReceiptUrl: remainingActive[0]?.imageUrl || '',
+                    }
+                  : o
+              )
+            : prev.orders,
+        }));
+      }
+    },
+    [
+      requireAdmin,
+      transfers,
+      orders,
+      movements,
+      sessionMode,
+      workspaceId,
+      firebaseUser,
+      syncDemoMutation,
+    ]
+  );
+
   // ADMIN-ONLY MUTATIONS
   const saveProduct = useCallback(
     async (input: SaveProductInput) => {
@@ -1578,6 +2121,26 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     [requireAdmin, sessionMode, workspaceId, firebaseUser, syncDemoMutation]
   );
 
+  const deleteProduct = useCallback(
+    async (productId: string) => {
+      requireAdmin();
+      if (sessionMode === 'cloud' && db && firebaseUser) {
+        const path = `workspaces/${workspaceId}/products/${productId}`;
+        try {
+          await deleteDoc(doc(db, path));
+        } catch (err) {
+          handleFirestoreError(err, OperationType.DELETE, path);
+        }
+      } else {
+        syncDemoMutation((prev) => ({
+          ...prev,
+          products: prev.products.filter((p) => p.id !== productId),
+        }));
+      }
+    },
+    [requireAdmin, sessionMode, workspaceId, firebaseUser, syncDemoMutation]
+  );
+
   const saveSauce = useCallback(
     async (name: string, id?: string, active = true) => {
       requireAdmin();
@@ -1669,6 +2232,26 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     [requireAdmin, sessionMode, workspaceId, firebaseUser, syncDemoMutation]
   );
 
+  const deleteSauce = useCallback(
+    async (sauceId: string) => {
+      requireAdmin();
+      if (sessionMode === 'cloud' && db && firebaseUser) {
+        const path = `workspaces/${workspaceId}/sauces/${sauceId}`;
+        try {
+          await deleteDoc(doc(db, path));
+        } catch (err) {
+          handleFirestoreError(err, OperationType.DELETE, path);
+        }
+      } else {
+        syncDemoMutation((prev) => ({
+          ...prev,
+          sauces: prev.sauces.filter((s) => s.id !== sauceId),
+        }));
+      }
+    },
+    [requireAdmin, sessionMode, workspaceId, firebaseUser, syncDemoMutation]
+  );
+
   const saveStaffMember = useCallback(
     async (name: string, role: StaffRole = 'mesero') => {
       const cleanName = name.trim().slice(0, 80);
@@ -1711,7 +2294,7 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           role: 'mesero',
           active: true,
           linkedUid: actorUid,
-          linkedEmail: actorEmail,
+          linkedEmail: firebaseUser?.email || actorEmail,
           ownerUid: effectiveOwnerUid,
           createdByUid: actorUid,
           allowedEmails: authorizedEmails,
@@ -1804,6 +2387,15 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             linkedEmail: target?.linkedEmail || '',
             updatedAt: serverTimestamp(),
           });
+          if (target?.linkedUid && target.linkedUid !== effectiveOwnerUid) {
+            const memberRef = doc(db, `workspaces/${workspaceId}/members/${target.linkedUid}`);
+            const mSnap = await getDoc(memberRef);
+            if (mSnap.exists()) {
+              await updateDoc(memberRef, {
+                role: role === 'admin' ? 'admin' : 'mesero',
+              });
+            }
+          }
         } catch (err) {
           handleFirestoreError(err, OperationType.UPDATE, path);
         }
@@ -1816,7 +2408,7 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         }));
       }
     },
-    [requireAdmin, staff, sessionMode, workspaceId, firebaseUser, syncDemoMutation]
+    [requireAdmin, staff, effectiveOwnerUid, sessionMode, workspaceId, firebaseUser, syncDemoMutation]
   );
 
   const renameStaffMember = useCallback(
@@ -1875,6 +2467,13 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             linkedEmail: target?.linkedEmail || '',
             updatedAt: serverTimestamp(),
           });
+          if (target?.linkedUid && target.linkedUid !== effectiveOwnerUid) {
+            const memberRef = doc(db, `workspaces/${workspaceId}/members/${target.linkedUid}`);
+            const mSnap = await getDoc(memberRef);
+            if (mSnap.exists()) {
+              await updateDoc(memberRef, { active });
+            }
+          }
         } catch (err) {
           handleFirestoreError(err, OperationType.UPDATE, path);
         }
@@ -1887,16 +2486,24 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         }));
       }
     },
-    [requireAdmin, staff, sessionMode, workspaceId, firebaseUser, syncDemoMutation]
+    [requireAdmin, staff, effectiveOwnerUid, sessionMode, workspaceId, firebaseUser, syncDemoMutation]
   );
 
   const deleteStaffMember = useCallback(
     async (staffId: string) => {
       requireAdmin();
+      const target = staff.find((s) => s.id === staffId);
       if (sessionMode === 'cloud' && db && firebaseUser) {
         const path = `workspaces/${workspaceId}/staff/${staffId}`;
         try {
           await deleteDoc(doc(db, path));
+          if (target?.linkedUid && target.linkedUid !== effectiveOwnerUid) {
+            const memberRef = doc(db, `workspaces/${workspaceId}/members/${target.linkedUid}`);
+            const mSnap = await getDoc(memberRef);
+            if (mSnap.exists()) {
+              await deleteDoc(memberRef);
+            }
+          }
         } catch (err) {
           handleFirestoreError(err, OperationType.DELETE, path);
         }
@@ -1916,6 +2523,7 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       sessionMode,
       workspaceId,
       firebaseUser,
+      effectiveOwnerUid,
       syncDemoMutation,
       activeWaiterId,
       staff,
@@ -1978,6 +2586,39 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     [requireAdmin, sessionMode, workspaceId, firebaseUser, effectiveOwnerUid, syncDemoMutation]
   );
 
+  const updateAllowSelfRegistration = useCallback(
+    async (allow: boolean) => {
+      requireAdmin();
+      if (sessionMode === 'cloud' && db && firebaseUser) {
+        const dirPath = `workspaceDirectory/${workspaceId}`;
+        try {
+          const dirRef = doc(db, dirPath);
+          const dirSnap = await getDoc(dirRef);
+          if (dirSnap.exists()) {
+            await updateDoc(dirRef, {
+              allowSelfRegistration: allow,
+              updatedAt: serverTimestamp(),
+            });
+          } else {
+            await setDoc(dirRef, {
+              id: workspaceId,
+              name: "O'NDE LUIGI",
+              ownerUid: effectiveOwnerUid,
+              allowSelfRegistration: allow,
+              updatedAt: serverTimestamp(),
+            });
+          }
+          setAllowSelfRegistration(allow);
+        } catch (err) {
+          handleFirestoreError(err, OperationType.UPDATE, dirPath);
+        }
+      } else {
+        setAllowSelfRegistration(allow);
+      }
+    },
+    [requireAdmin, sessionMode, workspaceId, firebaseUser, effectiveOwnerUid]
+  );
+
   const value: PosContextValue = {
     sessionMode,
     authReady,
@@ -1991,6 +2632,7 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     accountRole,
     isAdmin,
     authorizedEmails,
+    allowSelfRegistration,
 
     staff,
     sauces,
@@ -2009,23 +2651,32 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     resetDemoData,
     signInWithGoogle,
     signInWithEmail,
+    registerWithEmail,
+    resetPassword,
     signOutSession,
 
     createOrder,
     updateOrderItems,
     updateOrderStatus,
+    voidOrder,
+    deleteOrderRecord,
     updateOrderPayment,
     attachReceiptToOrder,
+    voidTransferReceipt,
+    deleteTransferReceipt,
     saveProduct,
     toggleProductActive,
+    deleteProduct,
     saveSauce,
     toggleSauceActive,
+    deleteSauce,
     saveStaffMember,
     updateStaffRole,
     renameStaffMember,
     toggleStaffActive,
     deleteStaffMember,
     updateAuthorizedEmails,
+    updateAllowSelfRegistration,
   };
 
   return <PosContext.Provider value={value}>{children}</PosContext.Provider>;

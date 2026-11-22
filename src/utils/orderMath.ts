@@ -1,11 +1,11 @@
-import type { OrderItem, OrderItemAddon, OrderStatus, PaymentMethod, Product } from '../types/pos';
+import type { Order, OrderItem, OrderItemAddon, OrderStatus, PaymentMethod, Product } from '../types/pos';
 
 export const ORDER_STATUS_LABELS: Record<OrderStatus, string> = {
   tomado: 'Tomado',
   preparacion: 'En preparación',
   listo: 'Listo',
   entregado: 'Entregado',
-  cancelado: 'Cancelado',
+  cancelado: 'Anulado',
 };
 
 export const ORDER_STATUS_FLOW: OrderStatus[] = [
@@ -28,6 +28,29 @@ export function createSafeId(prefix: string): string {
   return `${prefix}_${Date.now()}_${rand}`.replace(/[^a-zA-Z0-9_-]/g, '');
 }
 
+export function getAddonQuantity(extra: Pick<OrderItemAddon, 'quantity'>): number {
+  return Number.isFinite(extra.quantity) && (extra.quantity as number) > 0
+    ? Math.floor(extra.quantity as number)
+    : 1;
+}
+
+export function isOrderInCourse(order: Pick<Order, 'status' | 'paymentStatus'>): boolean {
+  if (order.status === 'cancelado') return false;
+  return !(order.status === 'entregado' && order.paymentStatus === 'pagado');
+}
+
+export function getNextCyclicOrderRefNumber(lastNumber: number): number {
+  if (!Number.isFinite(lastNumber) || lastNumber < 1 || lastNumber >= 99) {
+    return 1;
+  }
+  return Math.floor(lastNumber) + 1;
+}
+
+export function formatAutoOrderReference(num: number): string {
+  const normalized = Number.isFinite(num) && num >= 1 && num <= 99 ? Math.floor(num) : 1;
+  return `Pedido #${normalized}`;
+}
+
 export function calculateItemUnitPrice(
   basePrice: number,
   addedExtras: OrderItemAddon[]
@@ -35,7 +58,7 @@ export function calculateItemUnitPrice(
   const safeBase = Number.isFinite(basePrice) && basePrice >= 0 ? basePrice : 0;
   const extrasSum = addedExtras.reduce((sum, extra) => {
     const val = Number.isFinite(extra.price) && extra.price >= 0 ? extra.price : 0;
-    return sum + val;
+    return sum + val * getAddonQuantity(extra);
   }, 0);
   return Math.round(safeBase + extrasSum);
 }
@@ -63,7 +86,14 @@ export function buildOrderItem(params: {
   customNote: string;
 }): OrderItem {
   const safeQty = Math.max(1, Math.floor(params.quantity));
-  const unitPrice = calculateItemUnitPrice(params.basePrice, params.addedExtras);
+  const normalizedExtras = params.addedExtras
+    .filter((ex) => (ex.quantity === undefined ? true : ex.quantity > 0))
+    .map((ex) => ({
+      ...ex,
+      quantity: getAddonQuantity(ex),
+    }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+  const unitPrice = calculateItemUnitPrice(params.basePrice, normalizedExtras);
   const lineTotal = unitPrice * safeQty;
   return {
     lineId: params.lineId || createSafeId('item'),
@@ -73,7 +103,7 @@ export function buildOrderItem(params: {
     quantity: safeQty,
     basePrice: params.basePrice,
     removedIngredients: [...params.removedIngredients].sort(),
-    addedExtras: [...params.addedExtras].sort((a, b) => a.name.localeCompare(b.name)),
+    addedExtras: normalizedExtras,
     selectedSauces: [...(params.selectedSauces || [])].sort(),
     customNote: params.customNote.trim().slice(0, 160),
     unitPrice,
@@ -118,7 +148,12 @@ export function formatCustomizationSummary(item: OrderItem): string {
   if (item.addedExtras.length > 0) {
     parts.push(
       item.addedExtras
-        .map((ex) => (ex.price > 0 ? `+${ex.name} (${formatCurrency(ex.price)})` : `+${ex.name}`))
+        .map((ex) => {
+          const qty = getAddonQuantity(ex);
+          const prefix = qty > 1 ? `+${qty}x ${ex.name}` : `+${ex.name}`;
+          const totalAddonPrice = ex.price * qty;
+          return totalAddonPrice > 0 ? `${prefix} (${formatCurrency(totalAddonPrice)})` : prefix;
+        })
         .join(', ')
     );
   }
@@ -137,7 +172,7 @@ export function buildItemSignature(item: {
 }): string {
   const removed = [...item.removedIngredients].sort().join('|');
   const extras = [...item.addedExtras]
-    .map((e) => e.id)
+    .map((e) => `${e.id}:${getAddonQuantity(e)}`)
     .sort()
     .join('|');
   const sauces = [...(item.selectedSauces || [])].sort().join('|');

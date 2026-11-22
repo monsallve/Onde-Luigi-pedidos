@@ -18,6 +18,7 @@ import {
   formatCurrency,
   formatCustomizationSummary,
   formatDateTimeShort,
+  isOrderInCourse,
   ORDER_STATUS_LABELS,
   PAYMENT_METHOD_LABELS,
 } from '../utils/orderMath';
@@ -52,7 +53,7 @@ const STATUS_BADGE: Record<OrderStatus, { text: string; classes: string; icon: R
     icon: <CheckCircle2 className="w-3.5 h-3.5" />,
   },
   cancelado: {
-    text: 'Cancelado',
+    text: 'Anulado',
     classes: 'bg-red-950/60 text-red-300 border-red-700',
     icon: <XCircle className="w-3.5 h-3.5" />,
   },
@@ -81,7 +82,7 @@ export const OrdersView: React.FC<Props> = ({
   const [confirmCancelId, setConfirmCancelId] = useState<string | null>(null);
 
   const counts = useMemo(() => {
-    const active = orders.filter((o) => o.status !== 'entregado' && o.status !== 'cancelado').length;
+    const active = orders.filter(isOrderInCourse).length;
     const pendingPay = orders.filter(
       (o) => o.status !== 'cancelado' && o.paymentStatus === 'pendiente'
     ).length;
@@ -92,7 +93,7 @@ export const OrdersView: React.FC<Props> = ({
     const q = searchQuery.trim().toLowerCase();
     return orders.filter((o) => {
       if (statusFilter === 'activos') {
-        if (o.status === 'entregado' || o.status === 'cancelado') return false;
+        if (!isOrderInCourse(o)) return false;
       } else if (statusFilter !== 'todos') {
         if (o.status !== statusFilter) return false;
       }
@@ -194,7 +195,7 @@ export const OrdersView: React.FC<Props> = ({
               { id: 'preparacion', label: 'En preparación' },
               { id: 'listo', label: 'Listo' },
               { id: 'entregado', label: 'Entregado' },
-              { id: 'cancelado', label: 'Cancelado' },
+              { id: 'cancelado', label: 'Anulado' },
             ] as const
           ).map((sf) => (
             <button
@@ -282,7 +283,9 @@ export const OrdersView: React.FC<Props> = ({
                       >
                         {order.paymentStatus === 'pagado'
                           ? `Pagado · ${PAYMENT_METHOD_LABELS[order.paymentMethod]}`
-                          : 'Por cobrar'}
+                          : order.status === 'entregado'
+                            ? 'Por cobrar (Entregado)'
+                            : 'Por cobrar'}
                       </span>
                     </div>
                   </div>
@@ -374,18 +377,18 @@ export const OrdersView: React.FC<Props> = ({
                           onClick={() => handleStatusChange(order.id, 'cancelado')}
                           className="min-h-[42px] px-3 rounded-xl bg-red-600 text-white text-xs font-bold hover:bg-red-500 whitespace-nowrap"
                         >
-                          ¿Confirmar?
+                          ¿Anular pedido?
                         </button>
                       ) : (
                         <button
                           type="button"
                           onClick={() => setConfirmCancelId(order.id)}
-                          title="Cancelar pedido"
-                          aria-label={`Cancelar pedido #${order.orderNumber}`}
+                          title="Anular pedido"
+                          aria-label={`Anular pedido #${order.orderNumber}`}
                           className="min-h-[42px] px-3 rounded-xl border border-red-800 bg-red-950/40 text-red-300 text-xs font-semibold hover:bg-red-950 flex items-center gap-1 whitespace-nowrap"
                         >
                           <Ban className="w-3.5 h-3.5" />
-                          <span>Cancelar</span>
+                          <span>Anular</span>
                         </button>
                       )
                     )}

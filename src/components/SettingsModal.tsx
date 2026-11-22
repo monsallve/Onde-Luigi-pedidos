@@ -15,12 +15,13 @@ export const SettingsModal: React.FC<Props> = ({ open, onClose }) => {
     sessionMode,
     firebaseUser,
     configSource,
-    projectId,
     accountRole,
     isAdmin,
     authorizedEmails,
+    allowSelfRegistration,
     setDemoAccountRole,
     updateAuthorizedEmails,
+    updateAllowSelfRegistration,
     staff,
     saveStaffMember,
     updateStaffRole,
@@ -165,17 +166,15 @@ export const SettingsModal: React.FC<Props> = ({ open, onClose }) => {
               <div className="flex items-center justify-between text-sm">
                 <span className="text-zinc-400">Modo actual</span>
                 <span className="font-semibold text-white">
-                  {sessionMode === 'cloud' ? 'Firebase en Tiempo Real' : 'Modo Demo Local'}
+                  {sessionMode === 'cloud' ? 'Sincronizado en la Nube' : 'Modo Local'}
                 </span>
               </div>
               <div className="flex items-center justify-between text-sm">
-                <span className="text-zinc-400">Credenciales</span>
+                <span className="text-zinc-400">Conexión</span>
                 <span className="font-mono text-xs text-zinc-300">
-                  {configSource === 'env'
-                    ? 'Variables .env'
-                    : configSource === 'applet-config'
-                      ? `Proyecto ${projectId}`
-                      : 'Sin configurar'}
+                  {configSource === 'env' || configSource === 'applet-config'
+                    ? 'Activa'
+                    : 'Sin configurar'}
                 </span>
               </div>
               {firebaseUser && (
@@ -221,15 +220,51 @@ export const SettingsModal: React.FC<Props> = ({ open, onClose }) => {
             </div>
           </section>
 
-          {/* Admin-only Authorized Waiter Emails */}
+          {/* Admin-only Authorized Waiter Emails & Open Link Registration */}
           {isAdmin && (
             <section className="space-y-2.5">
               <h3 className="text-xs font-bold text-amber-400 uppercase tracking-wide flex items-center gap-1.5">
                 <Shield className="w-4 h-4" />
-                <span>Cuentas de meseros autorizadas (Cloud)</span>
+                <span>Acceso de meseros (Cloud)</span>
               </h3>
+
+              <div className="rounded-xl border border-[#27272E] bg-[#0A0A0A] p-3.5 flex items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="text-xs font-bold text-white">
+                    Registro abierto con enlace
+                  </p>
+                  <p className="text-[11px] text-zinc-400 mt-0.5">
+                    {allowSelfRegistration
+                      ? 'Activo: cualquier mesero que entre con Google puede asociar su nombre (rol inicial Mesero).'
+                      : 'Cerrado: solo los correos agregados abajo pueden entrar.'}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  disabled={savingEmails}
+                  onClick={async () => {
+                    setSavingEmails(true);
+                    setEmailError(null);
+                    try {
+                      await updateAllowSelfRegistration(!allowSelfRegistration);
+                    } catch (err) {
+                      setEmailError(err instanceof Error ? err.message : 'No se pudo cambiar el registro abierto.');
+                    } finally {
+                      setSavingEmails(false);
+                    }
+                  }}
+                  className={`min-h-[36px] px-3 rounded-lg text-xs font-bold whitespace-nowrap shrink-0 transition-colors ${
+                    allowSelfRegistration
+                      ? 'bg-emerald-950/60 text-emerald-300 border border-emerald-700'
+                      : 'bg-[#1C1C22] text-zinc-300 border border-[#27272E]'
+                  }`}
+                >
+                  {allowSelfRegistration ? 'Abierto' : 'Solo lista'}
+                </button>
+              </div>
+
               <p className="text-xs text-zinc-400">
-                Solo los correos agregados aquí pueden entrar como meseros, asociar su nombre y tomar o cobrar pedidos.
+                Correos pre-autorizados (opcional si el registro abierto está activo):
               </p>
 
               {emailError && (

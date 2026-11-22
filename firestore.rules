@@ -40,16 +40,38 @@ service cloud.firestore {
       return exists(workspacePath(workspaceId));
     }
 
+    function memberPath(workspaceId, uid) {
+      return /databases/$(database)/documents/workspaces/$(workspaceId)/members/$(uid);
+    }
+
+    function directoryPath(workspaceId) {
+      return /databases/$(database)/documents/workspaceDirectory/$(workspaceId);
+    }
+
+    function isActiveWorkspaceMember(workspaceId) {
+      return isVerifiedUser() &&
+        exists(memberPath(workspaceId, request.auth.uid)) &&
+        get(memberPath(workspaceId, request.auth.uid)).data.active == true;
+    }
+
+    function isActiveWorkspaceMemberAfter(workspaceId) {
+      return isVerifiedUser() &&
+        existsAfter(memberPath(workspaceId, request.auth.uid)) &&
+        getAfter(memberPath(workspaceId, request.auth.uid)).data.active == true;
+    }
+
     function isWorkspaceAdmin(workspaceId) {
       return isVerifiedUser() && (
         isBootstrappedAdmin() ||
-        (workspaceExists(workspaceId) && get(workspacePath(workspaceId)).data.ownerUid == request.auth.uid)
+        (workspaceExists(workspaceId) && get(workspacePath(workspaceId)).data.ownerUid == request.auth.uid) ||
+        (isActiveWorkspaceMember(workspaceId) && get(memberPath(workspaceId, request.auth.uid)).data.role == 'admin')
       );
     }
 
     function isAuthorizedWorkspaceUser(workspaceId) {
       return isVerifiedUser() && (
         isBootstrappedAdmin() ||
+        isActiveWorkspaceMember(workspaceId) ||
         (workspaceExists(workspaceId) && (
           get(workspacePath(workspaceId)).data.ownerUid == request.auth.uid ||
           request.auth.token.email in get(workspacePath(workspaceId)).data.authorizedEmails
@@ -57,14 +79,17 @@ service cloud.firestore {
       );
     }
 
-    function canListResource() {
+    function canListWorkspaceSubcollection(workspaceId) {
       return isVerifiedUser() && (
         isBootstrappedAdmin() ||
-        (resource != null && (
-          resource.data.ownerUid == request.auth.uid ||
-          resource.data.createdByUid == request.auth.uid ||
-          request.auth.token.email in resource.data.allowedEmails
-        ))
+        (
+          isActiveWorkspaceMember(workspaceId) &&
+          workspaceExists(workspaceId) &&
+          resource.data.ownerUid == get(workspacePath(workspaceId)).data.ownerUid
+        ) ||
+        resource.data.ownerUid == request.auth.uid ||
+        resource.data.createdByUid == request.auth.uid ||
+        request.auth.token.email in resource.data.allowedEmails
       );
     }
 
@@ -86,6 +111,16 @@ service cloud.firestore {
         isStringBounded(data.ownerEmail, 3, 160) &&
         isStringListBounded(data.authorizedEmails, 25) &&
         data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidWorkspaceDirectory(data, workspaceId) {
+      return data.keys().hasAll(['id', 'name', 'ownerUid', 'allowSelfRegistration', 'updatedAt']) &&
+        data.keys().hasOnly(['id', 'name', 'ownerUid', 'allowSelfRegistration', 'updatedAt']) &&
+        data.id == workspaceId &&
+        isStringBounded(data.name, 1, 120) &&
+        isStringBounded(data.ownerUid, 1, 128) &&
+        data.allowSelfRegistration is bool &&
         data.updatedAt is timestamp;
     }
 
@@ -154,7 +189,7 @@ service cloud.firestore {
 
     function isValidOrder(data, orderId) {
       return data.keys().hasAll(['id', 'orderNumber', 'reference', 'waiterId', 'waiterName', 'status', 'paymentStatus', 'paymentMethod', 'items', 'subtotal', 'total', 'notes', 'receiptCount', 'latestReceiptUrl', 'ownerUid', 'createdByUid', 'allowedEmails', 'createdAt', 'updatedAt']) &&
-        data.keys().hasOnly(['id', 'orderNumber', 'reference', 'waiterId', 'waiterName', 'status', 'paymentStatus', 'paymentMethod', 'items', 'subtotal', 'total', 'notes', 'receiptCount', 'latestReceiptUrl', 'ownerUid', 'createdByUid', 'allowedEmails', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['id', 'orderNumber', 'reference', 'waiterId', 'waiterName', 'status', 'paymentStatus', 'paymentMethod', 'items', 'subtotal', 'total', 'notes', 'receiptCount', 'latestReceiptUrl', 'voidReason', 'voidedByName', 'voidedAtMs', 'ownerUid', 'createdByUid', 'allowedEmails', 'createdAt', 'updatedAt']) &&
         data.id == orderId &&
         data.orderNumber is number && data.orderNumber >= 1 && data.orderNumber <= 10000000 &&
         isStringBounded(data.reference, 1, 100) &&
@@ -170,6 +205,9 @@ service cloud.firestore {
         isStringBounded(data.notes, 0, 400) &&
         data.receiptCount is number && data.receiptCount >= 0 && data.receiptCount <= 100 &&
         isStringBounded(data.latestReceiptUrl, 0, 250000) &&
+        (!('voidReason' in data) || isStringBounded(data.voidReason, 0, 240)) &&
+        (!('voidedByName' in data) || isStringBounded(data.voidedByName, 0, 80)) &&
+        (!('voidedAtMs' in data) || data.voidedAtMs is number) &&
         isStringBounded(data.ownerUid, 1, 128) &&
         isStringBounded(data.createdByUid, 1, 128) &&
         isStringListBounded(data.allowedEmails, 25) &&
@@ -198,7 +236,7 @@ service cloud.firestore {
 
     function isValidTransfer(data, transferId) {
       return data.keys().hasAll(['id', 'orderId', 'orderNumber', 'orderReference', 'amount', 'imageUrl', 'storagePath', 'waiterId', 'waiterName', 'paymentStatus', 'notes', 'ownerUid', 'createdByUid', 'allowedEmails', 'createdAt']) &&
-        data.keys().hasOnly(['id', 'orderId', 'orderNumber', 'orderReference', 'amount', 'imageUrl', 'storagePath', 'waiterId', 'waiterName', 'paymentStatus', 'notes', 'ownerUid', 'createdByUid', 'allowedEmails', 'createdAt']) &&
+        data.keys().hasOnly(['id', 'orderId', 'orderNumber', 'orderReference', 'amount', 'imageUrl', 'storagePath', 'waiterId', 'waiterName', 'paymentStatus', 'notes', 'annulled', 'annulledByName', 'annulledReason', 'annulledAtMs', 'ownerUid', 'createdByUid', 'allowedEmails', 'createdAt']) &&
         data.id == transferId &&
         isStringBounded(data.orderId, 1, 128) &&
         data.orderNumber is number && data.orderNumber >= 1 &&
@@ -210,6 +248,10 @@ service cloud.firestore {
         isStringBounded(data.waiterName, 1, 80) &&
         data.paymentStatus in ['pagado', 'pendiente'] &&
         isStringBounded(data.notes, 0, 300) &&
+        (!('annulled' in data) || data.annulled is bool) &&
+        (!('annulledByName' in data) || isStringBounded(data.annulledByName, 0, 80)) &&
+        (!('annulledReason' in data) || isStringBounded(data.annulledReason, 0, 240)) &&
+        (!('annulledAtMs' in data) || data.annulledAtMs is number) &&
         isStringBounded(data.ownerUid, 1, 128) &&
         isStringBounded(data.createdByUid, 1, 128) &&
         isStringListBounded(data.allowedEmails, 25) &&
@@ -217,9 +259,27 @@ service cloud.firestore {
     }
 
     // 4. Workspaces & Admin-Gated Catalog vs Waiter Order Operations
+    match /workspaceDirectory/{workspaceId} {
+      allow get: if isVerifiedUser() && isValidId(workspaceId);
+      allow list: if false;
+      allow create: if isVerifiedUser() && isValidId(workspaceId) &&
+        isWorkspaceAdmin(workspaceId) &&
+        isValidWorkspaceDirectory(incoming(), workspaceId) &&
+        incoming().ownerUid == getAfter(workspacePath(workspaceId)).data.ownerUid &&
+        incoming().updatedAt == request.time;
+      allow update: if isVerifiedUser() && isValidId(workspaceId) &&
+        isWorkspaceAdmin(workspaceId) &&
+        isValidWorkspaceDirectory(incoming(), workspaceId) &&
+        incoming().ownerUid == existing().ownerUid &&
+        incoming().updatedAt == request.time &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['name', 'allowSelfRegistration', 'updatedAt']);
+      allow delete: if false;
+    }
+
     match /workspaces/{workspaceId} {
       allow get: if isVerifiedUser() && isValidId(workspaceId) && (
         isBootstrappedAdmin() ||
+        isActiveWorkspaceMember(workspaceId) ||
         (resource != null && (
           existing().ownerUid == request.auth.uid ||
           request.auth.token.email in existing().authorizedEmails
@@ -227,10 +287,8 @@ service cloud.firestore {
       );
       allow list: if isVerifiedUser() && (
         isBootstrappedAdmin() ||
-        (resource != null && (
-          resource.data.ownerUid == request.auth.uid ||
-          request.auth.token.email in resource.data.authorizedEmails
-        ))
+        resource.data.ownerUid == request.auth.uid ||
+        request.auth.token.email in resource.data.authorizedEmails
       );
       allow create: if isVerifiedUser() && isValidId(workspaceId) &&
         (workspaceId != 'ws_onde_luigi' || isBootstrappedAdmin()) &&
@@ -252,15 +310,25 @@ service cloud.firestore {
         );
         allow list: if isVerifiedUser() && (
           isBootstrappedAdmin() ||
-          (resource != null && (
-            resource.data.ownerUid == request.auth.uid ||
-            resource.data.uid == request.auth.uid
-          ))
+          resource.data.ownerUid == request.auth.uid ||
+          resource.data.uid == request.auth.uid
         );
-        allow create: if isWorkspaceAdmin(workspaceId) && isValidId(uid) &&
+        allow create: if isVerifiedUser() && isValidId(uid) &&
           isValidWorkspaceMember(incoming(), uid) &&
           incoming().ownerUid == getAfter(workspacePath(workspaceId)).data.ownerUid &&
-          incoming().createdAt == request.time;
+          incoming().createdAt == request.time &&
+          (
+            isWorkspaceAdmin(workspaceId) ||
+            (
+              uid == request.auth.uid &&
+              incoming().role == 'mesero' &&
+              incoming().active == true &&
+              (
+                (exists(directoryPath(workspaceId)) && get(directoryPath(workspaceId)).data.allowSelfRegistration == true) ||
+                (workspaceExists(workspaceId) && request.auth.token.email in get(workspacePath(workspaceId)).data.authorizedEmails)
+              )
+            )
+          );
         allow update: if isWorkspaceAdmin(workspaceId) && isValidId(uid) &&
           isValidWorkspaceMember(incoming(), uid) &&
           incoming().ownerUid == existing().ownerUid &&
@@ -272,9 +340,9 @@ service cloud.firestore {
       // ADMIN-CONTROLLED ROSTER + SELF-ASSOCIATED WAITER PROFILE
       match /staff/{staffId} {
         allow get: if isValidId(staffId) && isAuthorizedWorkspaceUser(workspaceId);
-        allow list: if canListResource();
+        allow list: if canListWorkspaceSubcollection(workspaceId);
         allow create: if isValidId(staffId) &&
-          isAuthorizedWorkspaceUser(workspaceId) &&
+          (isAuthorizedWorkspaceUser(workspaceId) || isActiveWorkspaceMemberAfter(workspaceId)) &&
           isValidStaffMember(incoming(), staffId) &&
           incoming().createdByUid == request.auth.uid &&
           incoming().ownerUid == getAfter(workspacePath(workspaceId)).data.ownerUid &&
@@ -314,7 +382,7 @@ service cloud.firestore {
       // ADMIN-ONLY WRITE: Sauces Catalog
       match /sauces/{sauceId} {
         allow get: if isValidId(sauceId) && isAuthorizedWorkspaceUser(workspaceId);
-        allow list: if canListResource();
+        allow list: if canListWorkspaceSubcollection(workspaceId);
         allow create: if isValidId(sauceId) && isWorkspaceAdmin(workspaceId) &&
           isValidSauce(incoming(), sauceId) &&
           incoming().createdByUid == request.auth.uid &&
@@ -328,13 +396,13 @@ service cloud.firestore {
           incoming().createdAt == existing().createdAt &&
           incoming().updatedAt == request.time &&
           incoming().diff(existing()).affectedKeys().hasOnly(['name', 'active', 'allowedEmails', 'updatedAt']);
-        allow delete: if false;
+        allow delete: if isValidId(sauceId) && isWorkspaceAdmin(workspaceId);
       }
 
       // ADMIN-ONLY WRITE: Menu Products, Recipes & Drinks
       match /products/{productId} {
         allow get: if isValidId(productId) && isAuthorizedWorkspaceUser(workspaceId);
-        allow list: if canListResource();
+        allow list: if canListWorkspaceSubcollection(workspaceId);
         allow create: if isValidId(productId) && isWorkspaceAdmin(workspaceId) &&
           isValidProduct(incoming(), productId) &&
           incoming().createdByUid == request.auth.uid &&
@@ -348,13 +416,13 @@ service cloud.firestore {
           incoming().createdAt == existing().createdAt &&
           incoming().updatedAt == request.time &&
           incoming().diff(existing()).affectedKeys().hasOnly(['name', 'category', 'basePrice', 'imageUrl', 'baseRecipe', 'removableOptions', 'addonOptions', 'allowSauces', 'minSauces', 'maxSauces', 'active', 'allowedEmails', 'updatedAt']);
-        allow delete: if false;
+        allow delete: if isValidId(productId) && isWorkspaceAdmin(workspaceId);
       }
 
       // ADMIN + AUTHORIZED WAITERS: Orders
       match /orders/{orderId} {
         allow get: if isValidId(orderId) && isAuthorizedWorkspaceUser(workspaceId);
-        allow list: if canListResource();
+        allow list: if canListWorkspaceSubcollection(workspaceId);
         allow create: if isValidId(orderId) && isAuthorizedWorkspaceUser(workspaceId) &&
           isValidOrder(incoming(), orderId) &&
           incoming().createdByUid == request.auth.uid &&
@@ -374,17 +442,18 @@ service cloud.firestore {
               (
                 incoming().diff(existing()).affectedKeys().hasOnly(['items', 'subtotal', 'total', 'notes', 'reference', 'waiterId', 'waiterName', 'updatedAt']) ||
                 incoming().diff(existing()).affectedKeys().hasOnly(['status', 'waiterId', 'waiterName', 'updatedAt']) ||
+                incoming().diff(existing()).affectedKeys().hasOnly(['status', 'voidReason', 'voidedByName', 'voidedAtMs', 'waiterId', 'waiterName', 'updatedAt']) ||
                 incoming().diff(existing()).affectedKeys().hasOnly(['paymentStatus', 'paymentMethod', 'receiptCount', 'latestReceiptUrl', 'waiterId', 'waiterName', 'updatedAt'])
               )
             )
           );
-        allow delete: if false;
+        allow delete: if isValidId(orderId) && isWorkspaceAdmin(workspaceId);
       }
 
-      // IMMUTABLE AUDIT LOG: Movements
+      // IMMUTABLE AUDIT LOG: Movements (Admin can permanently purge trace)
       match /movements/{movementId} {
         allow get: if isValidId(movementId) && isAuthorizedWorkspaceUser(workspaceId);
-        allow list: if canListResource();
+        allow list: if canListWorkspaceSubcollection(workspaceId);
         allow create: if isValidId(movementId) && isAuthorizedWorkspaceUser(workspaceId) &&
           isValidMovement(incoming(), movementId) &&
           incoming().actorUid == request.auth.uid &&
@@ -393,13 +462,13 @@ service cloud.firestore {
           incoming().createdAt == request.time &&
           existsAfter(/databases/$(database)/documents/workspaces/$(workspaceId)/orders/$(incoming().orderId));
         allow update: if false;
-        allow delete: if false;
+        allow delete: if isValidId(movementId) && isWorkspaceAdmin(workspaceId);
       }
 
       // TRANSFER RECEIPTS
       match /transfers/{transferId} {
         allow get: if isValidId(transferId) && isAuthorizedWorkspaceUser(workspaceId);
-        allow list: if canListResource();
+        allow list: if canListWorkspaceSubcollection(workspaceId);
         allow create: if isValidId(transferId) && isAuthorizedWorkspaceUser(workspaceId) &&
           isValidTransfer(incoming(), transferId) &&
           incoming().createdByUid == request.auth.uid &&
@@ -411,8 +480,8 @@ service cloud.firestore {
           incoming().ownerUid == existing().ownerUid &&
           incoming().createdByUid == existing().createdByUid &&
           incoming().createdAt == existing().createdAt &&
-          incoming().diff(existing()).affectedKeys().hasOnly(['paymentStatus', 'notes']);
-        allow delete: if false;
+          incoming().diff(existing()).affectedKeys().hasOnly(['paymentStatus', 'notes', 'annulled', 'annulledByName', 'annulledReason', 'annulledAtMs']);
+        allow delete: if isValidId(transferId) && isWorkspaceAdmin(workspaceId);
       }
     }
   }

@@ -1,11 +1,12 @@
 import React, { useMemo, useState } from 'react';
 import { Check, Droplets, Minus, Plus, X } from 'lucide-react';
 import { usePosStore } from '../services/posStore';
-import type { OrderItem, OrderItemAddon, Product } from '../types/pos';
+import type { AddonOption, OrderItem, OrderItemAddon, Product } from '../types/pos';
 import {
   buildOrderItem,
   calculateItemLineTotal,
   formatCurrency,
+  getAddonQuantity,
   validateItemSauces,
 } from '../utils/orderMath';
 import { resolveAssetUrl } from '../utils/assetPath';
@@ -33,7 +34,9 @@ export const RecipeCustomizeModal: React.FC<Props> = ({
     initialItem ? [...(initialItem.selectedSauces || [])] : []
   );
   const [addedExtras, setAddedExtras] = useState<OrderItemAddon[]>(
-    initialItem ? [...initialItem.addedExtras] : []
+    initialItem
+      ? initialItem.addedExtras.map((ex) => ({ ...ex, quantity: getAddonQuantity(ex) }))
+      : []
   );
   const [customNote, setCustomNote] = useState<string>(
     initialItem ? initialItem.customNote : ''
@@ -66,12 +69,21 @@ export const RecipeCustomizeModal: React.FC<Props> = ({
     });
   };
 
-  const toggleExtra = (extra: OrderItemAddon) => {
-    setAddedExtras((prev) =>
-      prev.some((e) => e.id === extra.id)
-        ? prev.filter((e) => e.id !== extra.id)
-        : [...prev, extra]
-    );
+  const setExtraQuantity = (extra: AddonOption, nextQty: number) => {
+    const allowMulti = extra.allowMultiple !== false;
+    const clamped = allowMulti ? Math.max(0, Math.min(20, nextQty)) : Math.max(0, Math.min(1, nextQty));
+    setAddedExtras((prev) => {
+      if (clamped <= 0) {
+        return prev.filter((e) => e.id !== extra.id);
+      }
+      const exists = prev.some((e) => e.id === extra.id);
+      if (exists) {
+        return prev.map((e) =>
+          e.id === extra.id ? { ...e, quantity: clamped } : e
+        );
+      }
+      return [...prev, { id: extra.id, name: extra.name, price: extra.price, quantity: clamped }];
+    });
   };
 
   const lineTotal = calculateItemLineTotal(product.basePrice, addedExtras, quantity);
@@ -239,7 +251,7 @@ export const RecipeCustomizeModal: React.FC<Props> = ({
             </section>
           )}
 
-          {/* 3. Add-on extras */}
+          {/* 3. Add-on extras with counter for repeatable extras and single toggle for 1-time-only */}
           {product.addonOptions.length > 0 && (
             <section className="space-y-2 border-t border-[#27272E] pt-4">
               <h3 className="text-xs font-bold text-white uppercase tracking-wide">
@@ -247,34 +259,86 @@ export const RecipeCustomizeModal: React.FC<Props> = ({
               </h3>
               <div className="space-y-2">
                 {product.addonOptions.map((extra) => {
-                  const isSelected = addedExtras.some((e) => e.id === extra.id);
+                  const existing = addedExtras.find((e) => e.id === extra.id);
+                  const qty = existing ? getAddonQuantity(existing) : 0;
+                  const allowMulti = extra.allowMultiple !== false;
+
+                  if (!allowMulti) {
+                    const isSelected = qty > 0;
+                    return (
+                      <button
+                        key={extra.id}
+                        type="button"
+                        onClick={() => setExtraQuantity(extra, isSelected ? 0 : 1)}
+                        className={`w-full min-h-[46px] px-3.5 py-2 rounded-xl border flex items-center justify-between gap-3 transition-colors ${
+                          isSelected
+                            ? 'bg-emerald-950/50 border-emerald-500 text-white'
+                            : 'bg-[#1C1C22] border-[#27272E] text-zinc-200 hover:border-zinc-500'
+                        }`}
+                      >
+                        <div className="flex items-center gap-2.5 min-w-0">
+                          <span
+                            className={`w-5 h-5 rounded-md border flex items-center justify-center shrink-0 ${
+                              isSelected
+                                ? 'bg-emerald-500 border-emerald-400 text-black'
+                                : 'border-zinc-600 bg-[#0A0A0A]'
+                            }`}
+                          >
+                            {isSelected && <Check className="w-3.5 h-3.5" />}
+                          </span>
+                          <div className="min-w-0 text-left">
+                            <span className="text-sm font-medium truncate block">{extra.name}</span>
+                            <span className="text-[10px] text-zinc-400">Máximo 1 por unidad</span>
+                          </div>
+                        </div>
+                        <span className="font-mono text-xs font-bold text-amber-400 tabular-nums shrink-0">
+                          {extra.price > 0 ? `+${formatCurrency(extra.price)}` : 'Gratis'}
+                        </span>
+                      </button>
+                    );
+                  }
+
                   return (
-                    <button
+                    <div
                       key={extra.id}
-                      type="button"
-                      onClick={() => toggleExtra(extra)}
-                      className={`w-full min-h-[46px] px-3.5 py-2 rounded-xl border flex items-center justify-between gap-3 transition-colors ${
-                        isSelected
+                      className={`w-full min-h-[48px] px-3.5 py-2 rounded-xl border flex items-center justify-between gap-3 transition-colors ${
+                        qty > 0
                           ? 'bg-emerald-950/50 border-emerald-500 text-white'
-                          : 'bg-[#1C1C22] border-[#27272E] text-zinc-200 hover:border-zinc-500'
+                          : 'bg-[#1C1C22] border-[#27272E] text-zinc-200'
                       }`}
                     >
-                      <div className="flex items-center gap-2.5 min-w-0">
-                        <span
-                          className={`w-5 h-5 rounded-md border flex items-center justify-center shrink-0 ${
-                            isSelected
-                              ? 'bg-emerald-500 border-emerald-400 text-black'
-                              : 'border-zinc-600 bg-[#0A0A0A]'
-                          }`}
-                        >
-                          {isSelected && <Check className="w-3.5 h-3.5" />}
-                        </span>
-                        <span className="text-sm font-medium truncate">{extra.name}</span>
+                      <div className="min-w-0 flex-1">
+                        <p className="text-sm font-medium truncate">{extra.name}</p>
+                        <p className="font-mono text-xs font-bold text-amber-400 tabular-nums">
+                          {extra.price > 0 ? `+${formatCurrency(extra.price)} c/u` : 'Gratis'}
+                          {qty > 1 && extra.price > 0
+                            ? ` (${formatCurrency(extra.price * qty)})`
+                            : ''}
+                        </p>
                       </div>
-                      <span className="font-mono text-xs font-bold text-amber-400 tabular-nums shrink-0">
-                        {extra.price > 0 ? `+${formatCurrency(extra.price)}` : 'Gratis'}
-                      </span>
-                    </button>
+                      <div className="flex items-center border border-[#27272E] bg-[#0A0A0A] rounded-xl overflow-hidden shrink-0">
+                        <button
+                          type="button"
+                          aria-label={`Quitar una adición de ${extra.name}`}
+                          onClick={() => setExtraQuantity(extra, qty - 1)}
+                          disabled={qty === 0}
+                          className="min-h-[38px] min-w-[38px] flex items-center justify-center text-zinc-300 hover:bg-[#1C1C22] disabled:opacity-35"
+                        >
+                          <Minus className="w-3.5 h-3.5" />
+                        </button>
+                        <span className="w-8 text-center font-mono text-xs font-bold text-white tabular-nums">
+                          {qty}
+                        </span>
+                        <button
+                          type="button"
+                          aria-label={`Agregar una adición de ${extra.name}`}
+                          onClick={() => setExtraQuantity(extra, qty + 1)}
+                          className="min-h-[38px] min-w-[38px] flex items-center justify-center text-amber-400 hover:bg-[#1C1C22]"
+                        >
+                          <Plus className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    </div>
                   );
                 })}
               </div>
