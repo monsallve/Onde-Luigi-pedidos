@@ -162,13 +162,13 @@ test('findLinkedStaffMember and resolveActiveWaiter lock non-primary users stric
   assert.equal(active?.id, 'staff_waiter_1');
   assert.equal(active?.role, 'mesero');
 
-  // Primary admin with empty activeWaiterId defaults immediately to own profile
+  // Primary admin stays on own permanent profile even if stale activeWaiterId points to another user
   const primary = findLinkedStaffMember(baseStaff, 'uid_owner', 'perrodog1515@gmail.com');
   const activePrimary = resolveActiveWaiter({
     isPrimaryAdmin: true,
     myLinkedStaff: primary,
     staff: baseStaff,
-    activeWaiterId: '',
+    activeWaiterId: 'staff_waiter_1',
   });
   assert.equal(activePrimary?.id, 'staff_owner');
 });

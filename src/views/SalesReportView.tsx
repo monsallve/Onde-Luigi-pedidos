@@ -9,9 +9,10 @@ import {
   toInputDateString,
   type ProductSalesRow,
 } from '../utils/salesAnalytics';
+import { ROLE_LABELS } from '../utils/rolePermissions';
 
 export const SalesReportView: React.FC = () => {
-  const { orders, isAdmin } = usePosStore();
+  const { orders, effectiveRole, permissions } = usePosStore();
 
   const [preset, setPreset] = useState<DateRangePreset>('hoy');
   const [customFrom, setCustomFrom] = useState(() => toInputDateString(Date.now()));
@@ -45,7 +46,7 @@ export const SalesReportView: React.FC = () => {
     return orders.filter((o) => idSet.has(o.id));
   }, [inspectedProduct, orders]);
 
-  if (!isAdmin) {
+  if (!permissions.canViewSales) {
     return (
       <div className="bg-[#141418] border border-[#27272E] rounded-2xl p-10 text-center max-w-lg mx-auto my-8 space-y-3">
         <Lock className="w-10 h-10 text-amber-400 mx-auto" />
@@ -53,7 +54,7 @@ export const SalesReportView: React.FC = () => {
           ACCESO ADMINISTRATIVO REQUERIDO
         </h1>
         <p className="text-sm text-zinc-400">
-          Solo las cuentas con rol Administrador pueden ver el resumen de ventas, ingresos y conteo de productos vendidos.
+          Solo las cuentas con rol Administrador pueden ver el resumen de ventas, ingresos y conteo de productos vendidos. Tu rol actual es <strong className="text-white">{ROLE_LABELS[effectiveRole]}</strong>.
         </p>
       </div>
     );

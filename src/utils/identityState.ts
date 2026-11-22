@@ -61,16 +61,20 @@ export function resolveActiveWaiter({
   isPrimaryAdmin,
   myLinkedStaff,
   staff,
-  activeWaiterId,
 }: ActiveWaiterResolutionParams): StaffMember | null {
-  if (!isPrimaryAdmin) {
-    return myLinkedStaff && myLinkedStaff.active ? myLinkedStaff : null;
+  if (myLinkedStaff && myLinkedStaff.active) {
+    return myLinkedStaff;
   }
-  return (
-    staff.find((s) => s.id === activeWaiterId && s.active) ||
-    (myLinkedStaff && myLinkedStaff.active ? myLinkedStaff : null) ||
-    null
-  );
+  if (isPrimaryAdmin) {
+    return (
+      staff.find(
+        (s) =>
+          s.active &&
+          (Boolean(s.linkedUid) && s.linkedUid === s.ownerUid)
+      ) || null
+    );
+  }
+  return null;
 }
 
 export interface PermanentPromptParams {

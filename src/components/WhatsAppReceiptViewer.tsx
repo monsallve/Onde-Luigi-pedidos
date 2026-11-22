@@ -16,6 +16,7 @@ interface Props {
   receipts: TransferReceipt[];
   initialIndex: number;
   isAdmin?: boolean;
+  canVoidReceipt?: boolean;
   onClose: () => void;
   onInspectOrder?: (orderId: string) => void;
   onVoidReceipt?: (transferId: string) => Promise<void>;
@@ -26,6 +27,7 @@ export const WhatsAppReceiptViewer: React.FC<Props> = ({
   receipts,
   initialIndex,
   isAdmin = false,
+  canVoidReceipt = true,
   onClose,
   onInspectOrder,
   onVoidReceipt,
@@ -287,7 +289,7 @@ export const WhatsAppReceiptViewer: React.FC<Props> = ({
               </button>
             )}
 
-            {!current.annulled && onVoidReceipt && (
+            {!current.annulled && canVoidReceipt && onVoidReceipt && (
               confirmMode === 'void' ? (
                 <div className="flex items-center gap-1.5">
                   <button

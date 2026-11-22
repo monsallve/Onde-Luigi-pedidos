@@ -1,9 +1,10 @@
 import React, { useState } from 'react';
-import { Check, Cloud, Code2, Copy, Database, Lock, LogOut, MailCheck, MailPlus, Plus, RefreshCw, Shield, Trash2, Users, X } from 'lucide-react';
+import { Check, Cloud, Code2, Copy, Database, Eye, Lock, LogOut, MailCheck, MailPlus, Plus, RefreshCw, Shield, Trash2, Users, X } from 'lucide-react';
 import { usePosStore } from '../services/posStore';
 import { ADMIN_BOOTSTRAP_EMAIL } from '../data/demoSeed';
 import type { StaffRole } from '../types/pos';
 import { resolveAssetUrl } from '../utils/assetPath';
+import { ALL_STAFF_ROLES, ROLE_DESCRIPTIONS, ROLE_LABELS } from '../utils/rolePermissions';
 import { buildBrandVerificationEmailHtml } from '../utils/verificationEmailTemplate';
 import { PWAInstallButton } from './PWAInstallBanner';
 
@@ -19,12 +20,14 @@ export const SettingsModal: React.FC<Props> = ({ open, onClose, onOpenVerifyEmai
     firebaseUser,
     emailVerified,
     configSource,
-    accountRole,
+    effectiveRole,
+    previewRole,
+    setPreviewRole,
     isAdmin,
     isPrimaryAdmin,
+    isRealPrimaryAdmin,
     authorizedEmails,
     allowSelfRegistration,
-    setDemoAccountRole,
     updateAuthorizedEmails,
     updateAllowSelfRegistration,
     staff,
@@ -180,17 +183,17 @@ export const SettingsModal: React.FC<Props> = ({ open, onClose, onOpenVerifyEmai
               <div className="flex items-center justify-between text-sm">
                 <span className="text-zinc-400">Nivel de cuenta</span>
                 <span
-                  className={`px-2.5 py-0.5 rounded font-mono text-xs font-bold ${
+                  className={`px-2.5 py-0.5 rounded font-mono text-xs font-bold uppercase ${
                     isAdmin
                       ? 'bg-amber-500 text-black'
                       : 'bg-[#1C1C22] border border-[#27272E] text-zinc-200'
                   }`}
                 >
-                  {isPrimaryAdmin
-                    ? 'ADMINISTRADOR PRINCIPAL'
-                    : accountRole === 'admin'
-                      ? 'ADMINISTRADOR'
-                      : 'MESERO (SOLO PEDIDOS)'}
+                  {isRealPrimaryAdmin
+                    ? previewRole === 'admin'
+                      ? 'ADMINISTRADOR PRINCIPAL'
+                      : `${ROLE_LABELS[effectiveRole]} (VISTA PREVIA)`
+                    : ROLE_LABELS[effectiveRole]}
                 </span>
               </div>
               <div className="flex items-center justify-between text-sm">
@@ -241,35 +244,34 @@ export const SettingsModal: React.FC<Props> = ({ open, onClose, onOpenVerifyEmai
                 </>
               )}
 
-              {sessionMode === 'demo' && (
-                <div className="pt-2 border-t border-[#27272E]">
-                  <p className="text-xs text-zinc-400 mb-2">
-                    Probar permisos en Modo Demo:
-                  </p>
-                  <div className="grid grid-cols-2 gap-2">
-                    <button
-                      type="button"
-                      onClick={() => setDemoAccountRole('admin')}
-                      className={`min-h-[38px] rounded-lg border text-xs font-bold transition-colors ${
-                        isAdmin
-                          ? 'bg-amber-500 border-amber-400 text-black'
-                          : 'bg-[#1C1C22] border-[#27272E] text-zinc-300'
-                      }`}
-                    >
-                      Administrador
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setDemoAccountRole('mesero')}
-                      className={`min-h-[38px] rounded-lg border text-xs font-bold transition-colors ${
-                        !isAdmin
-                          ? 'bg-red-600 border-red-500 text-white'
-                          : 'bg-[#1C1C22] border-[#27272E] text-zinc-300'
-                      }`}
-                    >
-                      Solo Mesero
-                    </button>
+              {isRealPrimaryAdmin && (
+                <div className="pt-2.5 border-t border-[#27272E] space-y-2">
+                  <div className="flex items-center gap-1.5 text-xs font-bold text-amber-400">
+                    <Eye className="w-3.5 h-3.5 shrink-0" />
+                    <span>Previsualizar aplicación como rol</span>
                   </div>
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                    {ALL_STAFF_ROLES.map((r) => {
+                      const active = previewRole === r;
+                      return (
+                        <button
+                          key={r}
+                          type="button"
+                          onClick={() => setPreviewRole(r)}
+                          className={`min-h-[38px] rounded-lg border text-xs font-bold transition-colors ${
+                            active
+                              ? 'bg-amber-500 border-amber-400 text-black'
+                              : 'bg-[#1C1C22] border-[#27272E] text-zinc-300 hover:border-zinc-500'
+                          }`}
+                        >
+                          {ROLE_LABELS[r]}
+                        </button>
+                      );
+                    })}
+                  </div>
+                  <p className="text-[11px] text-zinc-400 leading-relaxed">
+                    {ROLE_DESCRIPTIONS[effectiveRole]}
+                  </p>
                 </div>
               )}
             </div>
@@ -529,8 +531,8 @@ export const SettingsModal: React.FC<Props> = ({ open, onClose, onOpenVerifyEmai
                       </div>
                     ) : (
                       <div className="text-right text-xs">
-                        <span className={isMainAdminRow ? 'text-amber-400 font-bold' : 'text-zinc-300 capitalize'}>
-                          {isMainAdminRow ? 'Admin Principal' : member.role}
+                        <span className={isMainAdminRow ? 'text-amber-400 font-bold' : 'text-zinc-300'}>
+                          {isMainAdminRow ? 'Admin Principal' : ROLE_LABELS[member.role]}
                         </span>
                         <span className="text-zinc-500 mx-1">·</span>
                         <span className="text-zinc-400">

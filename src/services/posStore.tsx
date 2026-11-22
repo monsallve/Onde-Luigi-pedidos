@@ -67,12 +67,19 @@ import {
   isStartupIdentityReady,
   resolveActiveWaiter,
 } from '../utils/identityState';
+import {
+  getRolePermissions,
+  isValidStaffRole,
+  resolveEffectiveRole,
+  type RolePermissions,
+} from '../utils/rolePermissions';
 import { uploadTransferReceiptImage } from './storageService';
 
 const DEMO_STORAGE_KEY = 'ondeluigi_demo_state_v2';
 const ACTIVE_WAITER_STORAGE_KEY = 'ondeluigi_active_waiter_v2';
 const DEMO_MODE_FLAG_KEY = 'ondeluigi_demo_active_v2';
 const DEMO_ROLE_STORAGE_KEY = 'ondeluigi_demo_role_v2';
+const PREVIEW_ROLE_STORAGE_KEY = 'ondeluigi_preview_role_v1';
 const CYCLIC_REF_COUNTER_KEY = 'ondeluigi_cyclic_ref_counter_v1';
 const SHARED_WORKSPACE_ID = 'ws_onde_luigi';
 
@@ -139,8 +146,13 @@ interface PosContextValue {
   identityReady: boolean;
 
   accountRole: AccountRole;
+  effectiveRole: StaffRole;
+  previewRole: StaffRole;
+  setPreviewRole: (role: StaffRole) => void;
+  permissions: RolePermissions;
   isAdmin: boolean;
   isPrimaryAdmin: boolean;
+  isRealPrimaryAdmin: boolean;
   authorizedEmails: string[];
   allowSelfRegistration: boolean;
 
@@ -160,8 +172,8 @@ interface PosContextValue {
   verificationNotice: string | null;
   clearVerificationNotice: () => void;
 
-  enterDemoMode: (role?: AccountRole) => void;
-  setDemoAccountRole: (role: AccountRole) => void;
+  enterDemoMode: (role?: StaffRole) => void;
+  setDemoAccountRole: (role: StaffRole) => void;
   resetDemoData: () => void;
   signInWithGoogle: () => Promise<void>;
   signInWithEmail: (email: string, password: string) => Promise<void>;
@@ -304,13 +316,25 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const sessionModeRef = useRef<ConnectionMode | null>(sessionMode);
   sessionModeRef.current = sessionMode;
 
-  const [demoAccountRole, setDemoAccountRoleState] = useState<AccountRole>(() => {
+  const [demoAccountRole, setDemoAccountRoleState] = useState<StaffRole>(() => {
     if (typeof window !== 'undefined') {
       const params = new URLSearchParams(window.location.search);
       const qRole = params.get('role');
-      if (qRole === 'mesero' || qRole === 'admin') return qRole;
+      if (isValidStaffRole(qRole)) return qRole;
       const saved = safeGetStorage(DEMO_ROLE_STORAGE_KEY);
-      if (saved === 'mesero' || saved === 'admin') return saved;
+      if (isValidStaffRole(saved)) return saved;
+    }
+    return 'admin';
+  });
+
+  const [previewRoleState, setPreviewRoleState] = useState<StaffRole>(() => {
+    try {
+      if (typeof window !== 'undefined') {
+        const saved = window.sessionStorage.getItem(PREVIEW_ROLE_STORAGE_KEY);
+        if (isValidStaffRole(saved)) return saved;
+      }
+    } catch {
+      // ignore sessionStorage errors
     }
     return 'admin';
   });
@@ -355,7 +379,7 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     safeSetStorage(ACTIVE_WAITER_STORAGE_KEY, id);
   }, []);
 
-  const setDemoAccountRole = useCallback((role: AccountRole) => {
+  const setDemoAccountRole = useCallback((role: StaffRole) => {
     setDemoAccountRoleState(role);
     try {
       localStorage.setItem(DEMO_ROLE_STORAGE_KEY, role);
@@ -368,24 +392,32 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     ? firebaseUser.uid
     : demoAccountRole === 'mesero'
       ? 'demo_waiter'
-      : isSecondaryAdminDemo
-        ? 'demo_secondary_admin'
-        : 'demo_owner';
+      : demoAccountRole === 'cajero'
+        ? 'demo_cajero'
+        : demoAccountRole === 'cocina'
+          ? 'demo_cocina'
+          : isSecondaryAdminDemo
+            ? 'demo_secondary_admin'
+            : 'demo_owner';
   const actorEmail = firebaseUser
     ? (firebaseUser.email || '').toLowerCase()
     : demoAccountRole === 'mesero'
       ? 'mesero1@ondeluigi.com'
-      : isSecondaryAdminDemo
-        ? 'admin2@ondeluigi.com'
-        : ADMIN_BOOTSTRAP_EMAIL;
+      : demoAccountRole === 'cajero'
+        ? 'caja@ondeluigi.com'
+        : demoAccountRole === 'cocina'
+          ? 'cocina@ondeluigi.com'
+          : isSecondaryAdminDemo
+            ? 'admin2@ondeluigi.com'
+            : ADMIN_BOOTSTRAP_EMAIL;
 
   const myLinkedStaff = useMemo(
     () => findLinkedStaffMember(staff, actorUid, actorEmail),
     [staff, actorUid, actorEmail]
   );
 
-  // Determine effective account role & primary admin authority
-  const isPrimaryAdmin = useMemo(() => {
+  // Real primary admin identity (preserved even when previewing another role)
+  const isRealPrimaryAdmin = useMemo(() => {
     if (sessionMode === 'demo') {
       return demoAccountRole === 'admin' && !isSecondaryAdminDemo;
     }
@@ -394,32 +426,51 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return userEmail === ADMIN_BOOTSTRAP_EMAIL || firebaseUser.uid === workspaceOwnerUid;
   }, [sessionMode, demoAccountRole, isSecondaryAdminDemo, firebaseUser, workspaceOwnerUid]);
 
-  const accountRole: AccountRole = useMemo(() => {
-    if (sessionMode === 'demo') return demoAccountRole;
-    if (!firebaseUser) return 'mesero';
-    if (
-      isPrimaryAdmin ||
-      cloudMemberRole === 'admin' ||
-      myLinkedStaff?.role === 'admin'
-    ) {
-      return 'admin';
-    }
-    return 'mesero';
-  }, [sessionMode, demoAccountRole, firebaseUser, isPrimaryAdmin, cloudMemberRole, myLinkedStaff]);
+  const setPreviewRole = useCallback(
+    (role: StaffRole) => {
+      if (!isRealPrimaryAdmin || !isValidStaffRole(role)) return;
+      setPreviewRoleState(role);
+      try {
+        if (typeof window !== 'undefined') {
+          window.sessionStorage.setItem(PREVIEW_ROLE_STORAGE_KEY, role);
+        }
+      } catch {
+        // ignore sessionStorage errors
+      }
+    },
+    [isRealPrimaryAdmin]
+  );
 
-  const isAdmin = accountRole === 'admin';
+  const previewRole: StaffRole = isRealPrimaryAdmin ? previewRoleState : 'admin';
 
-  // Registered users (waiters AND promoted admins) keep their permanent assigned name/role.
-  // Only the principal admin can optionally pick/switch staff or use their own profile.
+  const effectiveRole: StaffRole = useMemo(
+    () =>
+      resolveEffectiveRole({
+        sessionMode,
+        isRealPrimaryAdmin,
+        previewRole,
+        demoAccountRole,
+        cloudMemberRole,
+        myLinkedStaff,
+      }),
+    [sessionMode, isRealPrimaryAdmin, previewRole, demoAccountRole, cloudMemberRole, myLinkedStaff]
+  );
+
+  const permissions = useMemo(() => getRolePermissions(effectiveRole), [effectiveRole]);
+  const accountRole: AccountRole = effectiveRole === 'admin' ? 'admin' : 'mesero';
+  const isAdmin = effectiveRole === 'admin';
+  const isPrimaryAdmin = isRealPrimaryAdmin && effectiveRole === 'admin';
+
+  // Every user (including Principal Admin) always stays on their own permanent profile — no switching into other accounts
   const activeWaiter = useMemo(
     () =>
       resolveActiveWaiter({
-        isPrimaryAdmin,
+        isPrimaryAdmin: isRealPrimaryAdmin,
         myLinkedStaff,
         staff,
         activeWaiterId,
       }),
-    [isPrimaryAdmin, myLinkedStaff, staff, activeWaiterId]
+    [isRealPrimaryAdmin, myLinkedStaff, staff, activeWaiterId]
   );
 
   const identityReady = useMemo(
@@ -436,34 +487,19 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     [authReady, sessionMode, cloudError, firebaseUser, cloudReadyForUid, staffLoaded, loadingData]
   );
 
-  // Auto-select permanent linked profile for registered users (or first active admin on ?autostart=1)
+  // Auto-bind activeWaiterId strictly to the user's own permanent profile
   useEffect(() => {
     if (staff.length === 0) return;
 
-    if (!isPrimaryAdmin) {
-      if (myLinkedStaff && myLinkedStaff.active && activeWaiterId !== myLinkedStaff.id) {
-        setActiveWaiterId(myLinkedStaff.id);
-      }
+    if (myLinkedStaff && myLinkedStaff.active && activeWaiterId !== myLinkedStaff.id) {
+      setActiveWaiterId(myLinkedStaff.id);
       return;
     }
 
-    if (!activeWaiter) {
-      if (myLinkedStaff && myLinkedStaff.active) {
-        setActiveWaiterId(myLinkedStaff.id);
-        return;
-      }
-      if (typeof window !== 'undefined') {
-        const params = new URLSearchParams(window.location.search);
-        if (params.get('autostart') === '1') {
-          const preferred =
-            staff.find((s) => s.active && s.role === 'admin') || staff.find((s) => s.active);
-          if (preferred) {
-            setActiveWaiterId(preferred.id);
-          }
-        }
-      }
+    if (isRealPrimaryAdmin && !myLinkedStaff && activeWaiter && activeWaiterId !== activeWaiter.id) {
+      setActiveWaiterId(activeWaiter.id);
     }
-  }, [isPrimaryAdmin, myLinkedStaff, activeWaiter, activeWaiterId, staff, setActiveWaiterId]);
+  }, [isRealPrimaryAdmin, myLinkedStaff, activeWaiter, activeWaiterId, staff.length, setActiveWaiterId]);
 
   const activateCloudSession = useCallback((user: User) => {
     setFirebaseUser(user);
@@ -601,6 +637,44 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         updatedAtMs: now,
       });
     }
+    if (
+      demoAccountRole === 'cajero' &&
+      !demoStaff.some((s) => s.linkedUid === 'demo_cajero')
+    ) {
+      const now = Date.now();
+      demoStaff.push({
+        id: 'staff_demo_cajero',
+        name: 'Laura Caja',
+        role: 'cajero',
+        active: true,
+        linkedUid: 'demo_cajero',
+        linkedEmail: 'caja@ondeluigi.com',
+        ownerUid: 'demo_owner',
+        createdByUid: 'demo_owner',
+        allowedEmails: [ADMIN_BOOTSTRAP_EMAIL, 'caja@ondeluigi.com'],
+        createdAtMs: now,
+        updatedAtMs: now,
+      });
+    }
+    if (
+      demoAccountRole === 'cocina' &&
+      !demoStaff.some((s) => s.linkedUid === 'demo_cocina')
+    ) {
+      const now = Date.now();
+      demoStaff.push({
+        id: 'staff_demo_cocina',
+        name: 'Carlos Plancha',
+        role: 'cocina',
+        active: true,
+        linkedUid: 'demo_cocina',
+        linkedEmail: 'cocina@ondeluigi.com',
+        ownerUid: 'demo_owner',
+        createdByUid: 'demo_owner',
+        allowedEmails: [ADMIN_BOOTSTRAP_EMAIL, 'cocina@ondeluigi.com'],
+        createdAtMs: now,
+        updatedAtMs: now,
+      });
+    }
     setWorkspaceOwnerUid('demo_owner');
     setAuthorizedEmails(
       loaded.authorizedEmails && loaded.authorizedEmails.length > 0
@@ -615,7 +689,7 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setTransfers(loaded.transfers.sort((a, b) => b.createdAtMs - a.createdAtMs));
     setStaffLoaded(true);
     setLoadingData(false);
-  }, [sessionMode, isSecondaryAdminDemo]);
+  }, [sessionMode, isSecondaryAdminDemo, demoAccountRole]);
 
   const workspaceId = sessionMode === 'cloud' ? SHARED_WORKSPACE_ID : 'demo_ws';
   const effectiveOwnerUid = sessionMode === 'cloud' ? workspaceOwnerUid : 'demo_owner';
@@ -1162,7 +1236,7 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   }, [sessionMode, firebaseUser, resolveOrBootstrapCloudWorkspace]);
 
   const enterDemoMode = useCallback(
-    (role: AccountRole = 'admin') => {
+    (role: StaffRole = 'admin') => {
       safeSetStorage(DEMO_MODE_FLAG_KEY, '1');
       setDemoAccountRole(role);
       setSessionMode('demo');
@@ -1266,6 +1340,14 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const signOutSession = useCallback(async () => {
     safeRemoveStorage(DEMO_MODE_FLAG_KEY);
     safeRemoveStorage(ACTIVE_WAITER_STORAGE_KEY);
+    try {
+      if (typeof window !== 'undefined') {
+        window.sessionStorage.removeItem(PREVIEW_ROLE_STORAGE_KEY);
+      }
+    } catch {
+      // ignore
+    }
+    setPreviewRoleState('admin');
     if (auth && firebaseUser) {
       await signOut(auth);
     }
@@ -1325,6 +1407,9 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const createOrder = useCallback(
     async (input: CreateOrderInput): Promise<Order> => {
+      if (!permissions.canTakeOrders) {
+        throw new Error('Tu rol actual no tiene permiso para tomar pedidos.');
+      }
       const waiter = requireWaiter();
       if (input.items.length === 0) {
         throw new Error('Agrega al menos un producto al pedido.');
@@ -1479,6 +1564,7 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       return newOrder;
     },
     [
+      permissions.canTakeOrders,
       requireWaiter,
       orders,
       sessionMode,
@@ -1498,6 +1584,9 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       nextReference: string,
       nextNotes: string
     ) => {
+      if (!permissions.canEditOrders) {
+        throw new Error('Tu rol actual no tiene permiso para editar productos del pedido.');
+      }
       const waiter = requireWaiter();
       const target = orders.find((o) => o.id === orderId);
       if (!target) throw new Error('Pedido no encontrado.');
@@ -1573,6 +1662,7 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       }
     },
     [
+      permissions.canEditOrders,
       requireWaiter,
       orders,
       actorUid,
@@ -1587,6 +1677,15 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const updateOrderStatus = useCallback(
     async (orderId: string, nextStatus: OrderStatus) => {
+      if (
+        (nextStatus === 'preparacion' || nextStatus === 'listo') &&
+        !permissions.canAdvanceKitchen
+      ) {
+        throw new Error('Tu rol actual no tiene permiso para avanzar preparación en cocina.');
+      }
+      if (nextStatus === 'entregado' && !permissions.canDeliverOrders) {
+        throw new Error('Tu rol actual no tiene permiso para marcar pedidos como entregados.');
+      }
       const waiter = requireWaiter();
       const target = orders.find((o) => o.id === orderId);
       if (!target) throw new Error('Pedido no encontrado.');
@@ -1647,6 +1746,8 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       }
     },
     [
+      permissions.canAdvanceKitchen,
+      permissions.canDeliverOrders,
       requireWaiter,
       orders,
       actorUid,
@@ -1661,6 +1762,9 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const voidOrder = useCallback(
     async (orderId: string, reason = '') => {
+      if (!permissions.canVoidOrders) {
+        throw new Error('Tu rol actual no tiene permiso para anular pedidos.');
+      }
       const waiter = requireWaiter();
       const target = orders.find((o) => o.id === orderId);
       if (!target) throw new Error('Pedido no encontrado.');
@@ -1728,6 +1832,7 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       }
     },
     [
+      permissions.canVoidOrders,
       requireWaiter,
       orders,
       actorUid,
@@ -1799,6 +1904,9 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       receiptFile?: File | null;
       receiptNotes?: string;
     }) => {
+      if (!permissions.canManagePayments) {
+        throw new Error('Tu rol actual no tiene permiso para confirmar o modificar pagos.');
+      }
       const waiter = requireWaiter();
       const target = orders.find((o) => o.id === orderId);
       if (!target) throw new Error('Pedido no encontrado.');
@@ -1919,6 +2027,7 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       return { usedFallbackInline };
     },
     [
+      permissions.canManagePayments,
       requireWaiter,
       orders,
       transfers,
@@ -1944,6 +2053,9 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       amount: number;
       notes?: string;
     }) => {
+      if (!permissions.canUploadReceipts) {
+        throw new Error('Tu rol actual no tiene permiso para subir comprobantes.');
+      }
       const waiter = requireWaiter();
       const target = orders.find((o) => o.id === orderId);
       if (!target) throw new Error('Pedido no encontrado.');
@@ -2042,6 +2154,7 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       return { usedFallbackInline: uploadRes.usedFallbackInline };
     },
     [
+      permissions.canUploadReceipts,
       requireWaiter,
       orders,
       actorUid,
@@ -2056,6 +2169,9 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const voidTransferReceipt = useCallback(
     async (transferId: string, reason = '') => {
+      if (!permissions.canVoidReceipts) {
+        throw new Error('Tu rol actual no tiene permiso para anular comprobantes.');
+      }
       const waiter = requireWaiter();
       const target = transfers.find((t) => t.id === transferId);
       if (!target || target.annulled) return;
@@ -2148,6 +2264,7 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       }
     },
     [
+      permissions.canVoidReceipts,
       requireWaiter,
       transfers,
       orders,
@@ -2852,8 +2969,13 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     identityReady,
 
     accountRole,
+    effectiveRole,
+    previewRole,
+    setPreviewRole,
+    permissions,
     isAdmin,
     isPrimaryAdmin,
+    isRealPrimaryAdmin,
     authorizedEmails,
     allowSelfRegistration,
 

@@ -4,6 +4,7 @@ import { usePosStore } from '../services/posStore';
 import type { Product } from '../types/pos';
 import { formatCurrency } from '../utils/orderMath';
 import { resolveAssetUrl } from '../utils/assetPath';
+import { ROLE_LABELS } from '../utils/rolePermissions';
 import { ProductEditorModal } from '../components/ProductEditorModal';
 
 interface PendingMenuDelete {
@@ -16,7 +17,8 @@ export const MenuManagerView: React.FC = () => {
   const {
     products,
     sauces,
-    isAdmin,
+    effectiveRole,
+    permissions,
     toggleProductActive,
     deleteProduct,
     saveSauce,
@@ -68,7 +70,7 @@ export const MenuManagerView: React.FC = () => {
     });
   }, [products, selectedCategory, searchTerm]);
 
-  if (!isAdmin) {
+  if (!permissions.canManageMenu) {
     return (
       <div className="bg-[#141418] border border-[#27272E] rounded-2xl p-10 text-center max-w-lg mx-auto my-8 space-y-3">
         <Lock className="w-10 h-10 text-amber-400 mx-auto" />
@@ -76,7 +78,7 @@ export const MenuManagerView: React.FC = () => {
           ACCESO ADMINISTRATIVO REQUERIDO
         </h1>
         <p className="text-sm text-zinc-400">
-          Solo las cuentas Administradoras pueden agregar, editar o eliminar productos, recetas, bebidas y salsas del sistema. Tu cuenta actual tiene permisos de Mesero.
+          Solo las cuentas Administradoras pueden agregar, editar o eliminar productos, recetas, bebidas y salsas del sistema. Tu rol actual es <strong className="text-white">{ROLE_LABELS[effectiveRole]}</strong>.
         </p>
       </div>
     );

@@ -8,6 +8,7 @@ import {
   Edit3,
   FileImage,
   History,
+  Lock,
   PlusCircle,
   Search,
   Trash2,
@@ -21,6 +22,7 @@ import {
   ORDER_STATUS_LABELS,
   PAYMENT_METHOD_LABELS,
 } from '../utils/orderMath';
+import { ROLE_LABELS } from '../utils/rolePermissions';
 
 const MOVEMENT_META: Record<MovementType, { label: string; icon: React.ReactNode; tint: string }> = {
   creacion: {
@@ -51,7 +53,14 @@ const MOVEMENT_META: Record<MovementType, { label: string; icon: React.ReactNode
 };
 
 export const HistoryView: React.FC = () => {
-  const { orders, movements, isAdmin, voidOrder, deleteOrderRecord } = usePosStore();
+  const {
+    orders,
+    movements,
+    effectiveRole,
+    permissions,
+    voidOrder,
+    deleteOrderRecord,
+  } = usePosStore();
   const [subTab, setSubTab] = useState<'pedidos' | 'bitacora'>('pedidos');
   const [typeFilter, setTypeFilter] = useState<'todos' | MovementType>('todos');
   const [searchTerm, setSearchTerm] = useState('');
@@ -142,6 +151,20 @@ export const HistoryView: React.FC = () => {
     }
   };
 
+  if (!permissions.canViewHistory) {
+    return (
+      <div className="bg-[#141418] border border-[#27272E] rounded-2xl p-10 text-center max-w-lg mx-auto my-8 space-y-3">
+        <Lock className="w-10 h-10 text-amber-400 mx-auto" />
+        <h1 className="font-poster text-2xl font-extrabold text-white tracking-wide">
+          ACCESO RESTRINGIDO
+        </h1>
+        <p className="text-sm text-zinc-400">
+          Tu rol actual (<strong className="text-white">{ROLE_LABELS[effectiveRole]}</strong>) no tiene acceso al historial ni a la bitácora de movimientos.
+        </p>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-5">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
@@ -151,9 +174,11 @@ export const HistoryView: React.FC = () => {
           </h1>
           <p className="text-xs text-zinc-400 mt-1 tabular-nums">
             {orders.length} pedidos · {movements.length} movimientos ·{' '}
-            {isAdmin
+            {permissions.canHardDelete
               ? 'Administrador: puede anular ventas o eliminar rastros permanentes'
-              : 'Mesero: puede visualizar el historial y anular ventas'}
+              : permissions.canVoidOrders
+                ? `${ROLE_LABELS[effectiveRole]}: puede visualizar el historial y anular ventas`
+                : `${ROLE_LABELS[effectiveRole]}: solo visualización del historial`}
           </p>
         </div>
 
@@ -360,7 +385,7 @@ export const HistoryView: React.FC = () => {
                     </button>
 
                     <div className="flex items-center gap-2">
-                      {!isVoided && (
+                      {!isVoided && permissions.canVoidOrders && (
                         <button
                           type="button"
                           onClick={() => {
@@ -375,7 +400,7 @@ export const HistoryView: React.FC = () => {
                         </button>
                       )}
 
-                      {isAdmin && (
+                      {permissions.canHardDelete && (
                         <button
                           type="button"
                           onClick={() => {
@@ -419,8 +444,8 @@ export const HistoryView: React.FC = () => {
         </div>
       )}
 
-      {/* Void Order Confirmation Modal (Available to Waiters & Admins) */}
-      {voidTarget && (
+      {/* Void Order Confirmation Modal */}
+      {voidTarget && permissions.canVoidOrders && (
         <div
           className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/75 backdrop-blur-sm sm:p-4"
           role="dialog"
@@ -499,7 +524,7 @@ export const HistoryView: React.FC = () => {
       )}
 
       {/* Permanent Hard Delete Confirmation Modal (Admin Only) */}
-      {deleteTarget && isAdmin && (
+      {deleteTarget && permissions.canHardDelete && (
         <div
           className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/75 backdrop-blur-sm sm:p-4"
           role="dialog"

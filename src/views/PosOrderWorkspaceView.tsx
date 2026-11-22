@@ -7,6 +7,7 @@ import {
   Droplets,
   Edit3,
   Image as ImageIcon,
+  Lock,
   Minus,
   Plus,
   Search,
@@ -18,6 +19,7 @@ import {
 } from 'lucide-react';
 import { usePosStore } from '../services/posStore';
 import { resolveAssetUrl } from '../utils/assetPath';
+import { ROLE_LABELS } from '../utils/rolePermissions';
 import type {
   Order,
   OrderItem,
@@ -94,7 +96,7 @@ export const PosOrderWorkspaceView: React.FC<Props> = ({
   onOpenWaiterPicker,
   onGoToOrders,
 }) => {
-  const { products, sauces, activeWaiter, createOrder } = usePosStore();
+  const { products, sauces, activeWaiter, effectiveRole, permissions, createOrder } = usePosStore();
 
   const initialDraft = useMemo(() => loadOrderDraft(), []);
   const [reference, setReference] = useState(initialDraft?.reference ?? '');
@@ -368,6 +370,20 @@ export const PosOrderWorkspaceView: React.FC<Props> = ({
     setEditingLineItem(item);
     setCustomizingProduct(prod);
   };
+
+  if (!permissions.canTakeOrders) {
+    return (
+      <div className="bg-[#141418] border border-[#27272E] rounded-2xl p-10 text-center max-w-lg mx-auto my-8 space-y-3">
+        <Lock className="w-10 h-10 text-amber-400 mx-auto" />
+        <h1 className="font-poster text-2xl font-extrabold text-white tracking-wide">
+          TOMA DE PEDIDOS NO DISPONIBLE
+        </h1>
+        <p className="text-sm text-zinc-400">
+          Tu rol actual (<strong className="text-white">{ROLE_LABELS[effectiveRole]}</strong>) no tiene permiso para registrar pedidos nuevos desde esta pantalla.
+        </p>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-4">

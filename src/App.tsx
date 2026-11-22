@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   BarChart3,
   ClipboardList,
+  Eye,
   History,
   Image as ImageIcon,
   LogOut,
@@ -27,6 +28,7 @@ import type { AppTab, Order } from './types/pos';
 import { resolveAssetUrl } from './utils/assetPath';
 import { shouldPromptPermanentRegistration } from './utils/identityState';
 import { isOrderInCourse } from './utils/orderMath';
+import { ALL_STAFF_ROLES, ROLE_LABELS } from './utils/rolePermissions';
 import { HistoryView } from './views/HistoryView';
 import { MenuManagerView } from './views/MenuManagerView';
 import { OrdersView } from './views/OrdersView';
@@ -39,7 +41,6 @@ interface NavDef {
   label: string;
   shortLabel: string;
   icon: React.ReactNode;
-  adminOnly?: boolean;
 }
 
 const ALL_NAV_ITEMS: NavDef[] = [
@@ -47,8 +48,8 @@ const ALL_NAV_ITEMS: NavDef[] = [
   { id: 'comandas', label: 'Comandas', shortLabel: 'Comandas', icon: <ClipboardList className="w-5 h-5" /> },
   { id: 'historial', label: 'Historial', shortLabel: 'Historial', icon: <History className="w-5 h-5" /> },
   { id: 'transferencias', label: 'Transferencias', shortLabel: 'Pagos', icon: <ImageIcon className="w-5 h-5" /> },
-  { id: 'ventas', label: 'Ventas', shortLabel: 'Ventas', icon: <BarChart3 className="w-5 h-5" />, adminOnly: true },
-  { id: 'menu', label: 'Menú y Salsas', shortLabel: 'Menú', icon: <UtensilsCrossed className="w-5 h-5" />, adminOnly: true },
+  { id: 'ventas', label: 'Ventas', shortLabel: 'Ventas', icon: <BarChart3 className="w-5 h-5" /> },
+  { id: 'menu', label: 'Menú y Salsas', shortLabel: 'Menú', icon: <UtensilsCrossed className="w-5 h-5" /> },
 ];
 
 const PosShell: React.FC = () => {
@@ -59,8 +60,12 @@ const PosShell: React.FC = () => {
     identityReady,
     activeWaiter,
     myLinkedStaff,
-    isAdmin,
+    effectiveRole,
+    previewRole,
+    setPreviewRole,
+    permissions,
     isPrimaryAdmin,
+    isRealPrimaryAdmin,
     emailVerified,
     verificationNotice,
     clearVerificationNotice,
@@ -89,12 +94,15 @@ const PosShell: React.FC = () => {
 
   const tabHistoryRef = useRef<AppTab[]>([]);
   const activeTabRef = useRef<AppTab>('pedidos');
+  const permissionsRef = useRef(permissions);
   const allowExitRef = useRef(false);
   const guardAnchoredRef = useRef(false);
 
   activeTabRef.current = activeTab;
+  permissionsRef.current = permissions;
 
   const navigateToTab = useCallback((nextTab: AppTab) => {
+    if (!permissionsRef.current.allowedTabs.includes(nextTab)) return;
     setActiveTab((prev) => {
       if (prev !== nextTab) {
         const currentStack = tabHistoryRef.current;
@@ -107,16 +115,16 @@ const PosShell: React.FC = () => {
   }, []);
 
   const navItems = useMemo(
-    () => ALL_NAV_ITEMS.filter((item) => !item.adminOnly || isAdmin),
-    [isAdmin]
+    () => ALL_NAV_ITEMS.filter((item) => permissions.allowedTabs.includes(item.id)),
+    [permissions]
   );
 
-  // Redirect away from admin-only tabs (Menú & Ventas) if account is Waiter
+  // Redirect away from disallowed tabs whenever effective role/permissions change
   useEffect(() => {
-    if (!isAdmin && (activeTab === 'menu' || activeTab === 'ventas')) {
-      setActiveTab('pedidos');
+    if (!permissions.allowedTabs.includes(activeTab)) {
+      setActiveTab(permissions.defaultTab);
     }
-  }, [isAdmin, activeTab]);
+  }, [permissions, activeTab]);
 
   // Anchor Android/Browser back button sentinel and handle popstate consistently across views/modals
   const modalStateRef = useRef({
@@ -134,7 +142,7 @@ const PosShell: React.FC = () => {
     identityReady,
     loadingData,
     cloudError,
-    isPrimaryAdmin,
+    isPrimaryAdmin: isRealPrimaryAdmin,
     myLinkedStaff,
   });
   modalStateRef.current = {
@@ -225,18 +233,28 @@ const PosShell: React.FC = () => {
         return;
       }
 
-      // 3. Step back through tab navigation history
+      // 3. Step back through allowed tab navigation history
+      const currentPerms = permissionsRef.current;
       if (tabHistoryRef.current.length > 0) {
         const nextStack = [...tabHistoryRef.current];
-        const prevTab = nextStack.pop() as AppTab;
+        let prevTab: AppTab | undefined;
+        while (nextStack.length > 0) {
+          const candidate = nextStack.pop() as AppTab;
+          if (currentPerms.allowedTabs.includes(candidate)) {
+            prevTab = candidate;
+            break;
+          }
+        }
         tabHistoryRef.current = nextStack;
-        setActiveTab(prevTab);
-        pushGuard();
-        return;
+        if (prevTab) {
+          setActiveTab(prevTab);
+          pushGuard();
+          return;
+        }
       }
 
-      if (activeTabRef.current !== 'pedidos') {
-        setActiveTab('pedidos');
+      if (activeTabRef.current !== currentPerms.defaultTab) {
+        setActiveTab(currentPerms.defaultTab);
         pushGuard();
         return;
       }
@@ -258,7 +276,7 @@ const PosShell: React.FC = () => {
         identityReady,
         loadingData,
         cloudError,
-        isPrimaryAdmin,
+        isPrimaryAdmin: isRealPrimaryAdmin,
         myLinkedStaff,
       }) &&
       !autoPromptedRef.current
@@ -269,7 +287,7 @@ const PosShell: React.FC = () => {
     if (!sessionMode || myLinkedStaff || !identityReady) {
       autoPromptedRef.current = false;
     }
-  }, [sessionMode, identityReady, loadingData, cloudError, isPrimaryAdmin, myLinkedStaff]);
+  }, [sessionMode, identityReady, loadingData, cloudError, isRealPrimaryAdmin, myLinkedStaff]);
 
   const viewerReceipts = useMemo(() => {
     if (!viewerState) return [];
@@ -316,6 +334,7 @@ const PosShell: React.FC = () => {
   }
 
   const handleOpenNewOrderModal = () => {
+    if (!permissions.canTakeOrders) return;
     if (!activeWaiter) {
       setWaiterModalOpen(true);
       return;
@@ -324,6 +343,7 @@ const PosShell: React.FC = () => {
   };
 
   const handleEditOrder = (order: Order) => {
+    if (!permissions.canEditOrders) return;
     if (!activeWaiter) {
       setWaiterModalOpen(true);
       return;
@@ -371,7 +391,7 @@ const PosShell: React.FC = () => {
           {/* Zone 1: O'NDE LUIGI Brand Emblem + Wordmark */}
           <button
             type="button"
-            onClick={() => navigateToTab('pedidos')}
+            onClick={() => navigateToTab(permissions.defaultTab)}
             className="flex items-center gap-2.5 shrink-0 text-left"
           >
             <img
@@ -426,7 +446,7 @@ const PosShell: React.FC = () => {
             >
               <UserCheck className="w-3.5 h-3.5 text-amber-400" />
               <span className="max-w-[105px] truncate">
-                {activeWaiter ? activeWaiter.name : isAdmin ? 'Elegir mesero' : 'Asociar cuenta'}
+                {activeWaiter ? activeWaiter.name : 'Asociar cuenta'}
               </span>
             </button>
 
@@ -439,14 +459,16 @@ const PosShell: React.FC = () => {
               <Settings className="w-4 h-4" />
             </button>
 
-            <button
-              type="button"
-              onClick={() => navigateToTab('comandas')}
-              className="hidden lg:inline-flex min-h-[38px] px-4 rounded-xl bg-red-600 text-white text-xs font-bold hover:bg-red-500 transition-colors items-center gap-2 whitespace-nowrap shrink-0"
-            >
-              <ClipboardList className="w-4 h-4" />
-              <span>Comandas ({activeOrderCount})</span>
-            </button>
+            {permissions.allowedTabs.includes('comandas') && (
+              <button
+                type="button"
+                onClick={() => navigateToTab('comandas')}
+                className="hidden lg:inline-flex min-h-[38px] px-4 rounded-xl bg-red-600 text-white text-xs font-bold hover:bg-red-500 transition-colors items-center gap-2 whitespace-nowrap shrink-0"
+              >
+                <ClipboardList className="w-4 h-4" />
+                <span>Comandas ({activeOrderCount})</span>
+              </button>
+            )}
           </div>
         </div>
 
@@ -456,9 +478,14 @@ const PosShell: React.FC = () => {
             <div className="flex items-center gap-3 text-zinc-400">
               <span>
                 Rol:{' '}
-                <strong className={isAdmin ? 'text-amber-400' : 'text-white'}>
-                  {isAdmin ? 'Administrador' : 'Mesero'}
+                <strong className={effectiveRole === 'admin' ? 'text-amber-400' : 'text-white'}>
+                  {ROLE_LABELS[effectiveRole]}
                 </strong>
+                {isRealPrimaryAdmin && previewRole !== 'admin' && (
+                  <span className="ml-1.5 px-1.5 py-0.5 rounded bg-amber-500/20 border border-amber-500/40 text-amber-300 text-[10px] font-bold uppercase">
+                    Vista previa
+                  </span>
+                )}
               </span>
               <span aria-hidden="true">·</span>
               <button
@@ -472,7 +499,7 @@ const PosShell: React.FC = () => {
               >
                 <UserCheck className="w-3.5 h-3.5 text-amber-400" />
                 <span>
-                  En turno: {activeWaiter ? activeWaiter.name : isAdmin ? 'Seleccionar obligatorio' : 'Asocia tu cuenta'}
+                  En turno: {activeWaiter ? activeWaiter.name : isRealPrimaryAdmin ? 'Seleccionar obligatorio' : 'Asocia tu cuenta'}
                 </span>
               </button>
             </div>
@@ -552,18 +579,49 @@ const PosShell: React.FC = () => {
           </div>
         )}
 
+        {isRealPrimaryAdmin && previewRole !== 'admin' && (
+          <div
+            role="region"
+            aria-label="Selector de vista previa de rol"
+            className="mb-4 rounded-2xl bg-amber-500/10 border border-amber-500/50 p-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5"
+          >
+            <div className="flex items-center gap-2 text-xs text-amber-200">
+              <Eye className="w-4 h-4 text-amber-400 shrink-0" />
+              <span>
+                Previsualizando rol <strong className="text-amber-400">{ROLE_LABELS[previewRole]}</strong> (tu cuenta sigue siendo Administrador principal).
+              </span>
+            </div>
+            <div className="flex flex-wrap items-center gap-1.5">
+              {ALL_STAFF_ROLES.map((role) => (
+                <button
+                  key={role}
+                  type="button"
+                  onClick={() => setPreviewRole(role)}
+                  className={`min-h-[34px] px-3 rounded-lg text-xs font-bold border transition-colors ${
+                    previewRole === role
+                      ? 'bg-amber-500 text-black border-amber-400'
+                      : 'bg-[#141418] text-zinc-200 border-[#27272E] hover:border-amber-500/60'
+                  }`}
+                >
+                  {ROLE_LABELS[role]}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
         {!activeWaiter && !cloudError && (
           <div className="mb-4 rounded-2xl bg-[#141418] border border-amber-500/70 p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
             <div>
               <p className="text-sm font-bold text-amber-400">
-                {isAdmin
+                {isRealPrimaryAdmin
                   ? 'Selecciona quién está tomando pedidos'
-                  : 'Asocia tu cuenta para tomar pedidos'}
+                  : 'Asocia tu cuenta para comenzar'}
               </p>
               <p className="text-xs text-zinc-300">
-                {isAdmin
+                {isRealPrimaryAdmin
                   ? 'Indica tu nombre para que cada comanda y cobro quede registrado a tu turno.'
-                  : 'Elige el nombre con el que aparecerás en comandas y cobros (rol inicial Mesero).'}
+                  : 'Elige el nombre con el que aparecerás en el sistema (rol inicial Mesero).'}
               </p>
             </div>
             <button
@@ -571,40 +629,42 @@ const PosShell: React.FC = () => {
               onClick={() => setWaiterModalOpen(true)}
               className="min-h-[42px] px-4 rounded-xl bg-amber-500 text-black text-xs font-bold hover:bg-amber-400 whitespace-nowrap shrink-0"
             >
-              {isAdmin ? 'Elegir mi nombre' : 'Asociar mi nombre'}
+              {isRealPrimaryAdmin ? 'Elegir mi nombre' : 'Asociar mi nombre'}
             </button>
           </div>
         )}
 
-        {activeTab === 'pedidos' && (
+        {activeTab === 'pedidos' && permissions.canTakeOrders && (
           <PosOrderWorkspaceView
             onOpenWaiterPicker={() => setWaiterModalOpen(true)}
             onGoToOrders={() => navigateToTab('comandas')}
           />
         )}
 
-        {activeTab === 'comandas' && (
+        {activeTab === 'comandas' && permissions.allowedTabs.includes('comandas') && (
           <OrdersView
             onNewOrder={handleOpenNewOrderModal}
             onEditOrder={handleEditOrder}
-            onOpenPayment={(order) => setPaymentOrder(order)}
+            onOpenPayment={(order) => {
+              if (permissions.canManagePayments) setPaymentOrder(order);
+            }}
             onViewOrderReceipt={handleViewOrderReceipt}
             onOpenWaiterPicker={() => setWaiterModalOpen(true)}
           />
         )}
 
-        {activeTab === 'historial' && <HistoryView />}
+        {activeTab === 'historial' && permissions.canViewHistory && <HistoryView />}
 
-        {activeTab === 'transferencias' && (
+        {activeTab === 'transferencias' && permissions.canViewTransfers && (
           <TransfersGalleryView
             onOpenViewer={(index, receiptIds) => setViewerState({ index, receiptIds })}
             onOpenWaiterPicker={() => setWaiterModalOpen(true)}
           />
         )}
 
-        {activeTab === 'ventas' && <SalesReportView />}
+        {activeTab === 'ventas' && permissions.canViewSales && <SalesReportView />}
 
-        {activeTab === 'menu' && <MenuManagerView />}
+        {activeTab === 'menu' && permissions.canManageMenu && <MenuManagerView />}
       </main>
 
       {/* Mobile Fixed Bottom Navigation Bar (<= 15% sticky height cap) */}
@@ -614,11 +674,17 @@ const PosShell: React.FC = () => {
       >
         <div
           className={`grid h-16 items-center ${
-            navItems.length === 6
+            navItems.length >= 6
               ? 'grid-cols-6'
               : navItems.length === 5
                 ? 'grid-cols-5'
-                : 'grid-cols-4'
+                : navItems.length === 4
+                  ? 'grid-cols-4'
+                  : navItems.length === 3
+                    ? 'grid-cols-3'
+                    : navItems.length === 2
+                      ? 'grid-cols-2'
+                      : 'grid-cols-1'
           }`}
         >
           {navItems.map((item) => {
@@ -643,7 +709,7 @@ const PosShell: React.FC = () => {
       </nav>
 
       {/* Modals & Sheets */}
-      {composerOpen && (
+      {composerOpen && (editingOrder ? permissions.canEditOrders : permissions.canTakeOrders) && (
         <OrderComposerModal
           open={composerOpen}
           editingOrder={editingOrder}
@@ -655,7 +721,7 @@ const PosShell: React.FC = () => {
         />
       )}
 
-      {paymentOrder && (
+      {paymentOrder && permissions.canManagePayments && (
         <PaymentSheetModal
           order={paymentOrder}
           onClose={() => setPaymentOrder(null)}
@@ -686,13 +752,18 @@ const PosShell: React.FC = () => {
         onOpenVerifyEmail={() => setVerifyModalOpen(true)}
       />
 
-      {viewerState && viewerReceipts.length > 0 && (
+      {viewerState && viewerReceipts.length > 0 && permissions.canViewTransfers && (
         <WhatsAppReceiptViewer
           receipts={viewerReceipts}
           initialIndex={viewerState.index}
-          isAdmin={isAdmin}
+          isAdmin={permissions.canHardDelete}
+          canVoidReceipt={permissions.canVoidReceipts}
           onClose={() => setViewerState(null)}
-          onInspectOrder={handleInspectOrderFromViewer}
+          onInspectOrder={
+            permissions.allowedTabs.includes('comandas')
+              ? handleInspectOrderFromViewer
+              : undefined
+          }
           onVoidReceipt={async (transferId) => {
             await voidTransferReceipt(transferId);
           }}

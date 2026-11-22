@@ -79,7 +79,8 @@ export const OrdersView: React.FC<Props> = ({
   const {
     orders,
     activeWaiter,
-    isAdmin,
+    effectiveRole,
+    permissions,
     updateOrderStatus,
     voidOrder,
     deleteOrderRecord,
@@ -96,6 +97,17 @@ export const OrdersView: React.FC<Props> = ({
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
 
+  const isKitchenOnly = effectiveRole === 'cocina';
+
+  useEffect(() => {
+    if (!permissions.canManagePayments && paymentFilter !== 'todos') {
+      setPaymentFilter('todos');
+    }
+    if (isKitchenOnly && (statusFilter === 'entregado' || statusFilter === 'cancelado')) {
+      setStatusFilter('activos');
+    }
+  }, [permissions.canManagePayments, paymentFilter, isKitchenOnly, statusFilter]);
+
   useEffect(() => {
     const handleBackIntercept = (e: Event) => {
       if (deleteTarget) {
@@ -111,23 +123,37 @@ export const OrdersView: React.FC<Props> = ({
   }, [deleteTarget, deleting]);
 
   const counts = useMemo(() => {
-    const active = orders.filter(isOrderInCourse).length;
+    const active = orders.filter((o) =>
+      isKitchenOnly
+        ? o.status === 'tomado' || o.status === 'preparacion' || o.status === 'listo'
+        : isOrderInCourse(o)
+    ).length;
     const pendingPay = orders.filter(
       (o) => o.status !== 'cancelado' && o.paymentStatus === 'pendiente'
     ).length;
     return { active, pendingPay, total: orders.length };
-  }, [orders]);
+  }, [orders, isKitchenOnly]);
 
   const filteredOrders = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
     return orders.filter((o) => {
+      if (isKitchenOnly && (o.status === 'entregado' || o.status === 'cancelado')) {
+        return false;
+      }
+
       if (statusFilter === 'activos') {
-        if (!isOrderInCourse(o)) return false;
+        if (isKitchenOnly) {
+          if (o.status !== 'tomado' && o.status !== 'preparacion' && o.status !== 'listo') {
+            return false;
+          }
+        } else if (!isOrderInCourse(o)) {
+          return false;
+        }
       } else if (statusFilter !== 'todos') {
         if (o.status !== statusFilter) return false;
       }
 
-      if (paymentFilter !== 'todos' && o.paymentStatus !== paymentFilter) {
+      if (permissions.canManagePayments && paymentFilter !== 'todos' && o.paymentStatus !== paymentFilter) {
         return false;
       }
 
@@ -139,7 +165,7 @@ export const OrdersView: React.FC<Props> = ({
       }
       return true;
     });
-  }, [orders, statusFilter, paymentFilter, searchQuery]);
+  }, [orders, isKitchenOnly, statusFilter, permissions.canManagePayments, paymentFilter, searchQuery]);
 
   const handleStatusChange = async (orderId: string, nextStatus: OrderStatus) => {
     if (!activeWaiter) {
@@ -181,17 +207,21 @@ export const OrdersView: React.FC<Props> = ({
             COMANDAS EN CURSO
           </h1>
           <p className="text-xs text-zinc-400 mt-1 tabular-nums">
-            {counts.active} activos · {counts.pendingPay} por cobrar · {counts.total} registrados
+            {isKitchenOnly
+              ? `${counts.active} comandas en cocina`
+              : `${counts.active} activos · ${counts.pendingPay} por cobrar · ${counts.total} registrados`}
           </p>
         </div>
-        <button
-          type="button"
-          onClick={onNewOrder}
-          className="lg:hidden min-h-[44px] px-4 rounded-xl bg-amber-500 text-black text-xs font-bold hover:bg-amber-400 transition-colors flex items-center justify-center gap-2 whitespace-nowrap shrink-0"
-        >
-          <Plus className="w-4 h-4" />
-          <span>Nuevo pedido</span>
-        </button>
+        {permissions.canTakeOrders && (
+          <button
+            type="button"
+            onClick={onNewOrder}
+            className="lg:hidden min-h-[44px] px-4 rounded-xl bg-amber-500 text-black text-xs font-bold hover:bg-amber-400 transition-colors flex items-center justify-center gap-2 whitespace-nowrap shrink-0"
+          >
+            <Plus className="w-4 h-4" />
+            <span>Nuevo pedido</span>
+          </button>
+        )}
       </div>
 
       {/* Filters */}
@@ -209,41 +239,49 @@ export const OrdersView: React.FC<Props> = ({
             />
           </div>
 
-          <div className="flex items-center gap-1 p-1 bg-[#0A0A0A] border border-[#27272E] rounded-xl overflow-x-auto">
-            {(
-              [
-                { id: 'todos', label: 'Todos pagos' },
-                { id: 'pendiente', label: 'Por cobrar' },
-                { id: 'pagado', label: 'Pagados' },
-              ] as const
-            ).map((pf) => (
-              <button
-                key={pf.id}
-                type="button"
-                onClick={() => setPaymentFilter(pf.id)}
-                className={`min-h-[34px] px-3 rounded-lg text-xs font-semibold whitespace-nowrap shrink-0 transition-colors ${
-                  paymentFilter === pf.id
-                    ? 'bg-amber-500 text-black font-bold'
-                    : 'text-zinc-300 hover:text-white'
-                }`}
-              >
-                {pf.label}
-              </button>
-            ))}
-          </div>
+          {permissions.canManagePayments && (
+            <div className="flex items-center gap-1 p-1 bg-[#0A0A0A] border border-[#27272E] rounded-xl overflow-x-auto">
+              {(
+                [
+                  { id: 'todos', label: 'Todos pagos' },
+                  { id: 'pendiente', label: 'Por cobrar' },
+                  { id: 'pagado', label: 'Pagados' },
+                ] as const
+              ).map((pf) => (
+                <button
+                  key={pf.id}
+                  type="button"
+                  onClick={() => setPaymentFilter(pf.id)}
+                  className={`min-h-[34px] px-3 rounded-lg text-xs font-semibold whitespace-nowrap shrink-0 transition-colors ${
+                    paymentFilter === pf.id
+                      ? 'bg-amber-500 text-black font-bold'
+                      : 'text-zinc-300 hover:text-white'
+                  }`}
+                >
+                  {pf.label}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
 
         <div className="flex items-center gap-1.5 overflow-x-auto pb-0.5">
-          {(
-            [
-              { id: 'activos', label: 'En curso' },
-              { id: 'todos', label: 'Todos' },
-              { id: 'tomado', label: 'Tomado' },
-              { id: 'preparacion', label: 'En preparación' },
-              { id: 'listo', label: 'Listo' },
-              { id: 'entregado', label: 'Entregado' },
-              { id: 'cancelado', label: 'Anulado' },
-            ] as const
+          {(isKitchenOnly
+            ? ([
+                { id: 'activos', label: 'En cocina' },
+                { id: 'tomado', label: 'Tomado' },
+                { id: 'preparacion', label: 'En preparación' },
+                { id: 'listo', label: 'Listo' },
+              ] as const)
+            : ([
+                { id: 'activos', label: 'En curso' },
+                { id: 'todos', label: 'Todos' },
+                { id: 'tomado', label: 'Tomado' },
+                { id: 'preparacion', label: 'En preparación' },
+                { id: 'listo', label: 'Listo' },
+                { id: 'entregado', label: 'Entregado' },
+                { id: 'cancelado', label: 'Anulado' },
+              ] as const)
           ).map((sf) => (
             <button
               key={sf.id}
@@ -274,16 +312,20 @@ export const OrdersView: React.FC<Props> = ({
             No hay pedidos en esta vista
           </p>
           <p className="text-sm text-zinc-400 max-w-sm mx-auto">
-            Cambia los filtros o vuelve a Tomar Pedido para registrar una nueva comanda.
+            {permissions.canTakeOrders
+              ? 'Cambia los filtros o vuelve a Tomar Pedido para registrar una nueva comanda.'
+              : 'Cuando ingresen pedidos para preparar aparecerán aquí en tiempo real.'}
           </p>
-          <button
-            type="button"
-            onClick={onNewOrder}
-            className="min-h-[44px] px-5 rounded-xl bg-amber-500 text-black text-sm font-bold hover:bg-amber-400 inline-flex items-center gap-2"
-          >
-            <Plus className="w-4 h-4" />
-            <span>Tomar nuevo pedido</span>
-          </button>
+          {permissions.canTakeOrders && (
+            <button
+              type="button"
+              onClick={onNewOrder}
+              className="min-h-[44px] px-5 rounded-xl bg-amber-500 text-black text-sm font-bold hover:bg-amber-400 inline-flex items-center gap-2"
+            >
+              <Plus className="w-4 h-4" />
+              <span>Tomar nuevo pedido</span>
+            </button>
+          )}
         </div>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 items-stretch">
@@ -292,6 +334,12 @@ export const OrdersView: React.FC<Props> = ({
             const nextStatus = getNextStatus(order.status);
             const isBusy = busyOrderId === order.id;
             const isVoided = order.status === 'cancelado';
+            const canAdvanceThisStatus =
+              nextStatus === 'preparacion' || nextStatus === 'listo'
+                ? permissions.canAdvanceKitchen
+                : nextStatus === 'entregado'
+                  ? permissions.canDeliverOrders
+                  : false;
 
             return (
               <article
@@ -324,23 +372,25 @@ export const OrdersView: React.FC<Props> = ({
                         {badge.icon}
                         <span>{badge.text}</span>
                       </span>
-                      <span
-                        className={`text-xs font-bold ${
-                          isVoided
-                            ? 'text-red-400'
+                      {permissions.canManagePayments && (
+                        <span
+                          className={`text-xs font-bold ${
+                            isVoided
+                              ? 'text-red-400'
+                              : order.paymentStatus === 'pagado'
+                                ? 'text-emerald-400'
+                                : 'text-amber-400'
+                          }`}
+                        >
+                          {isVoided
+                            ? 'Venta anulada'
                             : order.paymentStatus === 'pagado'
-                              ? 'text-emerald-400'
-                              : 'text-amber-400'
-                        }`}
-                      >
-                        {isVoided
-                          ? 'Venta anulada'
-                          : order.paymentStatus === 'pagado'
-                            ? `Pagado · ${PAYMENT_METHOD_LABELS[order.paymentMethod]}`
-                            : order.status === 'entregado'
-                              ? 'Por cobrar (Entregado)'
-                              : 'Por cobrar'}
-                      </span>
+                              ? `Pagado · ${PAYMENT_METHOD_LABELS[order.paymentMethod]}`
+                              : order.status === 'entregado'
+                                ? 'Por cobrar (Entregado)'
+                                : 'Por cobrar'}
+                        </span>
+                      )}
                     </div>
                   </div>
 
@@ -371,9 +421,11 @@ export const OrdersView: React.FC<Props> = ({
                               <p className="text-[11px] text-amber-300 mt-0.5 leading-snug">{custom}</p>
                             )}
                           </div>
-                          <span className="font-mono text-zinc-300 tabular-nums shrink-0">
-                            {formatCurrency(item.lineTotal)}
-                          </span>
+                          {permissions.canManagePayments && (
+                            <span className="font-mono text-zinc-300 tabular-nums shrink-0">
+                              {formatCurrency(item.lineTotal)}
+                            </span>
+                          )}
                         </li>
                       );
                     })}
@@ -388,45 +440,57 @@ export const OrdersView: React.FC<Props> = ({
 
                 {/* Footer Controls */}
                 <div className="space-y-2.5 pt-1">
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs font-medium text-zinc-400">Total comanda</span>
-                    <span
-                      className={`font-mono text-lg font-extrabold tabular-nums ${
-                        isVoided ? 'text-red-400 line-through' : 'text-amber-400'
-                      }`}
-                    >
-                      {formatCurrency(order.total)}
-                    </span>
-                  </div>
-
-                  {!isVoided && (
-                    <div className="grid grid-cols-2 gap-2">
-                      <button
-                        type="button"
-                        onClick={() => onEditOrder(order)}
-                        className="min-h-[42px] px-3 rounded-xl border border-[#27272E] bg-[#1C1C22] text-xs font-semibold text-zinc-200 hover:border-zinc-500 flex items-center justify-center gap-1.5"
-                      >
-                        <Edit3 className="w-3.5 h-3.5" />
-                        <span>Editar</span>
-                      </button>
-
-                      <button
-                        type="button"
-                        onClick={() => onOpenPayment(order)}
-                        className={`min-h-[42px] px-3 rounded-xl border text-xs font-bold flex items-center justify-center gap-1.5 transition-colors ${
-                          order.paymentStatus === 'pagado'
-                            ? 'border-emerald-700 bg-emerald-950/60 text-emerald-300 hover:bg-emerald-950'
-                            : 'border-amber-400 bg-amber-500 text-black hover:bg-amber-400'
+                  {permissions.canManagePayments && (
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-medium text-zinc-400">Total comanda</span>
+                      <span
+                        className={`font-mono text-lg font-extrabold tabular-nums ${
+                          isVoided ? 'text-red-400 line-through' : 'text-amber-400'
                         }`}
                       >
-                        <CreditCard className="w-3.5 h-3.5" />
-                        <span>{order.paymentStatus === 'pagado' ? 'Pago / Foto' : 'Confirmar pago'}</span>
-                      </button>
+                        {formatCurrency(order.total)}
+                      </span>
+                    </div>
+                  )}
+
+                  {!isVoided && (permissions.canEditOrders || permissions.canManagePayments) && (
+                    <div
+                      className={`grid gap-2 ${
+                        permissions.canEditOrders && permissions.canManagePayments
+                          ? 'grid-cols-2'
+                          : 'grid-cols-1'
+                      }`}
+                    >
+                      {permissions.canEditOrders && (
+                        <button
+                          type="button"
+                          onClick={() => onEditOrder(order)}
+                          className="min-h-[42px] px-3 rounded-xl border border-[#27272E] bg-[#1C1C22] text-xs font-semibold text-zinc-200 hover:border-zinc-500 flex items-center justify-center gap-1.5"
+                        >
+                          <Edit3 className="w-3.5 h-3.5" />
+                          <span>Editar</span>
+                        </button>
+                      )}
+
+                      {permissions.canManagePayments && (
+                        <button
+                          type="button"
+                          onClick={() => onOpenPayment(order)}
+                          className={`min-h-[42px] px-3 rounded-xl border text-xs font-bold flex items-center justify-center gap-1.5 transition-colors ${
+                            order.paymentStatus === 'pagado'
+                              ? 'border-emerald-700 bg-emerald-950/60 text-emerald-300 hover:bg-emerald-950'
+                              : 'border-amber-400 bg-amber-500 text-black hover:bg-amber-400'
+                          }`}
+                        >
+                          <CreditCard className="w-3.5 h-3.5" />
+                          <span>{order.paymentStatus === 'pagado' ? 'Pago / Foto' : 'Confirmar pago'}</span>
+                        </button>
+                      )}
                     </div>
                   )}
 
                   <div className="flex items-center gap-2">
-                    {nextStatus && (
+                    {nextStatus && canAdvanceThisStatus && (
                       <button
                         type="button"
                         disabled={isBusy}
@@ -438,7 +502,7 @@ export const OrdersView: React.FC<Props> = ({
                       </button>
                     )}
 
-                    {!isVoided && order.status !== 'entregado' && (
+                    {!isVoided && order.status !== 'entregado' && permissions.canVoidOrders && (
                       confirmCancelId === order.id ? (
                         <button
                           type="button"
@@ -462,7 +526,7 @@ export const OrdersView: React.FC<Props> = ({
                       )
                     )}
 
-                    {isVoided && isAdmin && (
+                    {isVoided && permissions.canHardDelete && (
                       <button
                         type="button"
                         aria-label={`Eliminar comanda anulada #${order.orderNumber}`}
@@ -477,7 +541,7 @@ export const OrdersView: React.FC<Props> = ({
                       </button>
                     )}
 
-                    {order.receiptCount > 0 && (
+                    {order.receiptCount > 0 && permissions.canViewTransfers && (
                       <button
                         type="button"
                         aria-label={`Ver comprobante del pedido #${order.orderNumber}`}
@@ -496,7 +560,7 @@ export const OrdersView: React.FC<Props> = ({
       )}
 
       {/* Permanent Delete Modal for Annulled Comandas (Admin Only) */}
-      {deleteTarget && isAdmin && (
+      {deleteTarget && permissions.canHardDelete && (
         <div
           className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/75 backdrop-blur-sm sm:p-4"
           role="dialog"

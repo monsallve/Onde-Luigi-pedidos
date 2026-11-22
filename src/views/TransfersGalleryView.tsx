@@ -4,6 +4,7 @@ import {
   Ban,
   Camera,
   Image as ImageIcon,
+  Lock,
   Search,
   Trash2,
   Upload,
@@ -12,6 +13,7 @@ import {
 import { usePosStore } from '../services/posStore';
 import type { TransferReceipt } from '../types/pos';
 import { formatCurrency, formatDateTimeShort } from '../utils/orderMath';
+import { ROLE_LABELS } from '../utils/rolePermissions';
 
 interface Props {
   onOpenViewer: (index: number, filteredIds?: string[]) => void;
@@ -26,7 +28,8 @@ export const TransfersGalleryView: React.FC<Props> = ({
     transfers,
     orders,
     activeWaiter,
-    isAdmin,
+    effectiveRole,
+    permissions,
     attachReceiptToOrder,
     voidTransferReceipt,
     deleteTransferReceipt,
@@ -188,6 +191,20 @@ export const TransfersGalleryView: React.FC<Props> = ({
     }
   };
 
+  if (!permissions.canViewTransfers) {
+    return (
+      <div className="bg-[#141418] border border-[#27272E] rounded-2xl p-10 text-center max-w-lg mx-auto my-8 space-y-3">
+        <Lock className="w-10 h-10 text-amber-400 mx-auto" />
+        <h1 className="font-poster text-2xl font-extrabold text-white tracking-wide">
+          ACCESO RESTRINGIDO
+        </h1>
+        <p className="text-sm text-zinc-400">
+          Tu rol actual (<strong className="text-white">{ROLE_LABELS[effectiveRole]}</strong>) no tiene acceso a pagos ni comprobantes de transferencia.
+        </p>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-5">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
@@ -200,18 +217,20 @@ export const TransfersGalleryView: React.FC<Props> = ({
           </p>
         </div>
 
-        <button
-          type="button"
-          onClick={() => {
-            setSelectedOrderId(candidateOrders[0]?.id || '');
-            setUploadError(null);
-            setShowAttach(true);
-          }}
-          className="min-h-[44px] px-4 rounded-xl bg-amber-500 text-black text-xs font-bold hover:bg-amber-400 flex items-center justify-center gap-2 whitespace-nowrap shrink-0"
-        >
-          <Upload className="w-4 h-4" />
-          <span>Adjuntar comprobante</span>
-        </button>
+        {permissions.canUploadReceipts && (
+          <button
+            type="button"
+            onClick={() => {
+              setSelectedOrderId(candidateOrders[0]?.id || '');
+              setUploadError(null);
+              setShowAttach(true);
+            }}
+            className="min-h-[44px] px-4 rounded-xl bg-amber-500 text-black text-xs font-bold hover:bg-amber-400 flex items-center justify-center gap-2 whitespace-nowrap shrink-0"
+          >
+            <Upload className="w-4 h-4" />
+            <span>Adjuntar comprobante</span>
+          </button>
+        )}
       </div>
 
       {/* Main Sub-Tabs: Active Gallery vs Annulled Registry */}
@@ -373,9 +392,9 @@ export const TransfersGalleryView: React.FC<Props> = ({
                 </div>
               )}
 
-              {(!tr.annulled || isAdmin) && (
+              {((!tr.annulled && permissions.canVoidReceipts) || permissions.canHardDelete) && (
                 <div className="p-2 border-t border-[#27272E] bg-[#101014] flex items-center gap-1.5">
-                  {!tr.annulled && (
+                  {!tr.annulled && permissions.canVoidReceipts && (
                     <button
                       type="button"
                       onClick={() => {
@@ -390,7 +409,7 @@ export const TransfersGalleryView: React.FC<Props> = ({
                     </button>
                   )}
 
-                  {isAdmin && (
+                  {permissions.canHardDelete && (
                     <button
                       type="button"
                       aria-label={`Eliminar rastro comprobante #${tr.orderNumber}`}
@@ -399,11 +418,11 @@ export const TransfersGalleryView: React.FC<Props> = ({
                         setDeleteTarget(tr);
                       }}
                       className={`${
-                        tr.annulled ? 'flex-1' : 'px-2.5'
+                        tr.annulled || !permissions.canVoidReceipts ? 'flex-1' : 'px-2.5'
                       } min-h-[34px] rounded-lg border border-red-800 bg-red-950/40 text-red-300 text-[11px] font-semibold hover:bg-red-950 flex items-center justify-center gap-1`}
                     >
                       <Trash2 className="w-3 h-3 shrink-0" />
-                      {tr.annulled && <span>Eliminar rastro</span>}
+                      {(tr.annulled || !permissions.canVoidReceipts) && <span>Eliminar rastro</span>}
                     </button>
                   )}
                 </div>
@@ -414,7 +433,7 @@ export const TransfersGalleryView: React.FC<Props> = ({
       )}
 
       {/* Attach Receipt Modal */}
-      {showAttach && (
+      {showAttach && permissions.canUploadReceipts && (
         <div
           className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/75 backdrop-blur-sm sm:p-4"
           role="dialog"
@@ -528,8 +547,8 @@ export const TransfersGalleryView: React.FC<Props> = ({
         </div>
       )}
 
-      {/* Void Transfer Receipt Modal (Available to Waiters & Admins) */}
-      {voidTarget && (
+      {/* Void Transfer Receipt Modal */}
+      {voidTarget && permissions.canVoidReceipts && (
         <div
           className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/75 backdrop-blur-sm sm:p-4"
           role="dialog"
@@ -607,7 +626,7 @@ export const TransfersGalleryView: React.FC<Props> = ({
       )}
 
       {/* Hard Delete Transfer Receipt Modal (Admin Only) */}
-      {deleteTarget && isAdmin && (
+      {deleteTarget && permissions.canHardDelete && (
         <div
           className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/75 backdrop-blur-sm sm:p-4"
           role="dialog"
