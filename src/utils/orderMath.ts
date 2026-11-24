@@ -260,3 +260,81 @@ export function diffOrderItems(prevItems: OrderItem[], nextItems: OrderItem[]): 
 
   return changes.length > 0 ? changes.join('; ') : 'Actualizó detalle del pedido';
 }
+
+/**
+ * Resolves local public asset paths against Vite's configured BASE_URL
+ * so assets load cleanly on root domains AND subpath deployments (e.g. GitHub Pages).
+ */
+export function resolveAssetUrl(pathOrUrl: string): string {
+  if (!pathOrUrl) return pathOrUrl;
+  if (/^(https?:|data:|blob:)/i.test(pathOrUrl)) {
+    return pathOrUrl;
+  }
+  const metaEnv = (import.meta as { env?: { BASE_URL?: string } }).env;
+  const base = metaEnv?.BASE_URL || '/';
+  const normalizedBase = base.endsWith('/') ? base : `${base}/`;
+  const cleanPath = pathOrUrl.replace(/^\/+/, '');
+  return `${normalizedBase}${cleanPath}`;
+}
+
+export function addOrMergeCartItem(prev: OrderItem[], candidate: OrderItem): OrderItem[] {
+  const sig = buildItemSignature(candidate);
+  const idx = prev.findIndex((i) => buildItemSignature(i) === sig);
+  if (idx < 0) {
+    return [...prev, candidate];
+  }
+  return prev.map((item, i) => {
+    if (i !== idx) return item;
+    const nextQty = item.quantity + candidate.quantity;
+    return {
+      ...item,
+      quantity: nextQty,
+      lineTotal: item.unitPrice * nextQty,
+    };
+  });
+}
+
+export function splitCartLineUnit(prev: OrderItem[], lineId: string): OrderItem[] {
+  const target = prev.find((i) => i.lineId === lineId);
+  if (!target || target.quantity <= 1) return prev;
+  const result: OrderItem[] = [];
+  for (const item of prev) {
+    if (item.lineId !== lineId) {
+      result.push(item);
+    } else {
+      const reducedQty = item.quantity - 1;
+      result.push({
+        ...item,
+        quantity: reducedQty,
+        lineTotal: item.unitPrice * reducedQty,
+      });
+      result.push({
+        ...item,
+        lineId: createSafeId('item'),
+        quantity: 1,
+        lineTotal: item.unitPrice,
+      });
+    }
+  }
+  return result;
+}
+
+export function adjustCartLineQuantity(
+  prev: OrderItem[],
+  lineId: string,
+  delta: number
+): OrderItem[] {
+  return prev
+    .map((item) => {
+      if (item.lineId !== lineId) return item;
+      const nextQty = item.quantity + delta;
+      if (nextQty <= 0) return null;
+      return {
+        ...item,
+        quantity: nextQty,
+        lineTotal: item.unitPrice * nextQty,
+      };
+    })
+    .filter((x): x is OrderItem => x !== null);
+}
+

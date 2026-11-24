@@ -31,6 +31,20 @@ const linkedKitchen: StaffMember = {
   linkedEmail: 'cocina@ondeluigi.com',
 };
 
+const primaryAdminProfile: StaffMember = {
+  id: 'staff_uid_owner',
+  name: 'Miguel Monsalve',
+  role: 'admin',
+  active: true,
+  linkedUid: 'uid_owner',
+  linkedEmail: 'perrodog1515@gmail.com',
+  ownerUid: 'uid_owner',
+  createdByUid: 'uid_owner',
+  allowedEmails: ['perrodog1515@gmail.com'],
+  createdAtMs: 1000,
+  updatedAtMs: 1000,
+};
+
 test('getRolePermissions enforces strict capability boundaries across all 4 roles', () => {
   const admin = getRolePermissions('admin');
   assert.deepEqual(admin.allowedTabs, [
@@ -83,28 +97,32 @@ test('getRolePermissions enforces strict capability boundaries across all 4 role
   assert.equal(cocina.canHardDelete, false);
 });
 
-test('resolveEffectiveRole lets ONLY primary admin preview any role while locking real users to assigned role', () => {
-  for (const previewRole of ALL_STAFF_ROLES) {
+test('resolveEffectiveRole applies the real StaffMember role directly for Principal Admin and team users', () => {
+  for (const role of ALL_STAFF_ROLES) {
     assert.equal(
       resolveEffectiveRole({
-        sessionMode: 'cloud',
         isRealPrimaryAdmin: true,
-        previewRole,
-        demoAccountRole: 'admin',
         cloudMemberRole: 'admin',
-        myLinkedStaff: null,
+        myLinkedStaff: { ...primaryAdminProfile, role },
       }),
-      previewRole
+      role
     );
   }
 
-  // Non-primary real cloud user ignores previewRole and gets permanent linked staff role
+  // Primary admin without linked staff yet defaults safely to admin
   assert.equal(
     resolveEffectiveRole({
-      sessionMode: 'cloud',
+      isRealPrimaryAdmin: true,
+      cloudMemberRole: 'admin',
+      myLinkedStaff: null,
+    }),
+    'admin'
+  );
+
+  // Regular staff resolve directly from their assigned permanent staff role
+  assert.equal(
+    resolveEffectiveRole({
       isRealPrimaryAdmin: false,
-      previewRole: 'admin',
-      demoAccountRole: 'admin',
       cloudMemberRole: 'mesero',
       myLinkedStaff: linkedCashier,
     }),
@@ -113,15 +131,41 @@ test('resolveEffectiveRole lets ONLY primary admin preview any role while lockin
 
   assert.equal(
     resolveEffectiveRole({
-      sessionMode: 'cloud',
       isRealPrimaryAdmin: false,
-      previewRole: 'admin',
-      demoAccountRole: 'admin',
       cloudMemberRole: 'mesero',
       myLinkedStaff: linkedKitchen,
     }),
     'cocina'
   );
+});
+
+test('promoted non-primary admin receives full admin role and permissions while non-admins stay restricted', () => {
+  const promotedAdmin: StaffMember = {
+    ...linkedCashier,
+    id: 'staff_promoted_admin',
+    name: 'Gabriela Admin',
+    role: 'admin',
+    linkedUid: 'uid_gabriela',
+    linkedEmail: 'gabrielacardenas2517@gmail.com',
+  };
+
+  const resolved = resolveEffectiveRole({
+    isRealPrimaryAdmin: false,
+    cloudMemberRole: 'mesero',
+    myLinkedStaff: promotedAdmin,
+  });
+  assert.equal(resolved, 'admin');
+
+  const perms = getRolePermissions(resolved);
+  assert.equal(perms.canManageMenu, true);
+  assert.equal(perms.canHardDelete, true);
+  assert.equal(perms.canManageTeam, true);
+  assert.equal(perms.canViewSales, true);
+  assert.equal(perms.canTakeOrders, true);
+  assert.equal(perms.canEditOrders, true);
+  assert.equal(perms.canManagePayments, true);
+  assert.equal(perms.canVoidOrders, true);
+  assert.equal(perms.canVoidReceipts, true);
 });
 
 test('isTabAllowedForRole blocks restricted routes per role', () => {

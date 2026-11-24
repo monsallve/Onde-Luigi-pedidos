@@ -64,7 +64,6 @@ test('isStartupIdentityReady stays false during cold cloud load until workspace 
     false
   );
 
-  // Even if another collection resolved early, staffLoaded=false must block readiness
   assert.equal(
     isStartupIdentityReady({
       authReady: true,
@@ -78,7 +77,6 @@ test('isStartupIdentityReady stays false during cold cloud load until workspace 
     false
   );
 
-  // Once workspace, staff snapshot, and initial data are ready, returns true
   assert.equal(
     isStartupIdentityReady({
       authReady: true,
@@ -92,7 +90,6 @@ test('isStartupIdentityReady stays false during cold cloud load until workspace 
     true
   );
 
-  // Errors never trap the user on the loading spinner
   assert.equal(
     isStartupIdentityReady({
       authReady: true,
@@ -107,8 +104,7 @@ test('isStartupIdentityReady stays false during cold cloud load until workspace 
   );
 });
 
-test('shouldPromptPermanentRegistration never triggers before identityReady or when linked staff exists', () => {
-  // Cold start while loading: must NOT prompt!
+test('shouldPromptPermanentRegistration never triggers for Principal Admin or linked staff', () => {
   assert.equal(
     shouldPromptPermanentRegistration({
       sessionMode: 'cloud',
@@ -121,7 +117,20 @@ test('shouldPromptPermanentRegistration never triggers before identityReady or w
     false
   );
 
-  // Registered user once staff loaded: must NOT prompt!
+  // Principal Admin never sees name prompt even if myLinkedStaff is syncing
+  assert.equal(
+    shouldPromptPermanentRegistration({
+      sessionMode: 'cloud',
+      identityReady: true,
+      loadingData: false,
+      cloudError: null,
+      isPrimaryAdmin: true,
+      myLinkedStaff: null,
+    }),
+    false
+  );
+
+  // Registered user once staff loaded: must NOT prompt
   assert.equal(
     shouldPromptPermanentRegistration({
       sessionMode: 'cloud',
@@ -134,7 +143,7 @@ test('shouldPromptPermanentRegistration never triggers before identityReady or w
     false
   );
 
-  // Brand-new unregistered user after cloud identity verified: prompts once!
+  // Brand-new unregistered user after cloud identity verified: prompts once
   assert.equal(
     shouldPromptPermanentRegistration({
       sessionMode: 'cloud',
@@ -148,27 +157,37 @@ test('shouldPromptPermanentRegistration never triggers before identityReady or w
   );
 });
 
-test('findLinkedStaffMember and resolveActiveWaiter lock non-primary users strictly to their permanent profile', () => {
+test('findLinkedStaffMember and resolveActiveWaiter keep permanent profiles and auto-resolve Principal Admin', () => {
   const gaby = findLinkedStaffMember(baseStaff, 'uid_gaby', 'GABRIELACARDENAS2517@gmail.com');
   assert.equal(gaby?.id, 'staff_waiter_1');
 
-  // Even if localStorage had stale activeWaiterId of someone else, non-primary resolves to own permanent staff
   const active = resolveActiveWaiter({
     isPrimaryAdmin: false,
     myLinkedStaff: gaby,
     staff: baseStaff,
-    activeWaiterId: 'staff_admin_2',
   });
   assert.equal(active?.id, 'staff_waiter_1');
   assert.equal(active?.role, 'mesero');
 
-  // Primary admin stays on own permanent profile even if stale activeWaiterId points to another user
   const primary = findLinkedStaffMember(baseStaff, 'uid_owner', 'perrodog1515@gmail.com');
   const activePrimary = resolveActiveWaiter({
     isPrimaryAdmin: true,
     myLinkedStaff: primary,
     staff: baseStaff,
-    activeWaiterId: 'staff_waiter_1',
   });
   assert.equal(activePrimary?.id, 'staff_owner');
+
+  // Even if legacy workspace has no staff row linked to owner yet, Principal Admin resolves a permanent identity and never prompts
+  const fallbackPrimary = resolveActiveWaiter({
+    isPrimaryAdmin: true,
+    myLinkedStaff: null,
+    staff: [baseStaff[1]],
+    firebaseUid: 'uid_owner',
+    firebaseDisplayName: 'Miguel Monsalve',
+    firebaseEmail: 'perrodog1515@gmail.com',
+    ownerUid: 'uid_owner',
+  });
+  assert.equal(fallbackPrimary?.id, 'staff_uid_owner');
+  assert.equal(fallbackPrimary?.name, 'Miguel Monsalve');
+  assert.equal(fallbackPrimary?.role, 'admin');
 });

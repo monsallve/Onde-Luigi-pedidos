@@ -1,24 +1,14 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  AlertCircle,
   Camera,
   Check,
   CheckCircle2,
-  Droplets,
-  Edit3,
   Image as ImageIcon,
   Lock,
-  Minus,
-  Plus,
-  Search,
   ShoppingBag,
-  SlidersHorizontal,
-  Split,
-  Trash2,
   X,
 } from 'lucide-react';
 import { usePosStore } from '../services/posStore';
-import { resolveAssetUrl } from '../utils/assetPath';
 import { ROLE_LABELS } from '../utils/rolePermissions';
 import type {
   Order,
@@ -28,15 +18,15 @@ import type {
   Product,
 } from '../types/pos';
 import {
-  buildItemSignature,
+  addOrMergeCartItem,
+  adjustCartLineQuantity,
   buildOrderItem,
   calculateOrderTotals,
-  createSafeId,
   formatCurrency,
-  formatCustomizationSummary,
-  getAddonQuantity,
+  splitCartLineUnit,
   validateOrderItemsSauces,
 } from '../utils/orderMath';
+import { OrderCartItemsList, ProductCatalogPanel } from '../components/OrderMenuAndCart';
 import { RecipeCustomizeModal } from '../components/RecipeCustomizeModal';
 
 interface Props {
@@ -110,10 +100,10 @@ export const PosOrderWorkspaceView: React.FC<Props> = ({
     initialDraft?.paymentMethod ?? 'transferencia'
   );
   const [receiptFile, setReceiptFile] = useState<File | null>(null);
-  const [receiptPreview, setReceiptPreview] = useState<string>('');
+  const [receiptPreview, setReceiptPreview] = useState('');
   const [receiptNotes, setReceiptNotes] = useState<string>(initialDraft?.receiptNotes ?? '');
 
-  const [selectedCategory, setSelectedCategory] = useState<string>('Todas');
+  const [selectedCategory, setSelectedCategory] = useState('Todas');
   const [searchTerm, setSearchTerm] = useState('');
   const [customizingProduct, setCustomizingProduct] = useState<Product | null>(null);
   const [editingLineItem, setEditingLineItem] = useState<OrderItem | null>(null);
@@ -126,7 +116,6 @@ export const PosOrderWorkspaceView: React.FC<Props> = ({
   const cameraRef = useRef<HTMLInputElement>(null);
   const galleryRef = useRef<HTMLInputElement>(null);
 
-  // Persist unfinished order draft so exiting and re-opening restores work automatically
   useEffect(() => {
     const hasDraft =
       items.length > 0 ||
@@ -155,7 +144,6 @@ export const PosOrderWorkspaceView: React.FC<Props> = ({
     }
   }, [reference, notes, items, paymentStatus, paymentMethod, receiptNotes]);
 
-  // Intercept Android/browser Back gesture for local overlays first
   useEffect(() => {
     const handleBackIntercept = (e: Event) => {
       if (customizingProduct) {
@@ -175,19 +163,17 @@ export const PosOrderWorkspaceView: React.FC<Props> = ({
   const activeSauceCount = useMemo(() => sauces.filter((s) => s.active).length, [sauces]);
   const productMap = useMemo(() => new Map(products.map((p) => [p.id, p])), [products]);
 
-  const categories = useMemo(() => {
-    const set = new Set(activeProducts.map((p) => p.category));
-    return ['Todas', ...Array.from(set)];
-  }, [activeProducts]);
+  const categories = useMemo(
+    () => ['Todas', ...Array.from(new Set(activeProducts.map((p) => p.category)))],
+    [activeProducts]
+  );
 
   const filteredProducts = useMemo(() => {
     const q = searchTerm.trim().toLowerCase();
     return activeProducts.filter((p) => {
       const catMatch = selectedCategory === 'Todas' || p.category === selectedCategory;
       const textMatch =
-        !q ||
-        p.name.toLowerCase().includes(q) ||
-        p.category.toLowerCase().includes(q);
+        !q || p.name.toLowerCase().includes(q) || p.category.toLowerCase().includes(q);
       return catMatch && textMatch;
     });
   }, [activeProducts, selectedCategory, searchTerm]);
@@ -210,22 +196,7 @@ export const PosOrderWorkspaceView: React.FC<Props> = ({
       selectedSauces: [],
       customNote: '',
     });
-    const sig = buildItemSignature(candidate);
-    setItems((prev) => {
-      const idx = prev.findIndex((i) => buildItemSignature(i) === sig);
-      if (idx >= 0) {
-        return prev.map((item, i) => {
-          if (i !== idx) return item;
-          const nextQty = item.quantity + 1;
-          return {
-            ...item,
-            quantity: nextQty,
-            lineTotal: item.unitPrice * nextQty,
-          };
-        });
-      }
-      return [...prev, candidate];
-    });
+    setItems((prev) => addOrMergeCartItem(prev, candidate));
   };
 
   const handleConfirmCustomized = (built: OrderItem) => {
@@ -237,68 +208,8 @@ export const PosOrderWorkspaceView: React.FC<Props> = ({
       setCustomizingProduct(null);
       return;
     }
-
-    const sig = buildItemSignature(built);
-    setItems((prev) => {
-      const idx = prev.findIndex((i) => buildItemSignature(i) === sig);
-      if (idx >= 0) {
-        return prev.map((item, i) => {
-          if (i !== idx) return item;
-          const nextQty = item.quantity + built.quantity;
-          return {
-            ...item,
-            quantity: nextQty,
-            lineTotal: item.unitPrice * nextQty,
-          };
-        });
-      }
-      return [...prev, built];
-    });
+    setItems((prev) => addOrMergeCartItem(prev, built));
     setCustomizingProduct(null);
-  };
-
-  const handleSplitUnit = (lineId: string) => {
-    setItems((prev) => {
-      const target = prev.find((i) => i.lineId === lineId);
-      if (!target || target.quantity <= 1) return prev;
-      const result: OrderItem[] = [];
-      for (const item of prev) {
-        if (item.lineId !== lineId) {
-          result.push(item);
-        } else {
-          const reducedQty = item.quantity - 1;
-          result.push({
-            ...item,
-            quantity: reducedQty,
-            lineTotal: item.unitPrice * reducedQty,
-          });
-          result.push({
-            ...item,
-            lineId: createSafeId('item'),
-            quantity: 1,
-            lineTotal: item.unitPrice,
-          });
-        }
-      }
-      return result;
-    });
-  };
-
-  const updateLineQuantity = (lineId: string, delta: number) => {
-    setItems((prev) =>
-      prev
-        .map((item) => {
-          if (item.lineId !== lineId) return item;
-          const nextQty = item.quantity + delta;
-          if (nextQty <= 0) return null;
-          return {
-            ...item,
-            quantity: nextQty,
-            lineTotal: item.unitPrice * nextQty,
-          };
-        })
-        .filter((x): x is OrderItem => x !== null)
-    );
   };
 
   const handleReceiptSelected = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -336,8 +247,7 @@ export const PosOrderWorkspaceView: React.FC<Props> = ({
     }
     if (!sauceValidation.valid) {
       setErrorMsg(
-        sauceValidation.message ||
-          'Elige entre 1 y 4 salsas en cada producto que requiere salsas.'
+        sauceValidation.message || 'Elige entre 1 y 4 salsas en cada producto que requiere salsas.'
       );
       setMobileComandaOpen(true);
       return;
@@ -365,7 +275,7 @@ export const PosOrderWorkspaceView: React.FC<Props> = ({
   };
 
   const openEditItemModal = (item: OrderItem) => {
-    const prod = products.find((p) => p.id === item.productId);
+    const prod = productMap.get(item.productId);
     if (!prod) return;
     setEditingLineItem(item);
     setCustomizingProduct(prod);
@@ -387,7 +297,6 @@ export const PosOrderWorkspaceView: React.FC<Props> = ({
 
   return (
     <div className="space-y-4">
-      {/* Compact Branded Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div>
           <h1 className="font-poster text-3xl sm:text-4xl font-extrabold tracking-wide text-white leading-none">
@@ -415,139 +324,24 @@ export const PosOrderWorkspaceView: React.FC<Props> = ({
         )}
       </div>
 
-      {/* Main Split Layout: Menu Catalog (Left) + Live Comanda (Right on Desktop / Drawer on Mobile) */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-start">
-        {/* Left: Product Picker */}
-        <section className="lg:col-span-7 space-y-3.5">
-          {/* Search + Category Filter */}
-          <div className="bg-[#141418] border border-[#27272E] rounded-2xl p-3 space-y-2.5">
-            <div className="relative">
-              <Search className="w-4 h-4 text-zinc-400 absolute left-3 top-1/2 -translate-y-1/2" />
-              <input
-                type="search"
-                aria-label="Buscar producto en el menú"
-                value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-                placeholder="Buscar hamburguesa, perro, papas o bebida..."
-                className="w-full min-h-[42px] pl-9 pr-3 rounded-xl border border-[#27272E] bg-[#0A0A0A] text-sm text-white placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-amber-500"
-              />
-            </div>
-
-            <div className="flex flex-wrap items-center gap-1.5">
-              {categories.map((cat) => (
-                <button
-                  key={cat}
-                  type="button"
-                  onClick={() => setSelectedCategory(cat)}
-                  className={`min-h-[36px] px-3.5 rounded-xl text-xs font-bold border whitespace-nowrap shrink-0 transition-colors ${
-                    selectedCategory === cat
-                      ? 'bg-amber-500 text-black border-amber-400'
-                      : 'bg-[#1C1C22] text-zinc-300 border-[#27272E] hover:border-zinc-500'
-                  }`}
-                >
-                  {cat}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {/* Menu Grid: 2 columns on mobile/Android for higher catalog density */}
-          {filteredProducts.length === 0 ? (
-            <div className="bg-[#141418] border border-[#27272E] rounded-2xl p-10 text-center text-sm text-zinc-400">
-              No hay productos activos que coincidan con tu búsqueda.
-            </div>
-          ) : (
-            <div className="grid grid-cols-2 gap-2.5 sm:gap-3.5">
-              {filteredProducts.map((product) => {
-                const countInOrder = items
-                  .filter((i) => i.productId === product.id)
-                  .reduce((s, i) => s + i.quantity, 0);
-
-                const hasCustomization =
-                  product.allowSauces ||
-                  product.removableOptions.length > 0 ||
-                  product.addonOptions.length > 0;
-
-                return (
-                  <article
-                    key={product.id}
-                    className={`bg-[#141418] border rounded-2xl overflow-hidden flex flex-col justify-between transition-colors ${
-                      countInOrder > 0 ? 'border-amber-500/80' : 'border-[#27272E]'
-                    }`}
-                  >
-                    {product.imageUrl && (
-                      <div className="relative h-24 sm:h-36 bg-[#0A0A0A] overflow-hidden border-b border-[#27272E]">
-                        <img
-                          src={resolveAssetUrl(product.imageUrl)}
-                          alt={product.name}
-                          className="w-full h-full object-cover object-top"
-                        />
-                        {countInOrder > 0 && (
-                          <span className="absolute top-1.5 right-1.5 sm:top-2.5 sm:right-2.5 px-2 sm:px-2.5 py-0.5 sm:py-1 rounded-lg bg-amber-500 text-black font-mono text-[10px] sm:text-xs font-extrabold tabular-nums shadow">
-                            {countInOrder} en pedido
-                          </span>
-                        )}
-                      </div>
-                    )}
-
-                    <div className="p-2.5 sm:p-3.5 flex-1 flex flex-col justify-between gap-2 sm:gap-3">
-                      <div>
-                        <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-0.5 sm:gap-2">
-                          <div className="min-w-0">
-                            <p className="text-[10px] sm:text-[11px] font-semibold text-zinc-400 uppercase tracking-wide truncate">
-                              {product.category}
-                              {!product.imageUrl && countInOrder > 0 ? ` · ${countInOrder}` : ''}
-                            </p>
-                            <h2 className="font-poster text-sm sm:text-xl font-extrabold text-white leading-tight uppercase mt-0.5 line-clamp-2">
-                              {product.name}
-                            </h2>
-                          </div>
-                          <span className="font-mono text-xs sm:text-base font-bold text-amber-400 tabular-nums shrink-0">
-                            {formatCurrency(product.basePrice)}
-                          </span>
-                        </div>
-
-                        {product.baseRecipe.length > 0 && (
-                          <p className="hidden sm:block text-xs text-zinc-400 mt-1.5 line-clamp-2 leading-relaxed">
-                            {product.baseRecipe.join(' · ')}
-                          </p>
-                        )}
-                      </div>
-
-                      <div className="flex items-center gap-1.5 sm:gap-2 pt-0.5">
-                        <button
-                          type="button"
-                          onClick={() => handleQuickAdd(product)}
-                          className="flex-1 min-w-0 min-h-[40px] sm:min-h-[44px] px-2 rounded-xl bg-amber-500 text-black text-[11px] sm:text-xs font-bold hover:bg-amber-400 transition-colors flex items-center justify-center gap-1"
-                        >
-                          <Plus className="w-3.5 h-3.5 sm:w-4 sm:h-4 shrink-0" />
-                          <span>Agregar</span>
-                        </button>
-
-                        {hasCustomization && (
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setEditingLineItem(null);
-                              setCustomizingProduct(product);
-                            }}
-                            aria-label={`Personalizar ${product.name}`}
-                            className="min-h-[40px] sm:min-h-[44px] px-2 sm:px-3 rounded-xl border border-[#27272E] bg-[#1C1C22] text-zinc-200 text-[11px] sm:text-xs font-semibold hover:border-zinc-500 flex items-center gap-1 whitespace-nowrap shrink-0"
-                          >
-                            <SlidersHorizontal className="w-3.5 h-3.5 text-amber-400 shrink-0" />
-                            <span>Receta</span>
-                          </button>
-                        )}
-                      </div>
-                    </div>
-                  </article>
-                );
-              })}
-            </div>
-          )}
+        <section className="lg:col-span-7">
+          <ProductCatalogPanel
+            products={filteredProducts}
+            itemsInOrder={items}
+            categories={categories}
+            selectedCategory={selectedCategory}
+            onSelectCategory={setSelectedCategory}
+            searchTerm={searchTerm}
+            onSearchChange={setSearchTerm}
+            onQuickAdd={handleQuickAdd}
+            onCustomize={(product) => {
+              setEditingLineItem(null);
+              setCustomizingProduct(product);
+            }}
+          />
         </section>
 
-        {/* Right: Live Comanda Builder (Desktop Sticky Panel + Mobile Full-screen Sheet) */}
         <aside
           className={`lg:col-span-5 lg:sticky lg:top-28 bg-[#141418] border border-[#27272E] rounded-2xl overflow-hidden flex flex-col ${
             mobileComandaOpen
@@ -594,13 +388,13 @@ export const PosOrderWorkspaceView: React.FC<Props> = ({
               </div>
             )}
 
-            {/* Mesa / Cliente Reference (optional, cyclic 1..99 if left blank) */}
             <div>
               <label
                 htmlFor="pos-reference-input"
                 className="block text-xs font-bold text-zinc-300 mb-1.5"
               >
-                Mesa o Nombre del Cliente <span className="text-zinc-400 font-normal">(opcional · auto #1–#99)</span>
+                Mesa o Nombre del Cliente{' '}
+                <span className="text-zinc-400 font-normal">(opcional · auto #1–#99)</span>
               </label>
               <input
                 id="pos-reference-input"
@@ -629,138 +423,15 @@ export const PosOrderWorkspaceView: React.FC<Props> = ({
               </div>
             </div>
 
-            {/* Items List */}
-            {items.length === 0 ? (
-              <div className="text-center py-8 border border-dashed border-[#27272E] rounded-xl bg-[#0A0A0A]/60 px-4">
-                <p className="text-sm font-semibold text-zinc-200">
-                  Comanda vacía
-                </p>
-                <p className="text-xs text-zinc-400 mt-1">
-                  Toca <strong>Agregar</strong> en los productos que quiera el cliente y luego ajusta lo que no lleva y sus salsas.
-                </p>
-              </div>
-            ) : (
-              <div className="divide-y divide-[#27272E] border border-[#27272E] rounded-xl overflow-hidden bg-[#1C1C22]">
-                {items.map((item) => {
-                  const customSummary = formatCustomizationSummary(item);
-                  const prod = productMap.get(item.productId);
-                  const needsSauces =
-                    Boolean(prod?.allowSauces) &&
-                    (item.selectedSauces?.length || 0) < (prod?.minSauces ?? 1);
+            <OrderCartItemsList
+              items={items}
+              productMap={productMap}
+              onUpdateQty={(id, delta) => setItems((prev) => adjustCartLineQuantity(prev, id, delta))}
+              onSplitUnit={(id) => setItems((prev) => splitCartLineUnit(prev, id))}
+              onEditItem={openEditItemModal}
+              onRemoveItem={(id) => setItems((prev) => prev.filter((i) => i.lineId !== id))}
+            />
 
-                  return (
-                    <div key={item.lineId} className="p-3.5 space-y-2.5">
-                      <div className="flex items-start justify-between gap-2">
-                        <div className="min-w-0">
-                          <p className="text-sm font-bold text-white leading-snug">
-                            {item.productName}
-                          </p>
-                          {item.removedIngredients.length > 0 && (
-                            <p className="text-xs text-red-300 font-medium mt-0.5">
-                              {item.removedIngredients.map((r) => `Sin ${r}`).join(', ')}
-                            </p>
-                          )}
-                          {item.selectedSauces.length > 0 && (
-                            <p className="text-xs text-amber-300 font-medium mt-0.5 flex items-center gap-1">
-                              <Droplets className="w-3 h-3 shrink-0" />
-                              <span>
-                                Salsas ({item.selectedSauces.length}/4): {item.selectedSauces.join(', ')}
-                              </span>
-                            </p>
-                          )}
-                          {(item.addedExtras.length > 0 || item.customNote) && (
-                            <p className="text-xs text-emerald-300 mt-0.5">
-                              {[
-                                ...item.addedExtras.map((e) => {
-                                  const qty = getAddonQuantity(e);
-                                  return qty > 1 ? `+${qty}x ${e.name}` : `+${e.name}`;
-                                }),
-                                item.customNote ? `Nota: "${item.customNote}"` : '',
-                              ]
-                                .filter(Boolean)
-                                .join(' · ')}
-                            </p>
-                          )}
-                          {!customSummary && !needsSauces && (
-                            <p className="text-[11px] text-zinc-400 mt-0.5">Receta estándar</p>
-                          )}
-                          {needsSauces && (
-                            <p className="text-[11px] font-semibold text-amber-400 flex items-center gap-1 mt-1">
-                              <AlertCircle className="w-3.5 h-3.5 shrink-0" />
-                              <span>Elige de 1 a 4 salsas</span>
-                            </p>
-                          )}
-                        </div>
-                        <span className="font-mono text-sm font-bold text-amber-400 tabular-nums shrink-0">
-                          {formatCurrency(item.lineTotal)}
-                        </span>
-                      </div>
-
-                      <div className="flex flex-wrap items-center justify-between gap-2 pt-0.5">
-                        <div className="flex items-center border border-[#27272E] bg-[#0A0A0A] rounded-lg overflow-hidden">
-                          <button
-                            type="button"
-                            aria-label={`Restar 1 ${item.productName}`}
-                            onClick={() => updateLineQuantity(item.lineId, -1)}
-                            className="min-h-[34px] min-w-[34px] flex items-center justify-center text-zinc-300 hover:bg-[#1C1C22]"
-                          >
-                            <Minus className="w-3.5 h-3.5" />
-                          </button>
-                          <span className="w-7 text-center font-mono text-xs font-bold text-white tabular-nums">
-                            {item.quantity}
-                          </span>
-                          <button
-                            type="button"
-                            aria-label={`Sumar 1 ${item.productName}`}
-                            onClick={() => updateLineQuantity(item.lineId, 1)}
-                            className="min-h-[34px] min-w-[34px] flex items-center justify-center text-zinc-300 hover:bg-[#1C1C22]"
-                          >
-                            <Plus className="w-3.5 h-3.5" />
-                          </button>
-                        </div>
-
-                        <div className="flex items-center gap-1.5">
-                          {item.quantity > 1 && (
-                            <button
-                              type="button"
-                              onClick={() => handleSplitUnit(item.lineId)}
-                              className="min-h-[34px] px-2 rounded-lg border border-[#27272E] bg-[#0A0A0A] text-[11px] font-semibold text-zinc-300 hover:text-white flex items-center gap-1"
-                            >
-                              <Split className="w-3 h-3" />
-                              <span>Separar 1</span>
-                            </button>
-                          )}
-                          <button
-                            type="button"
-                            onClick={() => openEditItemModal(item)}
-                            className={`min-h-[34px] px-2.5 rounded-lg border text-xs font-bold flex items-center gap-1 transition-colors ${
-                              needsSauces
-                                ? 'border-amber-400 bg-amber-500 text-black'
-                                : 'border-[#27272E] bg-[#0A0A0A] text-white hover:border-amber-500'
-                            }`}
-                          >
-                            <Edit3 className="w-3 h-3" />
-                            <span>Receta / Salsas</span>
-                          </button>
-                          <button
-                            type="button"
-                            aria-label={`Quitar ${item.productName}`}
-                            onClick={() =>
-                              setItems((prev) => prev.filter((i) => i.lineId !== item.lineId))
-                            }
-                            className="min-h-[34px] min-w-[34px] flex items-center justify-center rounded-lg text-red-400 hover:bg-red-950/60"
-                          >
-                            <Trash2 className="w-4 h-4" />
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-
-            {/* General Notes */}
             <div>
               <label htmlFor="pos-order-notes" className="block text-xs font-semibold text-zinc-400 mb-1">
                 Nota general (opcional)
@@ -776,7 +447,6 @@ export const PosOrderWorkspaceView: React.FC<Props> = ({
               />
             </div>
 
-            {/* Initial Payment State */}
             <div className="border border-[#27272E] rounded-xl p-3 space-y-2.5 bg-[#0A0A0A]">
               <div className="flex items-center justify-between gap-2">
                 <span className="text-xs font-bold text-zinc-300">Pago inicial</span>
@@ -914,7 +584,6 @@ export const PosOrderWorkspaceView: React.FC<Props> = ({
         </aside>
       </div>
 
-      {/* Mobile Compact Floating Bar above Bottom Nav (strictly <= 15% height) */}
       {!mobileComandaOpen && items.length > 0 && (
         <div className="lg:hidden fixed bottom-16 left-0 right-0 z-30 px-3 pb-2 pointer-events-none">
           <button
@@ -950,4 +619,3 @@ export const PosOrderWorkspaceView: React.FC<Props> = ({
     </div>
   );
 };
-

@@ -7,9 +7,9 @@ import {
   calculateItemLineTotal,
   formatCurrency,
   getAddonQuantity,
+  resolveAssetUrl,
   validateItemSauces,
 } from '../utils/orderMath';
-import { resolveAssetUrl } from '../utils/assetPath';
 
 interface Props {
   product: Product;

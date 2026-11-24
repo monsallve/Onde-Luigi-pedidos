@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
-import { Eye, Lock, LogOut, MailCheck, Plus, Trash2, UserCheck, X } from 'lucide-react';
-import { ADMIN_BOOTSTRAP_EMAIL } from '../data/demoSeed';
+import { Lock, LogOut, MailCheck, Plus, Shield, Trash2, UserCheck, X } from 'lucide-react';
+import { ADMIN_BOOTSTRAP_EMAIL } from '../data/initialCatalog';
 import { usePosStore } from '../services/posStore';
 import type { StaffRole } from '../types/pos';
 import { ALL_STAFF_ROLES, ROLE_DESCRIPTIONS, ROLE_LABELS } from '../utils/rolePermissions';
@@ -27,10 +27,7 @@ export const WaiterSelectorModal: React.FC<Props> = ({
     firebaseUser,
     emailVerified,
     isAdmin,
-    isPrimaryAdmin,
     isRealPrimaryAdmin,
-    previewRole,
-    setPreviewRole,
     effectiveRole,
     saveStaffMember,
     updateStaffRole,
@@ -70,7 +67,8 @@ export const WaiterSelectorModal: React.FC<Props> = ({
     (s) =>
       s.active &&
       s.id !== ownProfile?.id &&
-      (s.linkedEmail || '').toLowerCase() !== ADMIN_BOOTSTRAP_EMAIL
+      (s.linkedEmail || '').toLowerCase() !== ADMIN_BOOTSTRAP_EMAIL &&
+      !(Boolean(s.linkedUid) && s.linkedUid === s.ownerUid)
   );
 
   const handlePrimaryAdminAdd = async (e: React.FormEvent) => {
@@ -149,12 +147,14 @@ export const WaiterSelectorModal: React.FC<Props> = ({
             <UserCheck className="w-5 h-5 text-amber-400 shrink-0" />
             <div>
               <h2 id="waiter-modal-title" className="font-poster text-xl font-extrabold text-white tracking-wide">
-                {isRealPrimaryAdmin ? 'MI CUENTA Y VISTA DE ROL' : 'MI PERFIL PERMANENTE'}
+                {isRealPrimaryAdmin ? 'MI CUENTA Y ROL ACTIVO' : 'MI PERFIL PERMANENTE'}
               </h2>
               <p className="text-xs text-zinc-400">
                 {isRealPrimaryAdmin
-                  ? 'Tu cuenta principal es permanente. Cambia solo el rol para probar cómo ve la app cada perfil.'
-                  : 'Tu nombre y rol quedan asignados permanentemente a este correo.'}
+                  ? 'Tu perfil principal es permanente. Cambia tu rol aquí o en Ajustes para usar la app exactamente con ese rol.'
+                  : isAdmin
+                    ? 'Tu perfil de Administrador es permanente y puedes gestionar roles y equipo.'
+                    : 'Tu nombre y rol quedan asignados permanentemente a este correo.'}
               </p>
             </div>
           </div>
@@ -193,184 +193,61 @@ export const WaiterSelectorModal: React.FC<Props> = ({
                   </div>
                   <p className="text-base font-bold text-white">{ownProfile.name}</p>
                   <p className="text-xs text-zinc-300">
-                    Vista actual:{' '}
+                    Rol aplicado:{' '}
                     <strong className="text-amber-300">{ROLE_LABELS[effectiveRole]}</strong>
                     {ownProfile.linkedEmail ? ` · ${ownProfile.linkedEmail}` : ''}
                   </p>
                 </div>
               )}
 
-              {/* Principal-Admin-only 4-Role Preview Switcher */}
-              <div className="rounded-xl border border-[#27272E] bg-[#0A0A0A] p-3.5 space-y-2.5">
-                <div className="flex items-center gap-1.5 text-xs font-bold text-amber-400 uppercase tracking-wide">
-                  <Eye className="w-4 h-4 shrink-0" />
-                  <span>Previsualizar aplicación como rol</span>
-                </div>
-                <p className="text-[11px] text-zinc-400 leading-relaxed">
-                  Al cambiar de rol, toda la aplicación se adapta exactamente a lo que ese perfil puede ver y operar. No cambia tu cuenta ni las de tu equipo.
-                </p>
-                <div className="grid grid-cols-2 gap-2">
-                  {ALL_STAFF_ROLES.map((r) => {
-                    const active = previewRole === r;
-                    return (
-                      <button
-                        key={r}
-                        type="button"
-                        onClick={() => {
-                          setPreviewRole(r);
-                          onClose();
-                        }}
-                        className={`min-h-[40px] px-3 rounded-xl border text-xs font-bold transition-colors ${
-                          active
-                            ? 'border-amber-400 bg-amber-500 text-black'
-                            : 'border-[#27272E] bg-[#1C1C22] text-zinc-200 hover:border-zinc-500'
-                        }`}
-                      >
-                        {ROLE_LABELS[r]}
-                      </button>
-                    );
-                  })}
-                </div>
-                <p className="text-[11px] text-zinc-300 pt-0.5">
-                  {ROLE_DESCRIPTIONS[effectiveRole]}
-                </p>
-              </div>
-
-              {/* Team role management only visible when Principal Admin is in Administrador view */}
-              {isPrimaryAdmin && isAdmin && (
-                <div className="space-y-2.5 pt-2 border-t border-[#27272E]">
-                  <p className="text-xs font-bold text-zinc-300 uppercase tracking-wide">
-                    Usuarios registrados (solo gestión de roles)
+              {/* Principal-Admin direct role switch (persists actual role to staff profile) */}
+              {ownProfile && (
+                <div className="rounded-xl border border-[#27272E] bg-[#0A0A0A] p-3.5 space-y-2.5">
+                  <div className="flex items-center gap-1.5 text-xs font-bold text-amber-400 uppercase tracking-wide">
+                    <Shield className="w-4 h-4 shrink-0" />
+                    <span>Cambiar mi rol operativo</span>
+                  </div>
+                  <p className="text-[11px] text-zinc-400 leading-relaxed">
+                    Al seleccionar un rol, se aplica directamente a tu cuenta para operar toda la aplicación exactamente con esos permisos.
                   </p>
-                  {activeOtherStaff.length === 0 ? (
-                    <p className="text-xs text-zinc-400 py-2">
-                      No hay otros usuarios registrados todavía.
-                    </p>
-                  ) : (
-                    <div className="space-y-2">
-                      {activeOtherStaff.map((member) => {
-                        const confirmingDelete = confirmDeleteId === member.id;
-                        return (
-                          <div
-                            key={member.id}
-                            className="rounded-xl border border-[#27272E] bg-[#1C1C22] flex items-center justify-between gap-2 px-3.5 py-2.5"
-                          >
-                            <div className="min-w-0 flex-1">
-                              <p className="text-sm font-bold text-white truncate">{member.name}</p>
-                              <p className="text-[11px] text-zinc-400 truncate">
-                                {ROLE_LABELS[member.role]}
-                                {member.linkedEmail ? ` · ${member.linkedEmail}` : ''}
-                              </p>
-                            </div>
-
-                            <div className="flex items-center gap-1.5 shrink-0">
-                              <select
-                                aria-label={`Cambiar rol de ${member.name}`}
-                                value={member.role}
-                                onChange={(e) => handleRoleChange(member.id, e.target.value as StaffRole)}
-                                className="min-h-[34px] rounded-lg border border-[#27272E] bg-[#0A0A0A] px-2 text-[11px] font-semibold text-zinc-200 focus:outline-none focus:ring-2 focus:ring-amber-500"
-                              >
-                                <option value="mesero">Mesero</option>
-                                <option value="cajero">Caja</option>
-                                <option value="cocina">Cocina</option>
-                                <option value="admin">Administrador</option>
-                              </select>
-
-                              {!confirmingDelete ? (
-                                <button
-                                  type="button"
-                                  onClick={() => setConfirmDeleteId(member.id)}
-                                  aria-label={`Eliminar a ${member.name}`}
-                                  className="min-h-[34px] min-w-[34px] flex items-center justify-center rounded-lg border border-[#27272E] bg-[#0A0A0A] text-red-400 hover:bg-red-950/60"
-                                >
-                                  <Trash2 className="w-3.5 h-3.5" />
-                                </button>
-                              ) : (
-                                <div className="flex items-center gap-1">
-                                  <button
-                                    type="button"
-                                    disabled={saving}
-                                    onClick={() => handleDelete(member.id)}
-                                    className="min-h-[34px] px-2 rounded-lg bg-red-600 text-white text-[11px] font-bold hover:bg-red-500"
-                                  >
-                                    Borrar
-                                  </button>
-                                  <button
-                                    type="button"
-                                    onClick={() => setConfirmDeleteId(null)}
-                                    className="min-h-[34px] px-2 rounded-lg border border-[#27272E] bg-[#0A0A0A] text-[11px] text-zinc-300"
-                                  >
-                                    No
-                                  </button>
-                                </div>
-                              )}
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  )}
-
-                  {!showAdd ? (
-                    <button
-                      type="button"
-                      onClick={() => setShowAdd(true)}
-                      className="w-full min-h-[42px] flex items-center justify-center gap-2 rounded-xl border border-dashed border-[#3F3F46] text-xs font-semibold text-amber-400 hover:bg-[#1C1C22] transition-colors"
-                    >
-                      <Plus className="w-4 h-4" />
-                      <span>Agregar integrante al equipo</span>
-                    </button>
-                  ) : (
-                    <form onSubmit={handlePrimaryAdminAdd} className="border border-[#27272E] rounded-xl p-3.5 space-y-3 bg-[#101014]">
-                      <div>
-                        <label htmlFor="new-staff-name" className="block text-xs font-medium text-zinc-300 mb-1">
-                          Nombre completo
-                        </label>
-                        <input
-                          id="new-staff-name"
-                          type="text"
-                          value={newName}
-                          onChange={(e) => setNewName(e.target.value)}
-                          placeholder="Ej. Andrés Pardo"
-                          className="w-full min-h-[42px] rounded-xl border border-[#27272E] bg-[#0A0A0A] px-3 text-sm text-white focus:outline-none focus:ring-2 focus:ring-amber-500"
-                        />
-                      </div>
-                      <div>
-                        <label htmlFor="new-staff-role" className="block text-xs font-medium text-zinc-300 mb-1">
-                          Rol operativo
-                        </label>
-                        <select
-                          id="new-staff-role"
-                          value={newRole}
-                          onChange={(e) => setNewRole(e.target.value as StaffRole)}
-                          className="w-full min-h-[42px] rounded-xl border border-[#27272E] bg-[#0A0A0A] px-3 text-sm text-white focus:outline-none focus:ring-2 focus:ring-amber-500"
-                        >
-                          <option value="mesero">Mesero</option>
-                          <option value="cajero">Caja</option>
-                          <option value="cocina">Cocina</option>
-                          <option value="admin">Administrador</option>
-                        </select>
-                      </div>
-                      <div className="flex items-center gap-2">
+                  <div className="grid grid-cols-2 gap-2">
+                    {ALL_STAFF_ROLES.map((r) => {
+                      const active = effectiveRole === r;
+                      return (
                         <button
-                          type="submit"
-                          disabled={saving}
-                          className="flex-1 min-h-[42px] rounded-xl bg-amber-500 text-black text-xs font-bold hover:bg-amber-400 disabled:opacity-60"
-                        >
-                          {saving ? 'Guardando...' : 'Agregar integrante'}
-                        </button>
-                        <button
+                          key={r}
                           type="button"
-                          onClick={() => setShowAdd(false)}
-                          className="min-h-[42px] px-3 rounded-xl border border-[#27272E] bg-[#1C1C22] text-xs font-medium text-zinc-300"
+                          disabled={saving}
+                          onClick={async () => {
+                            setSaving(true);
+                            setErrorMsg(null);
+                            try {
+                              await updateStaffRole(ownProfile.id, r);
+                              onClose();
+                            } catch (err) {
+                              setErrorMsg(err instanceof Error ? err.message : 'No se pudo cambiar el rol.');
+                            } finally {
+                              setSaving(false);
+                            }
+                          }}
+                          className={`min-h-[40px] px-3 rounded-xl border text-xs font-bold transition-colors ${
+                            active
+                              ? 'border-amber-400 bg-amber-500 text-black'
+                              : 'border-[#27272E] bg-[#1C1C22] text-zinc-200 hover:border-zinc-500'
+                          }`}
                         >
-                          Cancelar
+                          {ROLE_LABELS[r]}
                         </button>
-                      </div>
-                    </form>
-                  )}
+                      );
+                    })}
+                  </div>
+                  <p className="text-[11px] text-zinc-300 pt-0.5">
+                    {ROLE_DESCRIPTIONS[effectiveRole]}
+                  </p>
                 </div>
               )}
+
+              {/* Principal-Admin role switcher keeps exact operational parity */}
             </>
           ) : (
             /* Registered users (Waiters, Cashiers, Kitchen, Promoted Admins): permanent name & role locked to account */
@@ -472,12 +349,148 @@ export const WaiterSelectorModal: React.FC<Props> = ({
                 </form>
               )}
 
-              <p className="text-[11px] text-zinc-400 flex items-center gap-1.5 pt-1">
-                <Lock className="w-3.5 h-3.5 text-zinc-500 shrink-0" />
-                <span>Solamente el administrador principal puede cambiar los roles de los usuarios.</span>
-              </p>
             </div>
           )}
+
+          {isAdmin ? (
+            <div className="space-y-2.5 pt-2 border-t border-[#27272E]">
+              <p className="text-xs font-bold text-zinc-300 uppercase tracking-wide">
+                Usuarios registrados (gestión de roles)
+              </p>
+              {activeOtherStaff.length === 0 ? (
+                <p className="text-xs text-zinc-400 py-2">
+                  No hay otros usuarios registrados todavía.
+                </p>
+              ) : (
+                <div className="space-y-2">
+                  {activeOtherStaff.map((member) => {
+                    const confirmingDelete = confirmDeleteId === member.id;
+                    return (
+                      <div
+                        key={member.id}
+                        className="rounded-xl border border-[#27272E] bg-[#1C1C22] flex items-center justify-between gap-2 px-3.5 py-2.5"
+                      >
+                        <div className="min-w-0 flex-1">
+                          <p className="text-sm font-bold text-white truncate">{member.name}</p>
+                          <p className="text-[11px] text-zinc-400 truncate">
+                            {ROLE_LABELS[member.role]}
+                            {member.linkedEmail ? ` · ${member.linkedEmail}` : ''}
+                          </p>
+                        </div>
+
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          <select
+                            aria-label={`Cambiar rol de ${member.name}`}
+                            value={member.role}
+                            onChange={(e) => handleRoleChange(member.id, e.target.value as StaffRole)}
+                            className="min-h-[34px] rounded-lg border border-[#27272E] bg-[#0A0A0A] px-2 text-[11px] font-semibold text-zinc-200 focus:outline-none focus:ring-2 focus:ring-amber-500"
+                          >
+                            <option value="mesero">Mesero</option>
+                            <option value="cajero">Caja</option>
+                            <option value="cocina">Cocina</option>
+                            <option value="admin">Administrador</option>
+                          </select>
+
+                          {!confirmingDelete ? (
+                            <button
+                              type="button"
+                              onClick={() => setConfirmDeleteId(member.id)}
+                              aria-label={`Eliminar a ${member.name}`}
+                              className="min-h-[34px] min-w-[34px] flex items-center justify-center rounded-lg border border-[#27272E] bg-[#0A0A0A] text-red-400 hover:bg-red-950/60"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          ) : (
+                            <div className="flex items-center gap-1">
+                              <button
+                                type="button"
+                                disabled={saving}
+                                onClick={() => handleDelete(member.id)}
+                                className="min-h-[34px] px-2 rounded-lg bg-red-600 text-white text-[11px] font-bold hover:bg-red-500"
+                              >
+                                Borrar
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setConfirmDeleteId(null)}
+                                className="min-h-[34px] px-2 rounded-lg border border-[#27272E] bg-[#0A0A0A] text-[11px] text-zinc-300"
+                              >
+                                No
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
+              {!showAdd ? (
+                <button
+                  type="button"
+                  onClick={() => setShowAdd(true)}
+                  className="w-full min-h-[42px] flex items-center justify-center gap-2 rounded-xl border border-dashed border-[#3F3F46] text-xs font-semibold text-amber-400 hover:bg-[#1C1C22] transition-colors"
+                >
+                  <Plus className="w-4 h-4" />
+                  <span>Agregar integrante al equipo</span>
+                </button>
+              ) : (
+                <form onSubmit={handlePrimaryAdminAdd} className="border border-[#27272E] rounded-xl p-3.5 space-y-3 bg-[#101014]">
+                  <div>
+                    <label htmlFor="new-staff-name-admin" className="block text-xs font-medium text-zinc-300 mb-1">
+                      Nombre completo
+                    </label>
+                    <input
+                      id="new-staff-name-admin"
+                      type="text"
+                      value={newName}
+                      onChange={(e) => setNewName(e.target.value)}
+                      placeholder="Ej. Andrés Pardo"
+                      className="w-full min-h-[42px] rounded-xl border border-[#27272E] bg-[#0A0A0A] px-3 text-sm text-white focus:outline-none focus:ring-2 focus:ring-amber-500"
+                    />
+                  </div>
+                  <div>
+                    <label htmlFor="new-staff-role-admin" className="block text-xs font-medium text-zinc-300 mb-1">
+                      Rol operativo
+                    </label>
+                    <select
+                      id="new-staff-role-admin"
+                      value={newRole}
+                      onChange={(e) => setNewRole(e.target.value as StaffRole)}
+                      className="w-full min-h-[42px] rounded-xl border border-[#27272E] bg-[#0A0A0A] px-3 text-sm text-white focus:outline-none focus:ring-2 focus:ring-amber-500"
+                    >
+                      <option value="mesero">Mesero</option>
+                      <option value="cajero">Caja</option>
+                      <option value="cocina">Cocina</option>
+                      <option value="admin">Administrador</option>
+                    </select>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="submit"
+                      disabled={saving}
+                      className="flex-1 min-h-[42px] rounded-xl bg-amber-500 text-black text-xs font-bold hover:bg-amber-400 disabled:opacity-60"
+                    >
+                      {saving ? 'Guardando...' : 'Agregar integrante'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setShowAdd(false)}
+                      className="min-h-[42px] px-3 rounded-xl border border-[#27272E] bg-[#1C1C22] text-xs font-medium text-zinc-300"
+                    >
+                      Cancelar
+                    </button>
+                  </div>
+                </form>
+              )}
+            </div>
+          ) : !isRealPrimaryAdmin ? (
+            <p className="text-[11px] text-zinc-400 flex items-center gap-1.5 pt-1">
+              <Lock className="w-3.5 h-3.5 text-zinc-500 shrink-0" />
+              <span>Solamente los administradores pueden cambiar los roles de los usuarios.</span>
+            </p>
+          ) : null}
         </div>
       </div>
     </div>

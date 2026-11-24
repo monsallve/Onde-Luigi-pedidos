@@ -1,10 +1,10 @@
 import React, { useState } from 'react';
-import { Check, Cloud, Code2, Copy, Database, Eye, Lock, LogOut, MailCheck, MailPlus, Plus, RefreshCw, Shield, Trash2, Users, X } from 'lucide-react';
+import { Check, Cloud, Code2, Copy, Lock, LogOut, MailCheck, MailPlus, Plus, Shield, Trash2, Users, X } from 'lucide-react';
 import { usePosStore } from '../services/posStore';
-import { ADMIN_BOOTSTRAP_EMAIL } from '../data/demoSeed';
+import { ADMIN_BOOTSTRAP_EMAIL } from '../data/initialCatalog';
 import type { StaffRole } from '../types/pos';
-import { resolveAssetUrl } from '../utils/assetPath';
-import { ALL_STAFF_ROLES, ROLE_DESCRIPTIONS, ROLE_LABELS } from '../utils/rolePermissions';
+import { resolveAssetUrl } from '../utils/orderMath';
+import { ROLE_DESCRIPTIONS, ROLE_LABELS } from '../utils/rolePermissions';
 import { buildBrandVerificationEmailHtml } from '../utils/verificationEmailTemplate';
 import { PWAInstallButton } from './PWAInstallBanner';
 
@@ -16,16 +16,14 @@ interface Props {
 
 export const SettingsModal: React.FC<Props> = ({ open, onClose, onOpenVerifyEmail }) => {
   const {
-    sessionMode,
     firebaseUser,
     emailVerified,
     configSource,
     effectiveRole,
-    previewRole,
-    setPreviewRole,
     isAdmin,
     isPrimaryAdmin,
     isRealPrimaryAdmin,
+    myLinkedStaff,
     authorizedEmails,
     allowSelfRegistration,
     updateAuthorizedEmails,
@@ -35,11 +33,9 @@ export const SettingsModal: React.FC<Props> = ({ open, onClose, onOpenVerifyEmai
     updateStaffRole,
     toggleStaffActive,
     deleteStaffMember,
-    resetDemoData,
     signOutSession,
   } = usePosStore();
 
-  const [confirmReset, setConfirmReset] = useState(false);
   const [newWaiterEmail, setNewWaiterEmail] = useState('');
   const [savingEmails, setSavingEmails] = useState(false);
   const [emailError, setEmailError] = useState<string | null>(null);
@@ -189,18 +185,14 @@ export const SettingsModal: React.FC<Props> = ({ open, onClose, onOpenVerifyEmai
                       : 'bg-[#1C1C22] border border-[#27272E] text-zinc-200'
                   }`}
                 >
-                  {isRealPrimaryAdmin
-                    ? previewRole === 'admin'
-                      ? 'ADMINISTRADOR PRINCIPAL'
-                      : `${ROLE_LABELS[effectiveRole]} (VISTA PREVIA)`
+                  {isRealPrimaryAdmin && effectiveRole === 'admin'
+                    ? 'ADMINISTRADOR PRINCIPAL'
                     : ROLE_LABELS[effectiveRole]}
                 </span>
               </div>
               <div className="flex items-center justify-between text-sm">
                 <span className="text-zinc-400">Modo actual</span>
-                <span className="font-semibold text-white">
-                  {sessionMode === 'cloud' ? 'Sincronizado en la Nube' : 'Modo Local'}
-                </span>
+                <span className="font-semibold text-white">Sincronizado en la Nube</span>
               </div>
               <div className="flex items-center justify-between text-sm">
                 <span className="text-zinc-400">Conexión</span>
@@ -210,6 +202,9 @@ export const SettingsModal: React.FC<Props> = ({ open, onClose, onOpenVerifyEmai
                     : 'Sin configurar'}
                 </span>
               </div>
+              <p className="text-[11px] text-zinc-400 leading-relaxed pt-1 border-t border-[#27272E]">
+                {ROLE_DESCRIPTIONS[effectiveRole]}
+              </p>
               {firebaseUser && (
                 <>
                   <div className="flex items-center justify-between text-sm">
@@ -243,46 +238,15 @@ export const SettingsModal: React.FC<Props> = ({ open, onClose, onOpenVerifyEmai
                   </div>
                 </>
               )}
-
-              {isRealPrimaryAdmin && (
-                <div className="pt-2.5 border-t border-[#27272E] space-y-2">
-                  <div className="flex items-center gap-1.5 text-xs font-bold text-amber-400">
-                    <Eye className="w-3.5 h-3.5 shrink-0" />
-                    <span>Previsualizar aplicación como rol</span>
-                  </div>
-                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                    {ALL_STAFF_ROLES.map((r) => {
-                      const active = previewRole === r;
-                      return (
-                        <button
-                          key={r}
-                          type="button"
-                          onClick={() => setPreviewRole(r)}
-                          className={`min-h-[38px] rounded-lg border text-xs font-bold transition-colors ${
-                            active
-                              ? 'bg-amber-500 border-amber-400 text-black'
-                              : 'bg-[#1C1C22] border-[#27272E] text-zinc-300 hover:border-zinc-500'
-                          }`}
-                        >
-                          {ROLE_LABELS[r]}
-                        </button>
-                      );
-                    })}
-                  </div>
-                  <p className="text-[11px] text-zinc-400 leading-relaxed">
-                    {ROLE_DESCRIPTIONS[effectiveRole]}
-                  </p>
-                </div>
-              )}
             </div>
           </section>
 
-          {/* Primary-Admin-only Authorized Waiter Emails & Open Link Registration */}
-          {isPrimaryAdmin && (
+          {/* Admin-only Authorized Waiter Emails & Open Link Registration */}
+          {isAdmin && (
             <section className="space-y-2.5">
               <h3 className="text-xs font-bold text-amber-400 uppercase tracking-wide flex items-center gap-1.5">
                 <Shield className="w-4 h-4" />
-                <span>Acceso de equipo (Administrador principal)</span>
+                <span>Acceso de equipo (Administradores)</span>
               </h3>
 
               <div className="rounded-xl border border-[#27272E] bg-[#0A0A0A] p-3.5 flex items-center justify-between gap-3">
@@ -411,14 +375,18 @@ export const SettingsModal: React.FC<Props> = ({ open, onClose, onOpenVerifyEmai
               </div>
             )}
 
-            {!isPrimaryAdmin && (
+            {!isAdmin && (
               <p className="text-[11px] text-zinc-400 flex items-center gap-1.5">
                 <Lock className="w-3.5 h-3.5 text-zinc-500 shrink-0" />
-                <span>Solamente el administrador principal puede cambiar los roles de los usuarios o administrar el equipo.</span>
+                <span>
+                  {isRealPrimaryAdmin
+                    ? 'Estás operando con otro rol. Cambia tu propio rol a Administrador en tu fila para volver a gestionar al equipo.'
+                    : 'Solamente los usuarios con rol Administrador pueden cambiar roles o administrar el equipo.'}
+                </span>
               </p>
             )}
 
-            {isPrimaryAdmin && (
+            {isAdmin && (
               <form onSubmit={handleAddStaff} className="flex flex-col sm:flex-row gap-2">
                 <input
                   type="text"
@@ -460,8 +428,14 @@ export const SettingsModal: React.FC<Props> = ({ open, onClose, onOpenVerifyEmai
               {staff.map((member) => {
                 const confirming = confirmDeleteId === member.id;
                 const isMainAdminRow =
+                  (member.id === myLinkedStaff?.id && isRealPrimaryAdmin) ||
                   (member.linkedEmail || '').toLowerCase() === ADMIN_BOOTSTRAP_EMAIL ||
                   (Boolean(member.linkedUid) && member.linkedUid === member.ownerUid);
+                const isOwnRow = Boolean(myLinkedStaff && member.id === myLinkedStaff.id);
+                const canChangeThisRole = isMainAdminRow
+                  ? isRealPrimaryAdmin
+                  : isAdmin && !isOwnRow;
+                const canManageOtherActions = isAdmin && !isMainAdminRow && !isOwnRow;
 
                 return (
                   <div
@@ -469,12 +443,19 @@ export const SettingsModal: React.FC<Props> = ({ open, onClose, onOpenVerifyEmai
                     className="flex flex-wrap items-center justify-between gap-2 px-4 py-3"
                   >
                     <div className="min-w-0 flex-1">
-                      <p className="text-sm font-semibold text-white truncate">{member.name}</p>
+                      <p className="text-sm font-semibold text-white truncate">
+                        {member.name}
+                        {isMainAdminRow && (
+                          <span className="ml-2 text-[10px] font-bold uppercase text-amber-400">
+                            · Admin Principal
+                          </span>
+                        )}
+                      </p>
                       <p className="text-[11px] text-zinc-400 truncate">
                         {member.linkedEmail ? `Cuenta: ${member.linkedEmail}` : 'Creado por administrador'}
                       </p>
                     </div>
-                    {isPrimaryAdmin && !isMainAdminRow ? (
+                    {canChangeThisRole ? (
                       <div className="flex items-center gap-1.5 shrink-0">
                         <select
                           aria-label={`Rol de ${member.name}`}
@@ -488,51 +469,59 @@ export const SettingsModal: React.FC<Props> = ({ open, onClose, onOpenVerifyEmai
                           <option value="admin">Administrador</option>
                         </select>
 
-                        <button
-                          type="button"
-                          onClick={() => toggleStaffActive(member.id, !member.active)}
-                          className={`min-h-[34px] px-2.5 rounded-lg text-xs font-semibold transition-colors ${
-                            member.active
-                              ? 'bg-emerald-950/60 text-emerald-300 border border-emerald-700'
-                              : 'bg-[#1C1C22] text-zinc-400 border border-[#27272E]'
-                          }`}
-                        >
-                          {member.active ? 'Activo' : 'Inactivo'}
-                        </button>
+                        {canManageOtherActions ? (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => toggleStaffActive(member.id, !member.active)}
+                              className={`min-h-[34px] px-2.5 rounded-lg text-xs font-semibold transition-colors ${
+                                member.active
+                                  ? 'bg-emerald-950/60 text-emerald-300 border border-emerald-700'
+                                  : 'bg-[#1C1C22] text-zinc-400 border border-[#27272E]'
+                              }`}
+                            >
+                              {member.active ? 'Activo' : 'Inactivo'}
+                            </button>
 
-                        {!confirming ? (
-                          <button
-                            type="button"
-                            onClick={() => setConfirmDeleteId(member.id)}
-                            aria-label={`Eliminar usuario ${member.name}`}
-                            className="min-h-[34px] min-w-[34px] flex items-center justify-center rounded-lg text-red-400 hover:bg-red-950/60"
-                          >
-                            <Trash2 className="w-4 h-4" />
-                          </button>
+                            {!confirming ? (
+                              <button
+                                type="button"
+                                onClick={() => setConfirmDeleteId(member.id)}
+                                aria-label={`Eliminar usuario ${member.name}`}
+                                className="min-h-[34px] min-w-[34px] flex items-center justify-center rounded-lg text-red-400 hover:bg-red-950/60"
+                              >
+                                <Trash2 className="w-4 h-4" />
+                              </button>
+                            ) : (
+                              <div className="flex items-center gap-1">
+                                <button
+                                  type="button"
+                                  disabled={savingStaff}
+                                  onClick={() => handleDeleteStaff(member.id)}
+                                  className="min-h-[34px] px-2 rounded-lg bg-red-600 text-white text-xs font-bold hover:bg-red-500"
+                                >
+                                  Borrar
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setConfirmDeleteId(null)}
+                                  className="min-h-[34px] px-2 rounded-lg border border-[#27272E] bg-[#1C1C22] text-xs text-zinc-300"
+                                >
+                                  No
+                                </button>
+                              </div>
+                            )}
+                          </>
                         ) : (
-                          <div className="flex items-center gap-1">
-                            <button
-                              type="button"
-                              disabled={savingStaff}
-                              onClick={() => handleDeleteStaff(member.id)}
-                              className="min-h-[34px] px-2.5 rounded-lg bg-red-600 text-white text-xs font-bold hover:bg-red-500"
-                            >
-                              Borrar
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => setConfirmDeleteId(null)}
-                              className="min-h-[34px] px-2 rounded-lg border border-[#27272E] bg-[#1C1C22] text-xs text-zinc-300"
-                            >
-                              No
-                            </button>
-                          </div>
+                          <span className="px-2.5 py-1 rounded-lg bg-emerald-950/60 text-emerald-300 border border-emerald-700 text-xs font-semibold">
+                            Activo
+                          </span>
                         )}
                       </div>
                     ) : (
                       <div className="text-right text-xs">
                         <span className={isMainAdminRow ? 'text-amber-400 font-bold' : 'text-zinc-300'}>
-                          {isMainAdminRow ? 'Admin Principal' : ROLE_LABELS[member.role]}
+                          {ROLE_LABELS[member.role]}
                         </span>
                         <span className="text-zinc-500 mx-1">·</span>
                         <span className="text-zinc-400">
@@ -548,32 +537,6 @@ export const SettingsModal: React.FC<Props> = ({ open, onClose, onOpenVerifyEmai
 
           <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-[#27272E]">
             <PWAInstallButton />
-
-            {sessionMode === 'demo' && (
-              !confirmReset ? (
-                <button
-                  type="button"
-                  onClick={() => setConfirmReset(true)}
-                  className="min-h-[44px] flex items-center gap-2 px-3.5 rounded-xl border border-[#27272E] bg-[#1C1C22] text-xs font-semibold text-zinc-200 hover:border-zinc-500"
-                >
-                  <Database className="w-4 h-4 text-amber-400" />
-                  <span>Restaurar menú demo</span>
-                </button>
-              ) : (
-                <button
-                  type="button"
-                  onClick={() => {
-                    resetDemoData();
-                    setConfirmReset(false);
-                    onClose();
-                  }}
-                  className="min-h-[44px] flex items-center gap-2 px-3.5 rounded-xl bg-amber-500 text-black text-xs font-bold hover:bg-amber-400"
-                >
-                  <RefreshCw className="w-4 h-4" />
-                  <span>Confirmar restauración</span>
-                </button>
-              )
-            )}
 
             <button
               type="button"

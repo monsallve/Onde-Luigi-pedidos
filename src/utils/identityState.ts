@@ -41,7 +41,6 @@ export function isStartupIdentityReady({
   if (!authReady) return false;
   if (!sessionMode) return true;
   if (cloudError) return true;
-  if (sessionMode === 'demo') return staffLoaded;
   return Boolean(
     firebaseUid &&
       cloudReadyForUid === firebaseUid &&
@@ -54,25 +53,48 @@ export interface ActiveWaiterResolutionParams {
   isPrimaryAdmin: boolean;
   myLinkedStaff: StaffMember | null;
   staff: StaffMember[];
-  activeWaiterId: string;
+  firebaseUid?: string;
+  firebaseDisplayName?: string;
+  firebaseEmail?: string;
+  ownerUid?: string;
 }
 
 export function resolveActiveWaiter({
   isPrimaryAdmin,
   myLinkedStaff,
   staff,
+  firebaseUid = '',
+  firebaseDisplayName = '',
+  firebaseEmail = '',
+  ownerUid = '',
 }: ActiveWaiterResolutionParams): StaffMember | null {
   if (myLinkedStaff && myLinkedStaff.active) {
     return myLinkedStaff;
   }
   if (isPrimaryAdmin) {
-    return (
-      staff.find(
-        (s) =>
-          s.active &&
-          (Boolean(s.linkedUid) && s.linkedUid === s.ownerUid)
-      ) || null
+    const ownerStaff = staff.find(
+      (s) => s.active && Boolean(s.linkedUid) && s.linkedUid === s.ownerUid
     );
+    if (ownerStaff) return ownerStaff;
+
+    if (firebaseUid) {
+      const now = Date.now();
+      const cleanName = (firebaseDisplayName || '').trim() || 'Administrador';
+      const normalizedEmail = (firebaseEmail || '').trim().toLowerCase();
+      return {
+        id: `staff_${firebaseUid}`,
+        name: cleanName.slice(0, 80),
+        role: 'admin',
+        active: true,
+        linkedUid: firebaseUid,
+        linkedEmail: normalizedEmail,
+        ownerUid: ownerUid || firebaseUid,
+        createdByUid: firebaseUid,
+        allowedEmails: normalizedEmail ? [normalizedEmail] : [],
+        createdAtMs: now,
+        updatedAtMs: now,
+      };
+    }
   }
   return null;
 }

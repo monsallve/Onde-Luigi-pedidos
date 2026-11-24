@@ -2,7 +2,6 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   BarChart3,
   ClipboardList,
-  Eye,
   History,
   Image as ImageIcon,
   LogOut,
@@ -11,12 +10,12 @@ import {
   Settings,
   UserCheck,
   UtensilsCrossed,
+  WifiOff,
   X,
 } from 'lucide-react';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { AuthGate } from './components/AuthGate';
 import { EmailVerificationModal } from './components/EmailVerificationModal';
-import { OfflineIndicator } from './components/OfflineIndicator';
 import { OrderComposerModal } from './components/OrderComposerModal';
 import { PaymentSheetModal } from './components/PaymentSheetModal';
 import { PWAInstallButton } from './components/PWAInstallBanner';
@@ -25,10 +24,9 @@ import { WaiterSelectorModal } from './components/WaiterSelectorModal';
 import { WhatsAppReceiptViewer } from './components/WhatsAppReceiptViewer';
 import { PosProvider, usePosStore } from './services/posStore';
 import type { AppTab, Order } from './types/pos';
-import { resolveAssetUrl } from './utils/assetPath';
 import { shouldPromptPermanentRegistration } from './utils/identityState';
-import { isOrderInCourse } from './utils/orderMath';
-import { ALL_STAFF_ROLES, ROLE_LABELS } from './utils/rolePermissions';
+import { isOrderInCourse, resolveAssetUrl } from './utils/orderMath';
+import { ROLE_LABELS } from './utils/rolePermissions';
 import { HistoryView } from './views/HistoryView';
 import { MenuManagerView } from './views/MenuManagerView';
 import { OrdersView } from './views/OrdersView';
@@ -52,6 +50,35 @@ const ALL_NAV_ITEMS: NavDef[] = [
   { id: 'menu', label: 'Menú y Salsas', shortLabel: 'Menú', icon: <UtensilsCrossed className="w-5 h-5" /> },
 ];
 
+const OfflineIndicator: React.FC = () => {
+  const [isOnline, setIsOnline] = useState(
+    typeof navigator !== 'undefined' ? navigator.onLine : true
+  );
+
+  useEffect(() => {
+    const onOnline = () => setIsOnline(true);
+    const onOffline = () => setIsOnline(false);
+    window.addEventListener('online', onOnline);
+    window.addEventListener('offline', onOffline);
+    return () => {
+      window.removeEventListener('online', onOnline);
+      window.removeEventListener('offline', onOffline);
+    };
+  }, []);
+
+  if (isOnline) return null;
+
+  return (
+    <div
+      role="status"
+      className="fixed bottom-20 lg:bottom-4 left-4 z-40 flex items-center gap-2 rounded-xl bg-amber-500 px-3.5 py-2 text-xs font-bold text-neutral-950 shadow-xl border border-amber-300/40"
+    >
+      <WifiOff className="w-4 h-4 shrink-0" />
+      <span>Sin conexión — Trabajando con caché local</span>
+    </div>
+  );
+};
+
 const PosShell: React.FC = () => {
   const {
     sessionMode,
@@ -61,8 +88,6 @@ const PosShell: React.FC = () => {
     activeWaiter,
     myLinkedStaff,
     effectiveRole,
-    previewRole,
-    setPreviewRole,
     permissions,
     isPrimaryAdmin,
     isRealPrimaryAdmin,
@@ -481,11 +506,6 @@ const PosShell: React.FC = () => {
                 <strong className={effectiveRole === 'admin' ? 'text-amber-400' : 'text-white'}>
                   {ROLE_LABELS[effectiveRole]}
                 </strong>
-                {isRealPrimaryAdmin && previewRole !== 'admin' && (
-                  <span className="ml-1.5 px-1.5 py-0.5 rounded bg-amber-500/20 border border-amber-500/40 text-amber-300 text-[10px] font-bold uppercase">
-                    Vista previa
-                  </span>
-                )}
               </span>
               <span aria-hidden="true">·</span>
               <button
@@ -499,7 +519,7 @@ const PosShell: React.FC = () => {
               >
                 <UserCheck className="w-3.5 h-3.5 text-amber-400" />
                 <span>
-                  En turno: {activeWaiter ? activeWaiter.name : isRealPrimaryAdmin ? 'Seleccionar obligatorio' : 'Asocia tu cuenta'}
+                  En turno: {activeWaiter ? activeWaiter.name : 'Asocia tu cuenta'}
                 </span>
               </button>
             </div>
@@ -527,15 +547,13 @@ const PosShell: React.FC = () => {
             className="mb-4 rounded-xl bg-red-950/60 border border-red-700 px-4 py-3 text-xs font-medium text-red-200 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5"
           >
             <span>{cloudError}</span>
-            {sessionMode === 'cloud' && (
-              <button
-                type="button"
-                onClick={() => void signOutSession()}
-                className="min-h-[36px] px-3 rounded-lg bg-red-600/30 border border-red-500/60 text-white font-bold hover:bg-red-600/50 whitespace-nowrap shrink-0"
-              >
-                Cambiar cuenta
-              </button>
-            )}
+            <button
+              type="button"
+              onClick={() => void signOutSession()}
+              className="min-h-[36px] px-3 rounded-lg bg-red-600/30 border border-red-500/60 text-white font-bold hover:bg-red-600/50 whitespace-nowrap shrink-0"
+            >
+              Cambiar cuenta
+            </button>
           </div>
         )}
 
@@ -579,49 +597,14 @@ const PosShell: React.FC = () => {
           </div>
         )}
 
-        {isRealPrimaryAdmin && previewRole !== 'admin' && (
-          <div
-            role="region"
-            aria-label="Selector de vista previa de rol"
-            className="mb-4 rounded-2xl bg-amber-500/10 border border-amber-500/50 p-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5"
-          >
-            <div className="flex items-center gap-2 text-xs text-amber-200">
-              <Eye className="w-4 h-4 text-amber-400 shrink-0" />
-              <span>
-                Previsualizando rol <strong className="text-amber-400">{ROLE_LABELS[previewRole]}</strong> (tu cuenta sigue siendo Administrador principal).
-              </span>
-            </div>
-            <div className="flex flex-wrap items-center gap-1.5">
-              {ALL_STAFF_ROLES.map((role) => (
-                <button
-                  key={role}
-                  type="button"
-                  onClick={() => setPreviewRole(role)}
-                  className={`min-h-[34px] px-3 rounded-lg text-xs font-bold border transition-colors ${
-                    previewRole === role
-                      ? 'bg-amber-500 text-black border-amber-400'
-                      : 'bg-[#141418] text-zinc-200 border-[#27272E] hover:border-amber-500/60'
-                  }`}
-                >
-                  {ROLE_LABELS[role]}
-                </button>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {!activeWaiter && !cloudError && (
+        {!activeWaiter && !cloudError && !isRealPrimaryAdmin && (
           <div className="mb-4 rounded-2xl bg-[#141418] border border-amber-500/70 p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
             <div>
               <p className="text-sm font-bold text-amber-400">
-                {isRealPrimaryAdmin
-                  ? 'Selecciona quién está tomando pedidos'
-                  : 'Asocia tu cuenta para comenzar'}
+                Asocia tu cuenta para comenzar
               </p>
               <p className="text-xs text-zinc-300">
-                {isRealPrimaryAdmin
-                  ? 'Indica tu nombre para que cada comanda y cobro quede registrado a tu turno.'
-                  : 'Elige el nombre con el que aparecerás en el sistema (rol inicial Mesero).'}
+                Elige el nombre con el que aparecerás en el sistema (rol inicial Mesero).
               </p>
             </div>
             <button
@@ -629,7 +612,7 @@ const PosShell: React.FC = () => {
               onClick={() => setWaiterModalOpen(true)}
               className="min-h-[42px] px-4 rounded-xl bg-amber-500 text-black text-xs font-bold hover:bg-amber-400 whitespace-nowrap shrink-0"
             >
-              {isRealPrimaryAdmin ? 'Elegir mi nombre' : 'Asociar mi nombre'}
+              Asociar mi nombre
             </button>
           </div>
         )}
@@ -709,7 +692,7 @@ const PosShell: React.FC = () => {
       </nav>
 
       {/* Modals & Sheets */}
-      {composerOpen && (editingOrder ? permissions.canEditOrders : permissions.canTakeOrders) && (
+      {composerOpen && editingOrder && permissions.canEditOrders && (
         <OrderComposerModal
           open={composerOpen}
           editingOrder={editingOrder}

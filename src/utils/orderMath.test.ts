@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  addOrMergeCartItem,
+  adjustCartLineQuantity,
   buildItemSignature,
   buildOrderItem,
   calculateItemLineTotal,
@@ -11,6 +13,7 @@ import {
   formatCustomizationSummary,
   getNextCyclicOrderRefNumber,
   isOrderInCourse,
+  splitCartLineUnit,
   validateItemSauces,
   validateOrderItemsSauces,
 } from './orderMath';
@@ -220,3 +223,45 @@ test('generates cyclic 1..99 auto reference numbers wrapping cleanly from 99 to 
   assert.equal(formatAutoOrderReference(1), 'Pedido #1');
   assert.equal(formatAutoOrderReference(99), 'Pedido #99');
 });
+
+test('merges matching cart items, splits single units, and adjusts quantities cleanly', () => {
+  const first = buildOrderItem({
+    lineId: 'l1',
+    productId: 'p1',
+    productName: 'Hamburguesa Sencilla',
+    category: 'Hamburguesas',
+    quantity: 1,
+    basePrice: 16000,
+    removedIngredients: [],
+    addedExtras: [],
+    selectedSauces: [],
+    customNote: '',
+  });
+  const duplicate = buildOrderItem({
+    lineId: 'l2',
+    productId: 'p1',
+    productName: 'Hamburguesa Sencilla',
+    category: 'Hamburguesas',
+    quantity: 2,
+    basePrice: 16000,
+    removedIngredients: [],
+    addedExtras: [],
+    selectedSauces: [],
+    customNote: '',
+  });
+
+  const merged = addOrMergeCartItem([first], duplicate);
+  assert.equal(merged.length, 1);
+  assert.equal(merged[0].quantity, 3);
+  assert.equal(merged[0].lineTotal, 48000);
+
+  const split = splitCartLineUnit(merged, 'l1');
+  assert.equal(split.length, 2);
+  assert.equal(split[0].quantity, 2);
+  assert.equal(split[1].quantity, 1);
+
+  const decremented = adjustCartLineQuantity(split, split[1].lineId, -1);
+  assert.equal(decremented.length, 1);
+  assert.equal(decremented[0].quantity, 2);
+});
+

@@ -2,8 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { AlertTriangle, Droplets, Edit3, Lock, Plus, Search, Trash2, X } from 'lucide-react';
 import { usePosStore } from '../services/posStore';
 import type { Product } from '../types/pos';
-import { formatCurrency } from '../utils/orderMath';
-import { resolveAssetUrl } from '../utils/assetPath';
+import { formatCurrency, resolveAssetUrl } from '../utils/orderMath';
 import { ROLE_LABELS } from '../utils/rolePermissions';
 import { ProductEditorModal } from '../components/ProductEditorModal';
 

@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { ArrowLeft, KeyRound, Lock, Mail, ShieldCheck, UserPlus } from 'lucide-react';
 import { usePosStore } from '../services/posStore';
 import { PWAInstallButton } from './PWAInstallBanner';
-import { resolveAssetUrl } from '../utils/assetPath';
+import { resolveAssetUrl } from '../utils/orderMath';
 
 type AuthMode = 'login' | 'register' | 'reset';
 

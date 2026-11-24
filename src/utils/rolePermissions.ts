@@ -1,4 +1,4 @@
-import type { AccountRole, AppTab, ConnectionMode, StaffMember, StaffRole } from '../types/pos';
+import type { AccountRole, AppTab, StaffMember, StaffRole } from '../types/pos';
 
 export const ALL_STAFF_ROLES: StaffRole[] = ['admin', 'mesero', 'cajero', 'cocina'];
 
@@ -10,7 +10,7 @@ export const ROLE_LABELS: Record<StaffRole, string> = {
 };
 
 export const ROLE_DESCRIPTIONS: Record<StaffRole, string> = {
-  admin: 'Acceso total: pedidos, comandas, cobros, ventas, menú y eliminar rastros.',
+  admin: 'Acceso total: pedidos, comandas, cobros, ventas, menú, equipo y eliminar rastros.',
   mesero: 'Toma y edita pedidos, entrega comandas, cobra y anula; sin Ventas, Menú ni eliminar rastros.',
   cajero: 'Cobra pedidos, gestiona transferencias, anula y toma pedidos en caja; sin cocina, Ventas, Menú ni eliminar rastros.',
   cocina: 'Solo pantalla de Comandas en preparación (Tomado → En preparación → Listo); sin cobros, caja, pedidos ni anulaciones.',
@@ -131,30 +131,21 @@ export function getRolePermissions(role: StaffRole): RolePermissions {
 }
 
 export interface EffectiveRoleParams {
-  sessionMode: ConnectionMode | null;
   isRealPrimaryAdmin: boolean;
-  previewRole: StaffRole;
-  demoAccountRole: StaffRole;
   cloudMemberRole: AccountRole;
   myLinkedStaff: StaffMember | null;
 }
 
 export function resolveEffectiveRole({
-  sessionMode,
   isRealPrimaryAdmin,
-  previewRole,
-  demoAccountRole,
   cloudMemberRole,
   myLinkedStaff,
 }: EffectiveRoleParams): StaffRole {
-  if (isRealPrimaryAdmin) {
-    return isValidStaffRole(previewRole) ? previewRole : 'admin';
-  }
-  if (sessionMode === 'demo') {
-    return isValidStaffRole(demoAccountRole) ? demoAccountRole : 'mesero';
-  }
   if (myLinkedStaff && isValidStaffRole(myLinkedStaff.role)) {
     return myLinkedStaff.role;
+  }
+  if (isRealPrimaryAdmin) {
+    return 'admin';
   }
   return cloudMemberRole === 'admin' ? 'admin' : 'mesero';
 }

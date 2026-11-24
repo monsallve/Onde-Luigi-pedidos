@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { CheckCircle2, Eye, MailCheck, RefreshCw, Send, X } from 'lucide-react';
 import { usePosStore } from '../services/posStore';
-import { resolveAssetUrl } from '../utils/assetPath';
+import { resolveAssetUrl } from '../utils/orderMath';
 import { EMAIL_VERIFICATION_COMPANY_NAME } from '../utils/verificationEmailTemplate';
 
 interface Props {

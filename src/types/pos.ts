@@ -19,7 +19,7 @@ export type DateRangePreset = 'hoy' | 'ayer' | 'semana' | 'mes' | 'personalizado
 
 export type AppTab = 'pedidos' | 'comandas' | 'historial' | 'transferencias' | 'ventas' | 'menu';
 
-export type ConnectionMode = 'cloud' | 'demo';
+export type ConnectionMode = 'cloud';
 
 export interface AddonOption {
   id: string;
