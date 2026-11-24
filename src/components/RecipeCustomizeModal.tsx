@@ -6,6 +6,7 @@ import {
   buildOrderItem,
   calculateItemLineTotal,
   formatCurrency,
+  formatWithoutIngredientLabel,
   getAddonQuantity,
   resolveAssetUrl,
   validateItemSauces,
@@ -242,7 +243,7 @@ export const RecipeCustomizeModal: React.FC<Props> = ({
                           : 'bg-[#1C1C22] border-[#27272E] text-zinc-200 hover:border-zinc-500'
                       }`}
                     >
-                      <span className="truncate">Sin {ing}</span>
+                      <span className="truncate">{formatWithoutIngredientLabel(ing)}</span>
                       {isRemoved && <Check className="w-4 h-4 text-red-400 shrink-0" />}
                     </button>
                   );

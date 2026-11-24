@@ -1,8 +1,8 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { AlertTriangle, Droplets, Edit3, Lock, Plus, Search, Trash2, X } from 'lucide-react';
+import { AlertTriangle, Copy, Droplets, Edit3, Lock, Plus, Search, Trash2, X } from 'lucide-react';
 import { usePosStore } from '../services/posStore';
 import type { Product } from '../types/pos';
-import { formatCurrency, resolveAssetUrl } from '../utils/orderMath';
+import { formatCurrency, formatWithoutIngredientLabel, resolveAssetUrl } from '../utils/orderMath';
 import { ROLE_LABELS } from '../utils/rolePermissions';
 import { ProductEditorModal } from '../components/ProductEditorModal';
 
@@ -27,7 +27,12 @@ export const MenuManagerView: React.FC = () => {
 
   const [selectedCategory, setSelectedCategory] = useState('Todas');
   const [searchTerm, setSearchTerm] = useState('');
-  const [editingProduct, setEditingProduct] = useState<Product | null | undefined>(undefined);
+  const [editorState, setEditorState] = useState<
+    | { mode: 'closed' }
+    | { mode: 'create' }
+    | { mode: 'edit'; product: Product }
+    | { mode: 'copy'; source: Product }
+  >({ mode: 'closed' });
 
   const [newSauceName, setNewSauceName] = useState('');
   const [savingSauce, setSavingSauce] = useState(false);
@@ -45,17 +50,17 @@ export const MenuManagerView: React.FC = () => {
           setPendingDelete(null);
           setDeleteError(null);
         }
-      } else if (editingProduct !== undefined) {
+      } else if (editorState.mode !== 'closed') {
         e.preventDefault();
-        setEditingProduct(undefined);
+        setEditorState({ mode: 'closed' });
       }
     };
     window.addEventListener('ondeluigi:back-intercept', handleBackIntercept);
     return () => window.removeEventListener('ondeluigi:back-intercept', handleBackIntercept);
-  }, [pendingDelete, deleting, editingProduct]);
+  }, [pendingDelete, deleting, editorState.mode]);
 
   const categories = useMemo(() => {
-    const set = new Set(products.map((p) => p.category));
+    const set = new Set(products.map((p) => p.category.trim()).filter(Boolean));
     return ['Todas', ...Array.from(set)];
   }, [products]);
 
@@ -131,7 +136,7 @@ export const MenuManagerView: React.FC = () => {
 
         <button
           type="button"
-          onClick={() => setEditingProduct(null)}
+          onClick={() => setEditorState({ mode: 'create' })}
           className="min-h-[46px] px-5 rounded-xl bg-amber-500 text-black text-sm font-bold hover:bg-amber-400 flex items-center justify-center gap-2 whitespace-nowrap shrink-0 shadow-sm"
         >
           <Plus className="w-4 h-4" />
@@ -300,8 +305,8 @@ export const MenuManagerView: React.FC = () => {
 
               {product.removableOptions.length > 0 && (
                 <p className="text-xs text-red-300 leading-relaxed">
-                  <strong>Se puede quitar:</strong>{' '}
-                  {product.removableOptions.map((r) => `Sin ${r}`).join(', ')}
+                  <strong>Quitables:</strong>{' '}
+                  {product.removableOptions.map((r) => formatWithoutIngredientLabel(r)).join(', ')}
                 </p>
               )}
 
@@ -318,20 +323,30 @@ export const MenuManagerView: React.FC = () => {
               )}
             </div>
 
-            <div className="flex items-center gap-2 pt-2 border-t border-[#27272E]">
+            <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-[#27272E]">
               <button
                 type="button"
-                onClick={() => setEditingProduct(product)}
-                className="flex-1 min-h-[42px] px-3 rounded-xl border border-[#27272E] bg-[#1C1C22] text-xs font-semibold text-white hover:border-amber-500 flex items-center justify-center gap-1.5"
+                onClick={() => setEditorState({ mode: 'edit', product })}
+                className="flex-1 min-h-[40px] px-3 rounded-xl border border-[#27272E] bg-[#1C1C22] text-xs font-semibold text-white hover:border-amber-500 flex items-center justify-center gap-1.5 whitespace-nowrap"
               >
                 <Edit3 className="w-3.5 h-3.5 text-amber-400" />
-                <span>Editar receta</span>
+                <span>Editar</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setEditorState({ mode: 'copy', source: product })}
+                aria-label={`Copiar receta de ${product.name}`}
+                className="min-h-[40px] px-3 rounded-xl border border-[#27272E] bg-[#1C1C22] text-xs font-semibold text-zinc-200 hover:border-amber-500 hover:text-amber-300 flex items-center justify-center gap-1.5 whitespace-nowrap"
+              >
+                <Copy className="w-3.5 h-3.5 text-amber-400" />
+                <span>Copiar</span>
               </button>
 
               <button
                 type="button"
                 onClick={() => toggleProductActive(product.id, !product.active)}
-                className={`min-h-[42px] px-3 rounded-xl border text-xs font-semibold transition-colors ${
+                className={`min-h-[40px] px-3 rounded-xl border text-xs font-semibold transition-colors whitespace-nowrap ${
                   product.active
                     ? 'border-emerald-700 bg-emerald-950/60 text-emerald-300 hover:bg-emerald-950'
                     : 'border-[#27272E] bg-[#1C1C22] text-zinc-400'
@@ -347,7 +362,7 @@ export const MenuManagerView: React.FC = () => {
                   setDeleteError(null);
                   setPendingDelete({ kind: 'product', id: product.id, name: product.name });
                 }}
-                className="min-h-[42px] min-w-[42px] flex items-center justify-center rounded-xl border border-red-900/70 bg-red-950/40 text-red-400 hover:bg-red-950"
+                className="min-h-[40px] min-w-[40px] flex items-center justify-center rounded-xl border border-red-900/70 bg-red-950/40 text-red-400 hover:bg-red-950"
               >
                 <Trash2 className="w-4 h-4" />
               </button>
@@ -356,10 +371,11 @@ export const MenuManagerView: React.FC = () => {
         ))}
       </div>
 
-      {editingProduct !== undefined && (
+      {editorState.mode !== 'closed' && (
         <ProductEditorModal
-          product={editingProduct}
-          onClose={() => setEditingProduct(undefined)}
+          product={editorState.mode === 'edit' ? editorState.product : null}
+          copySource={editorState.mode === 'copy' ? editorState.source : null}
+          onClose={() => setEditorState({ mode: 'closed' })}
         />
       )}
 

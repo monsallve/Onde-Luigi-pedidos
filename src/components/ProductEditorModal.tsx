@@ -1,55 +1,87 @@
-import React, { useRef, useState } from 'react';
-import { Droplets, Image as ImageIcon, Plus, Trash2, Upload, X } from 'lucide-react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { Check, Copy, Droplets, Image as ImageIcon, Plus, Trash2, Upload, X } from 'lucide-react';
 import { usePosStore } from '../services/posStore';
 import type { AddonOption, Product } from '../types/pos';
 import {
+  collectMenuCategories,
   createSafeId,
   formatCurrency,
+  formatWithoutIngredientLabel,
+  hasDuplicateProductName,
+  mergeProductIngredientsForEditor,
+  normalizeProductNameKey,
   PRODUCT_IMAGE_MAX_URL_LENGTH,
+  type RecipeIngredientDraft,
   resolveAssetUrl,
+  splitProductIngredientsFromEditor,
+  suggestCopyProductName,
   validateImageFileCandidate,
 } from '../utils/orderMath';
 
 interface Props {
   product?: Product | null;
+  copySource?: Product | null;
   onClose: () => void;
 }
 
-const DEFAULT_CATEGORIES = ['Hamburguesas', 'Perros y Papas', 'Bebidas', 'Combos', 'Adicionales'];
+export const ProductEditorModal: React.FC<Props> = ({ product, copySource, onClose }) => {
+  const { products, saveProduct } = usePosStore();
 
-export const ProductEditorModal: React.FC<Props> = ({ product, onClose }) => {
-  const { saveProduct } = usePosStore();
+  const existingCategories = useMemo(() => collectMenuCategories(products), [products]);
+  const initialTemplate = product || copySource || null;
+  const isEditingExisting = Boolean(product?.id);
 
-  const [name, setName] = useState(product ? product.name : '');
-  const [category, setCategory] = useState(product ? product.category : 'Hamburguesas');
-  const [basePrice, setBasePrice] = useState(product ? String(product.basePrice) : '');
-  const [imageUrl, setImageUrl] = useState(product ? product.imageUrl : '');
+  const [name, setName] = useState(() => {
+    if (product) return product.name;
+    if (copySource) return suggestCopyProductName(copySource.name, products);
+    return '';
+  });
+  const [selectedTemplateId, setSelectedTemplateId] = useState<string>(copySource?.id || '');
+  const [category, setCategory] = useState(() => {
+    const initialCat = initialTemplate?.category?.trim();
+    if (initialCat) return initialCat;
+    return existingCategories[0] || 'Hamburguesas';
+  });
+  const [customCategoryMode, setCustomCategoryMode] = useState(false);
+
+  const [basePrice, setBasePrice] = useState(
+    initialTemplate ? String(initialTemplate.basePrice) : ''
+  );
+  const [imageUrl, setImageUrl] = useState(initialTemplate ? initialTemplate.imageUrl : '');
   const [imageFile, setImageFile] = useState<File | null>(null);
   const [imagePreviewUrl, setImagePreviewUrl] = useState('');
-  const [active, setActive] = useState(product ? product.active : true);
+  const [active, setActive] = useState(initialTemplate ? initialTemplate.active : true);
   const galleryInputRef = useRef<HTMLInputElement>(null);
+  const nameInputRef = useRef<HTMLInputElement>(null);
 
   const [allowSauces, setAllowSauces] = useState(
-    product ? product.allowSauces : true
+    initialTemplate ? initialTemplate.allowSauces : true
   );
   const [minSauces, setMinSauces] = useState(
-    product ? product.minSauces : 1
+    initialTemplate ? initialTemplate.minSauces : 1
   );
   const [maxSauces, setMaxSauces] = useState(
-    product ? product.maxSauces : 4
+    initialTemplate ? initialTemplate.maxSauces : 4
   );
 
-  const [baseRecipe, setBaseRecipe] = useState<string[]>(product ? [...product.baseRecipe] : []);
-  const [recipeInput, setRecipeInput] = useState('');
-
-  const [removableOptions, setRemovableOptions] = useState<string[]>(
-    product ? [...product.removableOptions] : []
+  const [ingredients, setIngredients] = useState<RecipeIngredientDraft[]>(() =>
+    initialTemplate
+      ? mergeProductIngredientsForEditor(
+          initialTemplate.baseRecipe,
+          initialTemplate.removableOptions
+        )
+      : []
   );
-  const [removableInput, setRemovableInput] = useState('');
+  const [ingredientInput, setIngredientInput] = useState('');
+  const [newIngredientRemovable, setNewIngredientRemovable] = useState(true);
 
-  const [addonOptions, setAddonOptions] = useState<AddonOption[]>(
-    product
-      ? product.addonOptions.map((a) => ({ ...a, allowMultiple: a.allowMultiple !== false }))
+  const [addonOptions, setAddonOptions] = useState<AddonOption[]>(() =>
+    initialTemplate
+      ? initialTemplate.addonOptions.map((a) => ({
+          ...a,
+          id: isEditingExisting ? a.id : createSafeId('ext'),
+          allowMultiple: a.allowMultiple !== false,
+        }))
       : []
   );
   const [addonName, setAddonName] = useState('');
@@ -59,18 +91,75 @@ export const ProductEditorModal: React.FC<Props> = ({ product, onClose }) => {
   const [saving, setSaving] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
-  const addBaseIngredient = () => {
-    const val = recipeInput.trim();
-    if (!val || baseRecipe.includes(val)) return;
-    setBaseRecipe((prev) => [...prev, val]);
-    setRecipeInput('');
+  useEffect(() => {
+    if (copySource && nameInputRef.current) {
+      nameInputRef.current.focus();
+      nameInputRef.current.select();
+    }
+  }, [copySource]);
+
+  const isDuplicateName = useMemo(
+    () => hasDuplicateProductName(name, products, product?.id),
+    [name, products, product?.id]
+  );
+
+  const applyTemplateToForm = (templateId: string) => {
+    setSelectedTemplateId(templateId);
+    setErrorMsg(null);
+    if (!templateId) return;
+    const source = products.find((p) => p.id === templateId);
+    if (!source) return;
+
+    setName(suggestCopyProductName(source.name, products));
+    setCategory(source.category.trim() || existingCategories[0] || 'Hamburguesas');
+    setCustomCategoryMode(false);
+    setBasePrice(String(source.basePrice));
+    setImageUrl(source.imageUrl || '');
+    setImageFile(null);
+    setImagePreviewUrl('');
+    setActive(source.active);
+    setAllowSauces(source.allowSauces);
+    setMinSauces(source.minSauces);
+    setMaxSauces(source.maxSauces);
+    setIngredients(
+      mergeProductIngredientsForEditor(source.baseRecipe, source.removableOptions)
+    );
+    setAddonOptions(
+      source.addonOptions.map((a) => ({
+        ...a,
+        id: createSafeId('ext'),
+        allowMultiple: a.allowMultiple !== false,
+      }))
+    );
   };
 
-  const addRemovable = (valOverride?: string) => {
-    const val = (valOverride ?? removableInput).trim();
-    if (!val || removableOptions.includes(val)) return;
-    setRemovableOptions((prev) => [...prev, val]);
-    if (!valOverride) setRemovableInput('');
+  const addIngredient = () => {
+    const clean = ingredientInput.trim().replace(/\s+/g, ' ').slice(0, 80);
+    if (!clean) return;
+    const key = normalizeProductNameKey(clean);
+    if (ingredients.some((item) => normalizeProductNameKey(item.name) === key)) {
+      setErrorMsg(`El ingrediente "${clean}" ya está en la receta.`);
+      return;
+    }
+    setErrorMsg(null);
+    setIngredients((prev) => [...prev, { name: clean, removable: newIngredientRemovable }]);
+    setIngredientInput('');
+  };
+
+  const toggleIngredientRemovable = (nameKey: string) => {
+    setIngredients((prev) =>
+      prev.map((item) =>
+        normalizeProductNameKey(item.name) === nameKey
+          ? { ...item, removable: !item.removable }
+          : item
+      )
+    );
+  };
+
+  const removeIngredient = (nameKey: string) => {
+    setIngredients((prev) =>
+      prev.filter((item) => normalizeProductNameKey(item.name) !== nameKey)
+    );
   };
 
   const addAddon = () => {
@@ -93,7 +182,7 @@ export const ProductEditorModal: React.FC<Props> = ({ product, onClose }) => {
 
   const handleCategoryChange = (val: string) => {
     setCategory(val);
-    if (val.toLowerCase().includes('bebida') && !product) {
+    if (val.toLowerCase().includes('bebida') && !isEditingExisting) {
       setAllowSauces(false);
       setMinSauces(0);
       setMaxSauces(0);
@@ -127,9 +216,22 @@ export const ProductEditorModal: React.FC<Props> = ({ product, onClose }) => {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    const cleanName = name.trim().replace(/\s+/g, ' ');
+    const cleanCategory = category.trim().replace(/\s+/g, ' ');
     const numPrice = Number(basePrice);
-    if (!name.trim()) {
+
+    if (!cleanName) {
       setErrorMsg('El nombre del producto es obligatorio.');
+      return;
+    }
+    if (hasDuplicateProductName(cleanName, products, product?.id)) {
+      setErrorMsg(
+        `Ya existe un producto llamado "${cleanName}". Usa un nombre distinto para este producto.`
+      );
+      return;
+    }
+    if (!cleanCategory) {
+      setErrorMsg('Selecciona o escribe una categoría.');
       return;
     }
     if (Number.isNaN(numPrice) || numPrice < 0) {
@@ -137,13 +239,15 @@ export const ProductEditorModal: React.FC<Props> = ({ product, onClose }) => {
       return;
     }
 
+    const { baseRecipe, removableOptions } = splitProductIngredientsFromEditor(ingredients);
+
     setSaving(true);
     setErrorMsg(null);
     try {
       await saveProduct({
         id: product?.id,
-        name,
-        category,
+        name: cleanName,
+        category: cleanCategory,
         basePrice: numPrice,
         imageUrl,
         imageFile,
@@ -163,6 +267,10 @@ export const ProductEditorModal: React.FC<Props> = ({ product, onClose }) => {
     }
   };
 
+  const categoryMatchesExisting = existingCategories.some(
+    (c) => c.toLowerCase() === category.trim().toLowerCase()
+  );
+
   return (
     <div
       className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/75 backdrop-blur-sm sm:p-4"
@@ -176,7 +284,11 @@ export const ProductEditorModal: React.FC<Props> = ({ product, onClose }) => {
       >
         <div className="px-5 py-4 border-b border-[#27272E] flex items-center justify-between bg-[#101014]">
           <h2 id="product-editor-title" className="font-poster text-xl font-extrabold text-white tracking-wide">
-            {product ? `EDITAR: ${product.name.toUpperCase()}` : 'NUEVO PRODUCTO / BEBIDA'}
+            {product
+              ? `EDITAR: ${product.name.toUpperCase()}`
+              : copySource
+                ? `COPIAR RECETA DE ${copySource.name.toUpperCase()}`
+                : 'NUEVO PRODUCTO / BEBIDA'}
           </h2>
           <button
             type="button"
@@ -195,40 +307,124 @@ export const ProductEditorModal: React.FC<Props> = ({ product, onClose }) => {
             </div>
           )}
 
+          {/* Copy from existing product template (shown when creating/copying) */}
+          {!isEditingExisting && products.length > 0 && (
+            <div className="rounded-xl border border-amber-500/40 bg-[#101014] p-3.5 space-y-1.5">
+              <label
+                htmlFor="copy-template-select"
+                className="flex items-center gap-1.5 text-xs font-bold text-amber-400"
+              >
+                <Copy className="w-3.5 h-3.5" />
+                <span>Copiar receta de otro producto existente (opcional)</span>
+              </label>
+              <select
+                id="copy-template-select"
+                value={selectedTemplateId}
+                onChange={(e) => applyTemplateToForm(e.target.value)}
+                className="w-full min-h-[40px] rounded-xl border border-[#27272E] bg-[#0A0A0A] px-3 text-xs sm:text-sm text-white focus:outline-none focus:ring-2 focus:ring-amber-500"
+              >
+                <option value="">-- Empezar desde cero --</option>
+                {products.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name} · {p.category} ({formatCurrency(p.basePrice)})
+                  </option>
+                ))}
+              </select>
+              <p className="text-[11px] text-zinc-400">
+                Clona ingredientes, opciones quitables, adiciones, salsas, categoría y foto; luego cambia el nombre y ajusta lo que necesites.
+              </p>
+            </div>
+          )}
+
           <div className="grid grid-cols-1 sm:grid-cols-12 gap-3">
             <div className="sm:col-span-6">
               <label htmlFor="prod-name" className="block text-xs font-semibold text-zinc-300 mb-1">
                 Nombre del producto o bebida
               </label>
               <input
+                ref={nameInputRef}
                 id="prod-name"
                 type="text"
                 maxLength={100}
                 value={name}
                 onChange={(e) => setName(e.target.value)}
                 placeholder="Ej. Hamburguesa Mixta o Limonada"
-                className="w-full min-h-[44px] rounded-xl border border-[#27272E] bg-[#0A0A0A] px-3 text-sm text-white focus:outline-none focus:ring-2 focus:ring-amber-500"
+                className={`w-full min-h-[44px] rounded-xl border bg-[#0A0A0A] px-3 text-sm text-white focus:outline-none focus:ring-2 ${
+                  isDuplicateName
+                    ? 'border-red-500 focus:ring-red-500'
+                    : 'border-[#27272E] focus:ring-amber-500'
+                }`}
               />
+              {isDuplicateName && (
+                <p className="text-[11px] text-red-400 font-medium mt-1">
+                  Ya existe un producto con este nombre. Escribe uno diferente.
+                </p>
+              )}
             </div>
 
             <div className="sm:col-span-3">
-              <label htmlFor="prod-category" className="block text-xs font-semibold text-zinc-300 mb-1">
-                Categoría
-              </label>
-              <input
-                id="prod-category"
-                list="prod-category-list"
-                type="text"
-                maxLength={60}
-                value={category}
-                onChange={(e) => handleCategoryChange(e.target.value)}
-                className="w-full min-h-[44px] rounded-xl border border-[#27272E] bg-[#0A0A0A] px-3 text-sm text-white focus:outline-none focus:ring-2 focus:ring-amber-500"
-              />
-              <datalist id="prod-category-list">
-                {DEFAULT_CATEGORIES.map((c) => (
-                  <option key={c} value={c} />
-                ))}
-              </datalist>
+              <div className="flex items-center justify-between mb-1">
+                <label htmlFor="prod-category" className="block text-xs font-semibold text-zinc-300">
+                  Categoría
+                </label>
+                {customCategoryMode && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setCustomCategoryMode(false);
+                      if (!categoryMatchesExisting && existingCategories[0]) {
+                        handleCategoryChange(existingCategories[0]);
+                      }
+                    }}
+                    className="text-[10px] font-semibold text-amber-400 hover:underline"
+                  >
+                    Ver lista
+                  </button>
+                )}
+              </div>
+
+              {!customCategoryMode ? (
+                <select
+                  id="prod-category"
+                  value={
+                    categoryMatchesExisting
+                      ? existingCategories.find(
+                          (c) => c.toLowerCase() === category.trim().toLowerCase()
+                        ) || category
+                      : '__new__'
+                  }
+                  onChange={(e) => {
+                    if (e.target.value === '__new__') {
+                      setCustomCategoryMode(true);
+                      setCategory('');
+                    } else {
+                      handleCategoryChange(e.target.value);
+                    }
+                  }}
+                  className="w-full min-h-[44px] rounded-xl border border-[#27272E] bg-[#0A0A0A] px-2.5 text-sm text-white focus:outline-none focus:ring-2 focus:ring-amber-500"
+                >
+                  {existingCategories.map((c) => (
+                    <option key={c} value={c}>
+                      {c}
+                    </option>
+                  ))}
+                  {!categoryMatchesExisting && category.trim() && (
+                    <option value={category.trim()}>{category.trim()}</option>
+                  )}
+                  <option value="__new__">+ Nueva categoría...</option>
+                </select>
+              ) : (
+                <input
+                  id="prod-category"
+                  type="text"
+                  maxLength={60}
+                  autoFocus
+                  value={category}
+                  onChange={(e) => handleCategoryChange(e.target.value)}
+                  placeholder="Ej. Salchipapas"
+                  className="w-full min-h-[44px] rounded-xl border border-amber-500 bg-[#0A0A0A] px-3 text-sm text-white placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-amber-500"
+                />
+              )}
             </div>
 
             <div className="sm:col-span-3">
@@ -317,112 +513,98 @@ export const ProductEditorModal: React.FC<Props> = ({ product, onClose }) => {
             )}
           </section>
 
-          {/* Base Recipe Ingredients */}
-          <section className="space-y-2 border-t border-[#27272E] pt-4">
-            <label htmlFor="recipe-ing-input" className="block text-xs font-semibold text-zinc-300">
-              Receta / Ingredientes base
-            </label>
-            <div className="flex gap-2">
+          {/* Unified Recipe Ingredients with per-ingredient Quitable / Fijo selection */}
+          <section className="space-y-3 border-t border-[#27272E] pt-4">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1">
+              <label htmlFor="recipe-ing-input" className="block text-xs font-semibold text-zinc-300">
+                Ingredientes de la receta (elige cuáles se pueden quitar al tomar pedidos)
+              </label>
+              <span className="text-[11px] text-zinc-400 tabular-nums">
+                {ingredients.filter((i) => i.removable).length} quitables ·{' '}
+                {ingredients.filter((i) => !i.removable).length} fijos
+              </span>
+            </div>
+
+            <div className="flex flex-col sm:flex-row gap-2">
               <input
                 id="recipe-ing-input"
                 type="text"
-                value={recipeInput}
-                onChange={(e) => setRecipeInput(e.target.value)}
+                maxLength={80}
+                value={ingredientInput}
+                onChange={(e) => setIngredientInput(e.target.value)}
                 onKeyDown={(e) => {
                   if (e.key === 'Enter') {
                     e.preventDefault();
-                    addBaseIngredient();
+                    addIngredient();
                   }
                 }}
-                placeholder="Ej. Carne de res, Queso, Papitas ripio..."
+                placeholder="Ej. Carne de res, Queso, Papa ripio..."
                 className="flex-1 min-h-[42px] rounded-xl border border-[#27272E] bg-[#0A0A0A] px-3 text-sm text-white placeholder:text-zinc-500"
               />
-              <button
-                type="button"
-                onClick={addBaseIngredient}
-                className="min-h-[42px] px-4 rounded-xl bg-amber-500 text-black text-xs font-bold hover:bg-amber-400 whitespace-nowrap shrink-0"
-              >
-                Añadir
-              </button>
-            </div>
-            {baseRecipe.length > 0 && (
-              <div className="flex flex-wrap gap-1.5 pt-1">
-                {baseRecipe.map((ing) => (
-                  <div
-                    key={ing}
-                    className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-[#1C1C22] border border-[#27272E] text-xs font-medium text-zinc-200"
-                  >
-                    <span>{ing}</span>
-                    {!removableOptions.includes(ing) && (
-                      <button
-                        type="button"
-                        onClick={() => addRemovable(ing)}
-                        title="Permitir quitar este ingrediente al tomar pedidos"
-                        className="text-[10px] text-amber-400 hover:underline font-bold"
-                      >
-                        +Quitable
-                      </button>
-                    )}
-                    <button
-                      type="button"
-                      aria-label={`Quitar ingrediente ${ing} de receta`}
-                      onClick={() => setBaseRecipe((p) => p.filter((x) => x !== ing))}
-                      className="text-zinc-400 hover:text-red-400"
-                    >
-                      <X className="w-3.5 h-3.5" />
-                    </button>
-                  </div>
-                ))}
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => setNewIngredientRemovable((v) => !v)}
+                  title="Define si este ingrediente se podrá quitar al tomar el pedido"
+                  className={`min-h-[42px] px-3 rounded-xl border text-xs font-bold flex items-center gap-1.5 whitespace-nowrap shrink-0 transition-colors ${
+                    newIngredientRemovable
+                      ? 'border-red-600/80 bg-red-950/50 text-red-200'
+                      : 'border-[#27272E] bg-[#1C1C22] text-zinc-300'
+                  }`}
+                >
+                  {newIngredientRemovable && <Check className="w-3.5 h-3.5 text-red-400 shrink-0" />}
+                  <span>{newIngredientRemovable ? 'Quitable' : 'Fijo'}</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={addIngredient}
+                  className="min-h-[42px] px-4 rounded-xl bg-amber-500 text-black text-xs font-bold hover:bg-amber-400 whitespace-nowrap shrink-0"
+                >
+                  Añadir
+                </button>
               </div>
-            )}
-          </section>
-
-          {/* Removable options */}
-          <section className="space-y-2 border-t border-[#27272E] pt-4">
-            <label htmlFor="removable-ing-input" className="block text-xs font-semibold text-zinc-300">
-              Ingredientes que el cliente puede QUITAR (Ej. Sin cebolla, Sin tomate)
-            </label>
-            <div className="flex gap-2">
-              <input
-                id="removable-ing-input"
-                type="text"
-                value={removableInput}
-                onChange={(e) => setRemovableInput(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') {
-                    e.preventDefault();
-                    addRemovable();
-                  }
-                }}
-                placeholder="Ej. Cebolla, Papitas ripio..."
-                className="flex-1 min-h-[42px] rounded-xl border border-[#27272E] bg-[#0A0A0A] px-3 text-sm text-white placeholder:text-zinc-500"
-              />
-              <button
-                type="button"
-                onClick={() => addRemovable()}
-                className="min-h-[42px] px-4 rounded-xl border border-[#27272E] bg-[#1C1C22] text-white text-xs font-semibold hover:border-zinc-500 whitespace-nowrap shrink-0"
-              >
-                Agregar opción
-              </button>
             </div>
-            {removableOptions.length > 0 && (
-              <div className="flex flex-wrap gap-1.5 pt-1">
-                {removableOptions.map((ing) => (
-                  <div
-                    key={ing}
-                    className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-red-950/50 border border-red-700 text-xs font-medium text-red-200"
-                  >
-                    <span>Sin {ing}</span>
-                    <button
-                      type="button"
-                      aria-label={`Eliminar opción Sin ${ing}`}
-                      onClick={() => setRemovableOptions((p) => p.filter((x) => x !== ing))}
-                      className="text-red-400 hover:text-red-200"
+
+            {ingredients.length > 0 && (
+              <div className="divide-y divide-[#27272E] border border-[#27272E] rounded-xl overflow-hidden bg-[#0A0A0A]">
+                {ingredients.map((ing) => {
+                  const key = normalizeProductNameKey(ing.name);
+                  return (
+                    <div
+                      key={key}
+                      className="px-3 py-2 flex items-center justify-between gap-2 text-xs"
                     >
-                      <X className="w-3.5 h-3.5" />
-                    </button>
-                  </div>
-                ))}
+                      <span className="font-semibold text-white truncate">{ing.name}</span>
+                      <div className="flex items-center gap-2 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => toggleIngredientRemovable(key)}
+                          aria-pressed={ing.removable}
+                          className={`min-h-[32px] px-2.5 rounded-lg border text-[11px] font-semibold flex items-center gap-1.5 transition-colors whitespace-nowrap ${
+                            ing.removable
+                              ? 'border-red-700 bg-red-950/50 text-red-200 hover:bg-red-950'
+                              : 'border-[#27272E] bg-[#1C1C22] text-zinc-300 hover:border-zinc-500'
+                          }`}
+                        >
+                          {ing.removable && <Check className="w-3 h-3 text-red-400 shrink-0" />}
+                          <span>
+                            {ing.removable
+                              ? `Quitable (${formatWithoutIngredientLabel(ing.name)})`
+                              : 'Fijo (no quitable)'}
+                          </span>
+                        </button>
+                        <button
+                          type="button"
+                          aria-label={`Eliminar ingrediente ${ing.name} de receta`}
+                          onClick={() => removeIngredient(key)}
+                          className="min-h-[32px] min-w-[32px] flex items-center justify-center rounded-lg text-zinc-400 hover:text-red-400 hover:bg-red-950/40"
+                        >
+                          <X className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
             )}
           </section>
@@ -643,10 +825,16 @@ export const ProductEditorModal: React.FC<Props> = ({ product, onClose }) => {
           </button>
           <button
             type="submit"
-            disabled={saving}
+            disabled={saving || isDuplicateName}
             className="min-h-[44px] px-6 rounded-xl bg-amber-500 text-black text-sm font-bold hover:bg-amber-400 disabled:opacity-60 transition-colors"
           >
-            {saving ? 'Guardando...' : product ? 'Guardar cambios' : 'Crear producto'}
+            {saving
+              ? 'Guardando...'
+              : product
+                ? 'Guardar cambios'
+                : copySource
+                  ? 'Crear producto copiado'
+                  : 'Crear producto'}
           </button>
         </div>
       </form>

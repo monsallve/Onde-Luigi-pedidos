@@ -72,6 +72,7 @@ import {
   diffOrderItems,
   formatAutoOrderReference,
   getNextCyclicOrderRefNumber,
+  hasDuplicateProductName,
   normalizeProductImageUrl,
   ORDER_STATUS_LABELS,
   PAYMENT_METHOD_LABELS,
@@ -1504,7 +1505,13 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     async (input: SaveProductInput) => {
       requireAdmin();
       requireCloud();
-      if (!input.name.trim()) throw new Error('El nombre del producto es obligatorio.');
+      const cleanName = input.name.trim().replace(/\s+/g, ' ').slice(0, 100);
+      if (!cleanName) throw new Error('El nombre del producto es obligatorio.');
+      if (hasDuplicateProductName(cleanName, products, input.id)) {
+        throw new Error(
+          `Ya existe un producto llamado "${cleanName}". No pueden haber dos productos con el mismo nombre.`
+        );
+      }
       if (!Number.isFinite(input.basePrice) || input.basePrice < 0) {
         throw new Error('El precio base debe ser válido.');
       }
@@ -1525,8 +1532,8 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       }
 
       const payload = {
-        name: input.name.trim().slice(0, 100),
-        category: input.category.trim().slice(0, 60) || 'General',
+        name: cleanName,
+        category: input.category.trim().replace(/\s+/g, ' ').slice(0, 60) || 'General',
         basePrice: Math.round(input.basePrice),
         imageUrl: resolvedImageUrl,
         baseRecipe: input.baseRecipe.map((s) => s.trim()).filter(Boolean).slice(0, 30),

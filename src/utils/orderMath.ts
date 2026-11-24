@@ -137,10 +137,19 @@ export function formatDateTimeShort(ms: number): string {
   });
 }
 
+export function formatWithoutIngredientLabel(ingredient: string): string {
+  const clean = ingredient.trim();
+  if (!clean) return '';
+  if (/^sin\s+/i.test(clean)) {
+    return `Sin ${clean.slice(4).trim()}`;
+  }
+  return `Sin ${clean}`;
+}
+
 export function formatCustomizationSummary(item: OrderItem): string {
   const parts: string[] = [];
   if (item.removedIngredients.length > 0) {
-    parts.push(item.removedIngredients.map((ing) => `Sin ${ing}`).join(', '));
+    parts.push(item.removedIngredients.map((ing) => formatWithoutIngredientLabel(ing)).join(', '));
   }
   if (item.selectedSauces && item.selectedSauces.length > 0) {
     parts.push(`Salsas (${item.selectedSauces.length}): ${item.selectedSauces.join(', ')}`);
@@ -431,4 +440,138 @@ export function rankProductsByInteraction<T extends Pick<Product, 'id'>>(
     salesCounts,
   };
 }
+
+export const DEFAULT_MENU_CATEGORIES = [
+  'Hamburguesas',
+  'Perros y Papas',
+  'Bebidas',
+  'Combos',
+  'Adicionales',
+] as const;
+
+export function collectMenuCategories(
+  products: Pick<Product, 'category'>[],
+  defaults: readonly string[] = DEFAULT_MENU_CATEGORIES
+): string[] {
+  const seen = new Set<string>();
+  const categories: string[] = [];
+
+  for (const source of [...products.map((p) => p.category), ...defaults]) {
+    const clean = (source || '').trim().replace(/\s+/g, ' ').slice(0, 60);
+    if (!clean) continue;
+    const key = clean.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    categories.push(clean);
+  }
+
+  return categories;
+}
+
+export function normalizeProductNameKey(name: string): string {
+  return (name || '').trim().replace(/\s+/g, ' ').toLowerCase();
+}
+
+export function hasDuplicateProductName(
+  name: string,
+  products: Pick<Product, 'id' | 'name'>[],
+  excludeProductId?: string
+): boolean {
+  const key = normalizeProductNameKey(name);
+  if (!key) return false;
+  return products.some(
+    (p) => p.id !== excludeProductId && normalizeProductNameKey(p.name) === key
+  );
+}
+
+export function suggestCopyProductName(
+  sourceName: string,
+  products: Pick<Product, 'id' | 'name'>[]
+): string {
+  const baseClean = (sourceName || '').trim().replace(/\s+/g, ' ');
+  if (!baseClean) return '';
+
+  const candidateFirst = `${baseClean.slice(0, 92)} (Copia)`;
+  if (!hasDuplicateProductName(candidateFirst, products)) {
+    return candidateFirst;
+  }
+
+  let index = 2;
+  while (index < 100) {
+    const suffix = ` (Copia ${index})`;
+    const candidate = `${baseClean.slice(0, 100 - suffix.length)}${suffix}`;
+    if (!hasDuplicateProductName(candidate, products)) {
+      return candidate;
+    }
+    index += 1;
+  }
+  return candidateFirst;
+}
+
+export interface RecipeIngredientDraft {
+  name: string;
+  removable: boolean;
+}
+
+export function mergeProductIngredientsForEditor(
+  baseRecipe: string[],
+  removableOptions: string[]
+): RecipeIngredientDraft[] {
+  const removableKeys = new Set(
+    removableOptions.map((r) => normalizeProductNameKey(r)).filter(Boolean)
+  );
+  const seen = new Set<string>();
+  const result: RecipeIngredientDraft[] = [];
+
+  for (const raw of baseRecipe) {
+    const clean = (raw || '').trim();
+    const key = normalizeProductNameKey(clean);
+    if (!clean || seen.has(key)) continue;
+    seen.add(key);
+    result.push({
+      name: clean,
+      removable: removableKeys.has(key),
+    });
+  }
+
+  for (const rawRemovable of removableOptions) {
+    const clean = (rawRemovable || '').trim();
+    const key = normalizeProductNameKey(clean);
+    if (!clean || seen.has(key)) continue;
+    seen.add(key);
+    result.push({
+      name: clean,
+      removable: true,
+    });
+  }
+
+  return result;
+}
+
+export function splitProductIngredientsFromEditor(
+  ingredients: RecipeIngredientDraft[]
+): {
+  baseRecipe: string[];
+  removableOptions: string[];
+} {
+  const seen = new Set<string>();
+  const baseRecipe: string[] = [];
+  const removableOptions: string[] = [];
+
+  for (const item of ingredients) {
+    const clean = (item.name || '').trim().slice(0, 80);
+    const key = normalizeProductNameKey(clean);
+    if (!clean || seen.has(key)) continue;
+    seen.add(key);
+    if (baseRecipe.length < 30) {
+      baseRecipe.push(clean);
+      if (item.removable && removableOptions.length < 30) {
+        removableOptions.push(clean);
+      }
+    }
+  }
+
+  return { baseRecipe, removableOptions };
+}
+
 

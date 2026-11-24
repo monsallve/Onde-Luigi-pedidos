@@ -14,6 +14,7 @@ import type { OrderItem, Product } from '../types/pos';
 import {
   formatCurrency,
   formatCustomizationSummary,
+  formatWithoutIngredientLabel,
   getAddonQuantity,
   resolveAssetUrl,
 } from '../utils/orderMath';
@@ -228,7 +229,7 @@ export const OrderCartItemsList: React.FC<OrderCartItemsListProps> = ({
                 <p className="text-sm font-bold text-white leading-snug">{item.productName}</p>
                 {item.removedIngredients.length > 0 && (
                   <p className="text-xs text-red-300 font-medium mt-0.5">
-                    {item.removedIngredients.map((r) => `Sin ${r}`).join(', ')}
+                    ({item.removedIngredients.map((r) => formatWithoutIngredientLabel(r)).join(', ')})
                   </p>
                 )}
                 {item.selectedSauces.length > 0 && (

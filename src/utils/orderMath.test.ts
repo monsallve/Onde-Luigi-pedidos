@@ -8,15 +8,21 @@ import {
   calculateItemLineTotal,
   calculateItemUnitPrice,
   calculateOrderTotals,
+  collectMenuCategories,
   computeProductSalesCounts,
   diffOrderItems,
   formatAutoOrderReference,
   formatCustomizationSummary,
+  formatWithoutIngredientLabel,
   getNextCyclicOrderRefNumber,
+  hasDuplicateProductName,
   isOrderInCourse,
+  mergeProductIngredientsForEditor,
   normalizeProductImageUrl,
   rankProductsByInteraction,
   splitCartLineUnit,
+  splitProductIngredientsFromEditor,
+  suggestCopyProductName,
   validateImageFileCandidate,
   validateItemSauces,
   validateOrderItemsSauces,
@@ -366,4 +372,61 @@ test('computes non-cancelled sales counts and ranks most-interacted products fir
     ['p_mixta', 'p_hotdog', 'p_soda', 'p_classic']
   );
 });
+
+test('collects existing custom categories plus defaults without case duplicates', () => {
+  const cats = collectMenuCategories([
+    { category: 'Salchipapas' },
+    { category: 'hamburguesas' },
+    { category: '  Mazorcadas  ' },
+    { category: 'Salchipapas' },
+  ]);
+  assert.deepEqual(cats, [
+    'Salchipapas',
+    'hamburguesas',
+    'Mazorcadas',
+    'Perros y Papas',
+    'Bebidas',
+    'Combos',
+    'Adicionales',
+  ]);
+});
+
+test('detects duplicate product names case-insensitively and suggests unique copy names', () => {
+  const existing = [
+    { id: 'p1', name: 'Hamburguesa Mixta' },
+    { id: 'p2', name: 'Hamburguesa Mixta (Copia)' },
+  ];
+
+  assert.equal(hasDuplicateProductName('hamburguesa   mixta ', existing), true);
+  assert.equal(hasDuplicateProductName('Hamburguesa Mixta', existing, 'p1'), false);
+  assert.equal(hasDuplicateProductName('Hamburguesa Mixta', existing, 'p2'), true);
+  assert.equal(hasDuplicateProductName('Hamburguesa Especial', existing), false);
+
+  assert.equal(suggestCopyProductName('Hamburguesa Mixta', existing), 'Hamburguesa Mixta (Copia 2)');
+  assert.equal(
+    suggestCopyProductName('Perro Especial', existing),
+    'Perro Especial (Copia)'
+  );
+});
+
+test('merges and splits unified recipe ingredients with per-ingredient removable toggle and labels', () => {
+  const merged = mergeProductIngredientsForEditor(
+    ['Pan brioche', 'Carne de res', 'Papa ripio'],
+    ['papa ripio', 'Cebolla']
+  );
+  assert.deepEqual(merged, [
+    { name: 'Pan brioche', removable: false },
+    { name: 'Carne de res', removable: false },
+    { name: 'Papa ripio', removable: true },
+    { name: 'Cebolla', removable: true },
+  ]);
+
+  const split = splitProductIngredientsFromEditor(merged);
+  assert.deepEqual(split.baseRecipe, ['Pan brioche', 'Carne de res', 'Papa ripio', 'Cebolla']);
+  assert.deepEqual(split.removableOptions, ['Papa ripio', 'Cebolla']);
+
+  assert.equal(formatWithoutIngredientLabel('papa ripio'), 'Sin papa ripio');
+  assert.equal(formatWithoutIngredientLabel('Sin cebolla'), 'Sin cebolla');
+});
+
 
