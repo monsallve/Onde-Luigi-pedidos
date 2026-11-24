@@ -59,9 +59,16 @@ test('getRolePermissions enforces strict capability boundaries across all 4 role
   assert.equal(admin.canManageMenu, true);
   assert.equal(admin.canHardDelete, true);
   assert.equal(admin.canManageTeam, true);
+  assert.equal(admin.canManageShifts, true);
+  assert.equal(admin.canAuditShiftDifferences, true);
 
   const mesero = getRolePermissions('mesero');
-  assert.deepEqual(mesero.allowedTabs, ['pedidos', 'comandas', 'historial', 'transferencias']);
+  assert.deepEqual(mesero.allowedTabs, [
+    'pedidos',
+    'comandas',
+    'historial',
+    'transferencias',
+  ]);
   assert.equal(mesero.canTakeOrders, true);
   assert.equal(mesero.canDeliverOrders, true);
   assert.equal(mesero.canManagePayments, true);
@@ -70,9 +77,16 @@ test('getRolePermissions enforces strict capability boundaries across all 4 role
   assert.equal(mesero.canManageMenu, false);
   assert.equal(mesero.canHardDelete, false);
   assert.equal(mesero.canManageTeam, false);
+  assert.equal(mesero.canManageShifts, true);
+  assert.equal(mesero.canAuditShiftDifferences, false);
 
   const cajero = getRolePermissions('cajero');
-  assert.deepEqual(cajero.allowedTabs, ['pedidos', 'comandas', 'historial', 'transferencias']);
+  assert.deepEqual(cajero.allowedTabs, [
+    'pedidos',
+    'comandas',
+    'historial',
+    'transferencias',
+  ]);
   assert.equal(cajero.defaultTab, 'comandas');
   assert.equal(cajero.canManagePayments, true);
   assert.equal(cajero.canDeliverOrders, true);
@@ -80,6 +94,8 @@ test('getRolePermissions enforces strict capability boundaries across all 4 role
   assert.equal(cajero.canViewSales, false);
   assert.equal(cajero.canManageMenu, false);
   assert.equal(cajero.canHardDelete, false);
+  assert.equal(cajero.canManageShifts, true);
+  assert.equal(cajero.canAuditShiftDifferences, false);
 
   const cocina = getRolePermissions('cocina');
   assert.deepEqual(cocina.allowedTabs, ['comandas']);
@@ -95,6 +111,8 @@ test('getRolePermissions enforces strict capability boundaries across all 4 role
   assert.equal(cocina.canViewSales, false);
   assert.equal(cocina.canManageMenu, false);
   assert.equal(cocina.canHardDelete, false);
+  assert.equal(cocina.canManageShifts, false);
+  assert.equal(cocina.canAuditShiftDifferences, false);
 });
 
 test('resolveEffectiveRole applies the real StaffMember role directly for Principal Admin and team users', () => {

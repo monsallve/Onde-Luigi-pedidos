@@ -10,6 +10,7 @@
         "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128 },
         "ownerEmail": { "type": "string", "minLength": 3, "maxLength": 160 },
         "authorizedEmails": { "type": "array" },
+        "billingConfig": { "type": "object" },
         "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" }
       },
@@ -86,7 +87,7 @@
         "name": { "type": "string", "minLength": 1, "maxLength": 100 },
         "category": { "type": "string", "minLength": 1, "maxLength": 60 },
         "basePrice": { "type": "number" },
-        "imageUrl": { "type": "string", "maxLength": 500 },
+        "imageUrl": { "type": "string", "maxLength": 250000 },
         "baseRecipe": { "type": "array" },
         "removableOptions": { "type": "array" },
         "addonOptions": { "type": "array" },
@@ -121,6 +122,11 @@
         "notes": { "type": "string", "maxLength": 400 },
         "receiptCount": { "type": "number" },
         "latestReceiptUrl": { "type": "string", "maxLength": 250000 },
+        "customerId": { "type": "string", "maxLength": 128 },
+        "customerDocument": { "type": "string", "maxLength": 40 },
+        "customerName": { "type": "string", "maxLength": 120 },
+        "customerPhone": { "type": "string", "maxLength": 40 },
+        "customerEmail": { "type": "string", "maxLength": 160 },
         "voidReason": { "type": "string", "maxLength": 240 },
         "voidedByName": { "type": "string", "maxLength": 80 },
         "voidedAtMs": { "type": "number" },
@@ -180,6 +186,86 @@
         "createdAt": { "type": "string", "format": "date-time" }
       },
       "required": ["id", "orderId", "orderNumber", "orderReference", "amount", "imageUrl", "storagePath", "waiterId", "waiterName", "paymentStatus", "notes", "ownerUid", "createdByUid", "allowedEmails", "createdAt"]
+    },
+    "Shift": {
+      "title": "Shift",
+      "description": "Cash drawer opening/closing shift record with selective used payment methods and admin-only cash reconciliation.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "status": { "type": "string", "enum": ["abierto", "cerrado"] },
+        "openingBaseAmount": { "type": "number" },
+        "openingNote": { "type": "string", "maxLength": 300 },
+        "openedByStaffId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "openedByName": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "openedByUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "closedByStaffId": { "type": "string", "maxLength": 128 },
+        "closedByName": { "type": "string", "maxLength": 80 },
+        "closedByUid": { "type": "string", "maxLength": 128 },
+        "closingNote": { "type": "string", "maxLength": 300 },
+        "usedPaymentMethods": { "type": "array" },
+        "declaredClosingBase": { "type": "number" },
+        "declaredByMethod": { "type": "object" },
+        "expectedBaseAmount": { "type": "number" },
+        "expectedByMethod": { "type": "object" },
+        "expectedTotal": { "type": "number" },
+        "declaredTotal": { "type": "number" },
+        "differenceTotal": { "type": "number" },
+        "paidOrdersCount": { "type": "number" },
+        "pendingOrdersCount": { "type": "number" },
+        "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "createdByUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "allowedEmails": { "type": "array" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "id",
+        "status",
+        "openingBaseAmount",
+        "openingNote",
+        "openedByStaffId",
+        "openedByName",
+        "openedByUid",
+        "closedByStaffId",
+        "closedByName",
+        "closedByUid",
+        "closingNote",
+        "usedPaymentMethods",
+        "declaredClosingBase",
+        "declaredByMethod",
+        "expectedBaseAmount",
+        "expectedByMethod",
+        "expectedTotal",
+        "declaredTotal",
+        "differenceTotal",
+        "paidOrdersCount",
+        "pendingOrdersCount",
+        "ownerUid",
+        "createdByUid",
+        "allowedEmails",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "Customer": {
+      "title": "Customer",
+      "description": "Saved customer profile (NIT or Cedula) for optional POS receipt generation.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "documentNumber": { "type": "string", "minLength": 1, "maxLength": 40 },
+        "name": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "phone": { "type": "string", "maxLength": 40 },
+        "email": { "type": "string", "maxLength": 160 },
+        "notes": { "type": "string", "maxLength": 300 },
+        "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "createdByUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "allowedEmails": { "type": "array" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "documentNumber", "name", "phone", "email", "notes", "ownerUid", "createdByUid", "allowedEmails", "createdAt", "updatedAt"]
     }
   },
   "firestore": {
@@ -218,6 +304,14 @@
     "/workspaces/{workspaceId}/transfers/{transferId}": {
       "schema": { "$ref": "#/entities/TransferReceipt" },
       "description": "Uploaded bank transfer receipt photos and metadata."
+    },
+    "/workspaces/{workspaceId}/shifts/{shiftId}": {
+      "schema": { "$ref": "#/entities/Shift" },
+      "description": "Opening/closing cash drawer shifts and reconciliation records."
+    },
+    "/workspaces/{workspaceId}/customers/{customerId}": {
+      "schema": { "$ref": "#/entities/Customer" },
+      "description": "Saved customer directory (NIT/Cedula) for optional receipts."
     }
   }
 }

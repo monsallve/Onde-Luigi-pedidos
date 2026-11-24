@@ -17,6 +17,8 @@ import { ADMIN_BOOTSTRAP_EMAIL, buildInitialCatalogSeed } from '../data/initialC
 import type {
   AccountRole,
   AddonOption,
+  BusinessBillingConfig,
+  Customer,
   Movement,
   Order,
   OrderItem,
@@ -25,10 +27,13 @@ import type {
   PaymentStatus,
   Product,
   Sauce,
+  Shift,
+  ShiftStatus,
   StaffMember,
-  StaffRole,
+  TrackedPaymentMethod,
   TransferReceipt,
 } from '../types/pos';
+import { DEFAULT_BILLING_CONFIG, normalizeBillingConfig } from '../utils/billingUtils';
 import { findLinkedStaffMember } from '../utils/identityState';
 import { isValidStaffRole } from '../utils/rolePermissions';
 
@@ -132,11 +137,32 @@ export function mapOrderDoc(d: Record<string, unknown>): Order {
     notes: String(d.notes || ''),
     receiptCount: Number(d.receiptCount) || 0,
     latestReceiptUrl: String(d.latestReceiptUrl || ''),
+    customerId: d.customerId ? String(d.customerId) : undefined,
+    customerDocument: d.customerDocument ? String(d.customerDocument) : undefined,
+    customerName: d.customerName ? String(d.customerName) : undefined,
+    customerPhone: d.customerPhone ? String(d.customerPhone) : undefined,
+    customerEmail: d.customerEmail ? String(d.customerEmail) : undefined,
     voidReason: d.voidReason ? String(d.voidReason) : undefined,
     voidedByName: d.voidedByName ? String(d.voidedByName) : undefined,
     voidedAtMs: d.voidedAtMs ? Number(d.voidedAtMs) : undefined,
     ownerUid: String(d.ownerUid),
     createdByUid: String(d.createdByUid),
+    allowedEmails: Array.isArray(d.allowedEmails) ? (d.allowedEmails as string[]) : [],
+    createdAtMs: toMillis(d.createdAt),
+    updatedAtMs: toMillis(d.updatedAt),
+  };
+}
+
+export function mapCustomerDoc(d: Record<string, unknown>, fallbackId = ''): Customer {
+  return {
+    id: String(d.id || fallbackId),
+    documentNumber: String(d.documentNumber || ''),
+    name: String(d.name || ''),
+    phone: String(d.phone || ''),
+    email: String(d.email || ''),
+    notes: String(d.notes || ''),
+    ownerUid: String(d.ownerUid || ''),
+    createdByUid: String(d.createdByUid || ''),
     allowedEmails: Array.isArray(d.allowedEmails) ? (d.allowedEmails as string[]) : [],
     createdAtMs: toMillis(d.createdAt),
     updatedAtMs: toMillis(d.updatedAt),
@@ -186,11 +212,66 @@ export function mapTransferDoc(d: Record<string, unknown>): TransferReceipt {
   };
 }
 
+function parseMethodMap(raw: unknown): Partial<Record<TrackedPaymentMethod, number>> {
+  if (!raw || typeof raw !== 'object') return {};
+  const record = raw as Record<string, unknown>;
+  const out: Partial<Record<TrackedPaymentMethod, number>> = {};
+  for (const key of ['efectivo', 'transferencia', 'tarjeta', 'otro'] as const) {
+    if (record[key] !== undefined && Number.isFinite(Number(record[key]))) {
+      out[key] = Number(record[key]);
+    }
+  }
+  return out;
+}
+
+export function mapShiftDoc(d: Record<string, unknown>, fallbackId = ''): Shift {
+  const status: ShiftStatus = d.status === 'cerrado' ? 'cerrado' : 'abierto';
+  const openedAtMs = toMillis(d.createdAt);
+  const closedAtMs = status === 'cerrado' ? toMillis(d.updatedAt) : 0;
+  const rawMethods = Array.isArray(d.usedPaymentMethods) ? d.usedPaymentMethods : [];
+  const usedPaymentMethods = rawMethods.filter(
+    (m): m is TrackedPaymentMethod =>
+      m === 'efectivo' || m === 'transferencia' || m === 'tarjeta' || m === 'otro'
+  );
+
+  return {
+    id: String(d.id || fallbackId),
+    status,
+    openingBaseAmount: Number(d.openingBaseAmount) || 0,
+    openingNote: String(d.openingNote || ''),
+    openedByStaffId: String(d.openedByStaffId || ''),
+    openedByName: String(d.openedByName || ''),
+    openedByUid: String(d.openedByUid || ''),
+    openedAtMs,
+    closedAtMs,
+    closedByStaffId: String(d.closedByStaffId || ''),
+    closedByName: String(d.closedByName || ''),
+    closedByUid: String(d.closedByUid || ''),
+    closingNote: String(d.closingNote || ''),
+    usedPaymentMethods,
+    declaredClosingBase: Number(d.declaredClosingBase) || 0,
+    declaredByMethod: parseMethodMap(d.declaredByMethod),
+    expectedBaseAmount: Number(d.expectedBaseAmount) || 0,
+    expectedByMethod: parseMethodMap(d.expectedByMethod),
+    expectedTotal: Number(d.expectedTotal) || 0,
+    declaredTotal: Number(d.declaredTotal) || 0,
+    differenceTotal: Number(d.differenceTotal) || 0,
+    paidOrdersCount: Number(d.paidOrdersCount) || 0,
+    pendingOrdersCount: Number(d.pendingOrdersCount) || 0,
+    ownerUid: String(d.ownerUid || ''),
+    createdByUid: String(d.createdByUid || ''),
+    allowedEmails: Array.isArray(d.allowedEmails) ? (d.allowedEmails as string[]) : [],
+    createdAtMs: openedAtMs,
+    updatedAtMs: toMillis(d.updatedAt),
+  };
+}
+
 export interface WorkspaceBootstrapInfo {
   ownerUid: string;
   authorizedEmails: string[];
   allowSelfRegistration: boolean;
   memberRole: AccountRole;
+  billingConfig: BusinessBillingConfig;
 }
 
 export async function resolveOrBootstrapCloudWorkspace(
@@ -216,6 +297,7 @@ export async function resolveOrBootstrapCloudWorkspace(
           ownerUid: user.uid,
           ownerEmail: userEmail,
           authorizedEmails: initialEmails,
+          billingConfig: DEFAULT_BILLING_CONFIG,
           createdAt: serverTimestamp(),
           updatedAt: serverTimestamp(),
         });
@@ -280,10 +362,16 @@ export async function resolveOrBootstrapCloudWorkspace(
           authorizedEmails: initialEmails,
           allowSelfRegistration: true,
           memberRole: 'admin',
+          billingConfig: DEFAULT_BILLING_CONFIG,
         };
       }
 
-      const data = snap.data() as { name?: string; ownerUid: string; authorizedEmails?: string[] };
+      const data = snap.data() as {
+        name?: string;
+        ownerUid: string;
+        authorizedEmails?: string[];
+        billingConfig?: Partial<BusinessBillingConfig>;
+      };
       const emails = Array.isArray(data.authorizedEmails)
         ? data.authorizedEmails.map((e) => e.toLowerCase())
         : [ADMIN_BOOTSTRAP_EMAIL];
@@ -358,6 +446,7 @@ export async function resolveOrBootstrapCloudWorkspace(
         authorizedEmails: emails,
         allowSelfRegistration: currentAllowSelf,
         memberRole: 'admin',
+        billingConfig: normalizeBillingConfig(data.billingConfig),
       };
     } catch (error) {
       handleFirestoreError(error, OperationType.GET, `workspaces/${SHARED_WORKSPACE_ID}`);
@@ -454,7 +543,11 @@ export async function resolveOrBootstrapCloudWorkspace(
         `El espacio O'NDE LUIGI aún no ha sido inicializado por el administrador (${ADMIN_BOOTSTRAP_EMAIL}).`
       );
     }
-    const wsData = wsSnap.data() as { ownerUid: string; authorizedEmails?: string[] };
+    const wsData = wsSnap.data() as {
+      ownerUid: string;
+      authorizedEmails?: string[];
+      billingConfig?: Partial<BusinessBillingConfig>;
+    };
     const emails = Array.isArray(wsData.authorizedEmails)
       ? wsData.authorizedEmails.map((e) => e.toLowerCase())
       : [ADMIN_BOOTSTRAP_EMAIL];
@@ -463,6 +556,7 @@ export async function resolveOrBootstrapCloudWorkspace(
       authorizedEmails: emails,
       allowSelfRegistration: dirAllowSelf,
       memberRole: wsData.ownerUid === user.uid ? 'admin' : resolvedRole,
+      billingConfig: normalizeBillingConfig(wsData.billingConfig),
     };
   } catch (error) {
     if (error instanceof Error && error.message.includes('no ha sido inicializado')) {

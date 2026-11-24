@@ -21,6 +21,7 @@ import {
 interface ProductCatalogPanelProps {
   products: Product[];
   itemsInOrder: OrderItem[];
+  topProductIds?: Set<string>;
   categories: string[];
   selectedCategory: string;
   onSelectCategory: (cat: string) => void;
@@ -34,6 +35,7 @@ interface ProductCatalogPanelProps {
 export const ProductCatalogPanel: React.FC<ProductCatalogPanelProps> = ({
   products,
   itemsInOrder,
+  topProductIds,
   categories,
   selectedCategory,
   onSelectCategory,
@@ -92,6 +94,8 @@ export const ProductCatalogPanel: React.FC<ProductCatalogPanelProps> = ({
               product.removableOptions.length > 0 ||
               product.addonOptions.length > 0;
 
+            const isTopProduct = Boolean(topProductIds?.has(product.id));
+
             return (
               <article
                 key={product.id}
@@ -110,6 +114,11 @@ export const ProductCatalogPanel: React.FC<ProductCatalogPanelProps> = ({
                       alt={product.name}
                       className="w-full h-full object-cover object-top"
                     />
+                    {isTopProduct && (
+                      <span className="absolute top-1.5 left-1.5 sm:top-2.5 sm:left-2.5 px-2 py-0.5 rounded-lg bg-[#0A0A0A]/85 border border-amber-500/60 text-amber-300 text-[10px] font-bold uppercase tracking-wide shadow">
+                        Más pedido
+                      </span>
+                    )}
                     {countInOrder > 0 && (
                       <span className="absolute top-1.5 right-1.5 sm:top-2.5 sm:right-2.5 px-2 sm:px-2.5 py-0.5 sm:py-1 rounded-lg bg-amber-500 text-black font-mono text-[10px] sm:text-xs font-extrabold tabular-nums shadow">
                         {countInOrder} en pedido
@@ -124,6 +133,7 @@ export const ProductCatalogPanel: React.FC<ProductCatalogPanelProps> = ({
                       <div className="min-w-0">
                         <p className="text-[10px] sm:text-[11px] font-semibold text-zinc-400 uppercase tracking-wide truncate">
                           {product.category}
+                          {!product.imageUrl && isTopProduct ? ' · Top' : ''}
                           {!product.imageUrl && countInOrder > 0 ? ` · ${countInOrder}` : ''}
                         </p>
                         <h3 className="font-poster text-sm sm:text-lg font-extrabold text-white leading-tight uppercase mt-0.5 line-clamp-2">

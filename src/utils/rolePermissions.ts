@@ -35,6 +35,8 @@ export interface RolePermissions {
   canManageMenu: boolean;
   canHardDelete: boolean;
   canManageTeam: boolean;
+  canManageShifts: boolean;
+  canAuditShiftDifferences: boolean;
 }
 
 export function isValidStaffRole(value: unknown): value is StaffRole {
@@ -63,6 +65,8 @@ export function getRolePermissions(role: StaffRole): RolePermissions {
         canManageMenu: true,
         canHardDelete: true,
         canManageTeam: true,
+        canManageShifts: true,
+        canAuditShiftDifferences: true,
       };
     case 'mesero':
       return {
@@ -84,6 +88,8 @@ export function getRolePermissions(role: StaffRole): RolePermissions {
         canManageMenu: false,
         canHardDelete: false,
         canManageTeam: false,
+        canManageShifts: true,
+        canAuditShiftDifferences: false,
       };
     case 'cajero':
       return {
@@ -105,6 +111,8 @@ export function getRolePermissions(role: StaffRole): RolePermissions {
         canManageMenu: false,
         canHardDelete: false,
         canManageTeam: false,
+        canManageShifts: true,
+        canAuditShiftDifferences: false,
       };
     case 'cocina':
       return {
@@ -126,6 +134,8 @@ export function getRolePermissions(role: StaffRole): RolePermissions {
         canManageMenu: false,
         canHardDelete: false,
         canManageTeam: false,
+        canManageShifts: false,
+        canAuditShiftDifferences: false,
       };
   }
 }

@@ -6,22 +6,27 @@ import {
   Clock,
   CreditCard,
   Edit3,
+  FileDown,
   FileImage,
   History,
   Lock,
   PlusCircle,
   Search,
   Trash2,
+  Users,
   X,
 } from 'lucide-react';
+import { CustomersModal } from '../components/CustomersModal';
 import { usePosStore } from '../services/posStore';
 import type { MovementType, Order } from '../types/pos';
+import { resolveOrderCustomerInfo } from '../utils/billingUtils';
 import {
   formatCurrency,
   formatDateTimeShort,
   ORDER_STATUS_LABELS,
   PAYMENT_METHOD_LABELS,
 } from '../utils/orderMath';
+import { downloadOrderReceiptPdf } from '../utils/receiptPdf';
 import { ROLE_LABELS } from '../utils/rolePermissions';
 
 const MOVEMENT_META: Record<MovementType, { label: string; icon: React.ReactNode; tint: string }> = {
@@ -56,6 +61,8 @@ export const HistoryView: React.FC = () => {
   const {
     orders,
     movements,
+    customers,
+    billingConfig,
     effectiveRole,
     permissions,
     voidOrder,
@@ -65,6 +72,8 @@ export const HistoryView: React.FC = () => {
   const [typeFilter, setTypeFilter] = useState<'todos' | MovementType>('todos');
   const [searchTerm, setSearchTerm] = useState('');
   const [expandedOrderId, setExpandedOrderId] = useState<string | null>(null);
+  const [customersOpen, setCustomersOpen] = useState(false);
+  const [downloadingOrderId, setDownloadingOrderId] = useState<string | null>(null);
 
   const [voidTarget, setVoidTarget] = useState<Order | null>(null);
   const [voidReason, setVoidReason] = useState('');
@@ -116,10 +125,21 @@ export const HistoryView: React.FC = () => {
       return (
         String(o.orderNumber).includes(q) ||
         o.reference.toLowerCase().includes(q) ||
-        o.waiterName.toLowerCase().includes(q)
+        o.waiterName.toLowerCase().includes(q) ||
+        (o.customerDocument || '').toLowerCase().includes(q) ||
+        (o.customerName || '').toLowerCase().includes(q)
       );
     });
   }, [orders, searchTerm]);
+
+  const handleDownloadPdf = async (order: Order) => {
+    setDownloadingOrderId(order.id);
+    try {
+      await downloadOrderReceiptPdf(order, billingConfig);
+    } finally {
+      setDownloadingOrderId(null);
+    }
+  };
 
   const handleConfirmVoid = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -182,29 +202,40 @@ export const HistoryView: React.FC = () => {
           </p>
         </div>
 
-        <div className="flex items-center gap-1 p-1 bg-[#141418] border border-[#27272E] rounded-xl self-start sm:self-auto">
+        <div className="flex flex-wrap items-center gap-2 self-start sm:self-auto">
           <button
             type="button"
-            onClick={() => setSubTab('pedidos')}
-            className={`min-h-[38px] px-4 rounded-lg text-xs font-semibold transition-colors whitespace-nowrap ${
-              subTab === 'pedidos'
-                ? 'bg-amber-500 text-black font-bold'
-                : 'text-zinc-300 hover:text-white'
-            }`}
+            onClick={() => setCustomersOpen(true)}
+            className="min-h-[40px] px-3.5 rounded-xl border border-[#27272E] bg-[#141418] text-xs font-bold text-amber-300 hover:border-amber-500 flex items-center gap-1.5 whitespace-nowrap"
           >
-            Historial por pedido
+            <Users className="w-4 h-4" />
+            <span>Clientes ({customers.length})</span>
           </button>
-          <button
-            type="button"
-            onClick={() => setSubTab('bitacora')}
-            className={`min-h-[38px] px-4 rounded-lg text-xs font-semibold transition-colors whitespace-nowrap ${
-              subTab === 'bitacora'
-                ? 'bg-amber-500 text-black font-bold'
-                : 'text-zinc-300 hover:text-white'
-            }`}
-          >
-            Bitácora de movimientos
-          </button>
+
+          <div className="flex items-center gap-1 p-1 bg-[#141418] border border-[#27272E] rounded-xl">
+            <button
+              type="button"
+              onClick={() => setSubTab('pedidos')}
+              className={`min-h-[38px] px-4 rounded-lg text-xs font-semibold transition-colors whitespace-nowrap ${
+                subTab === 'pedidos'
+                  ? 'bg-amber-500 text-black font-bold'
+                  : 'text-zinc-300 hover:text-white'
+              }`}
+            >
+              Historial por pedido
+            </button>
+            <button
+              type="button"
+              onClick={() => setSubTab('bitacora')}
+              className={`min-h-[38px] px-4 rounded-lg text-xs font-semibold transition-colors whitespace-nowrap ${
+                subTab === 'bitacora'
+                  ? 'bg-amber-500 text-black font-bold'
+                  : 'text-zinc-300 hover:text-white'
+              }`}
+            >
+              Bitácora de movimientos
+            </button>
+          </div>
         </div>
       </div>
 
@@ -216,7 +247,7 @@ export const HistoryView: React.FC = () => {
             aria-label="Buscar en historial por pedido, mesero o cambio"
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
-            placeholder="Filtrar por #pedido, mesa, cliente o mesero..."
+            placeholder="Filtrar por #pedido, mesa, cliente, NIT/cédula o mesero..."
             className="w-full min-h-[42px] pl-9 pr-3 rounded-xl border border-[#27272E] bg-[#0A0A0A] text-sm text-white placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-amber-500"
           />
         </div>
@@ -330,6 +361,15 @@ export const HistoryView: React.FC = () => {
                       </p>
                       <p className="text-xs text-zinc-400">
                         Atendió: <span className="text-zinc-200 font-medium">{order.waiterName}</span>
+                        {(() => {
+                          const cust = resolveOrderCustomerInfo(order);
+                          return (
+                            <span className="ml-2 text-zinc-400">
+                              · Cliente: <span className="text-zinc-200">{cust.name}</span>{' '}
+                              <span className="font-mono text-zinc-400">({cust.documentNumber})</span>
+                            </span>
+                          );
+                        })()}
                       </p>
                     </div>
 
@@ -384,7 +424,17 @@ export const HistoryView: React.FC = () => {
                       {isOpen ? 'Ocultar bitácora' : 'Ver detalle y movimientos'}
                     </button>
 
-                    <div className="flex items-center gap-2">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <button
+                        type="button"
+                        disabled={downloadingOrderId === order.id}
+                        onClick={() => void handleDownloadPdf(order)}
+                        className="min-h-[36px] px-3 rounded-lg border border-[#27272E] bg-[#141418] text-amber-300 text-xs font-semibold hover:border-amber-500 flex items-center gap-1.5"
+                      >
+                        <FileDown className="w-3.5 h-3.5" />
+                        <span>{downloadingOrderId === order.id ? 'Generando...' : 'Colilla PDF'}</span>
+                      </button>
+
                       {!isVoided && permissions.canVoidOrders && (
                         <button
                           type="button"
@@ -587,6 +637,8 @@ export const HistoryView: React.FC = () => {
           </div>
         </div>
       )}
+
+      <CustomersModal open={customersOpen} onClose={() => setCustomersOpen(false)} />
     </div>
   );
 };

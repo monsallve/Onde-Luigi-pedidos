@@ -27,6 +27,7 @@ export const TransfersGalleryView: React.FC<Props> = ({
   const {
     transfers,
     orders,
+    openShift,
     activeWaiter,
     effectiveRole,
     permissions,
@@ -459,6 +460,15 @@ export const TransfersGalleryView: React.FC<Props> = ({
             </div>
 
             <div className="p-5 space-y-4">
+              {!openShift && (
+                <div className="rounded-xl bg-amber-950/60 border border-amber-600/70 px-3 py-2.5 text-xs font-medium text-amber-200 flex items-start gap-2">
+                  <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+                  <span>
+                    Turno cerrado: abre un turno en la barra superior antes de confirmar pagos con comprobante.
+                  </span>
+                </div>
+              )}
+
               {uploadError && (
                 <div className="rounded-xl bg-red-950/60 border border-red-700 px-3 py-2 text-xs font-medium text-red-200">
                   {uploadError}
@@ -537,10 +547,14 @@ export const TransfersGalleryView: React.FC<Props> = ({
 
               <button
                 type="submit"
-                disabled={uploading || !selectedFile}
+                disabled={uploading || !selectedFile || !openShift}
                 className="w-full min-h-[48px] rounded-xl bg-amber-500 text-black text-sm font-bold hover:bg-amber-400 disabled:opacity-50"
               >
-                {uploading ? 'Optimizando y guardando...' : 'Guardar comprobante y marcar Pagado'}
+                {uploading
+                  ? 'Optimizando y guardando...'
+                  : !openShift
+                    ? 'Abre turno para confirmar pagos'
+                    : 'Guardar comprobante y marcar Pagado'}
               </button>
             </div>
           </form>

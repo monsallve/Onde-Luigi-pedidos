@@ -338,3 +338,97 @@ export function adjustCartLineQuantity(
     .filter((x): x is OrderItem => x !== null);
 }
 
+export const PRODUCT_IMAGE_MAX_URL_LENGTH = 250000;
+export const PRODUCT_IMAGE_MAX_BYTES = 25 * 1024 * 1024;
+
+export function validateImageFileCandidate(file: {
+  name: string;
+  type: string;
+  size: number;
+}): { ok: true } | { ok: false; error: string } {
+  const cleanType = (file.type || '').trim().toLowerCase();
+  const hasImageMime = cleanType.startsWith('image/');
+  const hasImageExt = /\.(jpe?g|png|webp|gif|bmp|avif|heic|heif)$/i.test(file.name || '');
+
+  if (!hasImageMime && !hasImageExt) {
+    return { ok: false, error: 'Selecciona un archivo de imagen válido (JPG, PNG, WEBP, etc.).' };
+  }
+  if (!Number.isFinite(file.size) || file.size <= 0) {
+    return { ok: false, error: 'El archivo de imagen está vacío o dañado.' };
+  }
+  if (file.size > PRODUCT_IMAGE_MAX_BYTES) {
+    return { ok: false, error: 'La imagen supera el tamaño máximo permitido (25 MB).' };
+  }
+  return { ok: true };
+}
+
+export function normalizeProductImageUrl(
+  nextImageUrl: string | undefined,
+  existingImageUrl?: string
+): string {
+  const raw = nextImageUrl !== undefined ? nextImageUrl : existingImageUrl || '';
+  return raw.trim().slice(0, PRODUCT_IMAGE_MAX_URL_LENGTH);
+}
+
+export interface ProductInteractionStats {
+  soldUnits: number;
+  orderCount: number;
+}
+
+/**
+ * Aggregates sold quantities and order appearances per productId across non-cancelled orders.
+ */
+export function computeProductSalesCounts(
+  orders: Pick<Order, 'status' | 'items'>[]
+): Record<string, ProductInteractionStats> {
+  const stats: Record<string, ProductInteractionStats> = {};
+  for (const order of orders) {
+    if (order.status === 'cancelado') continue;
+    const seenInOrder = new Set<string>();
+    for (const item of order.items) {
+      if (!item.productId) continue;
+      if (!stats[item.productId]) {
+        stats[item.productId] = { soldUnits: 0, orderCount: 0 };
+      }
+      const qty = Number.isFinite(item.quantity) && item.quantity > 0 ? Math.floor(item.quantity) : 0;
+      stats[item.productId].soldUnits += qty;
+      if (!seenInOrder.has(item.productId)) {
+        seenInOrder.add(item.productId);
+        stats[item.productId].orderCount += 1;
+      }
+    }
+  }
+  return stats;
+}
+
+/**
+ * Ranks products descending by interaction score:
+ * historical sold units * 10 + local quick-add/customize interactions,
+ * preserving original catalog order on ties.
+ */
+export function rankProductsByInteraction<T extends Pick<Product, 'id'>>(
+  products: T[],
+  salesCounts: Record<string, ProductInteractionStats>,
+  localInteractions: Record<string, number> = {}
+): {
+  rankedProducts: T[];
+  salesCounts: Record<string, ProductInteractionStats>;
+} {
+  const indexed = products.map((product, index) => {
+    const soldUnits = salesCounts[product.id]?.soldUnits || 0;
+    const localHits = Math.max(0, Math.floor(localInteractions[product.id] || 0));
+    const score = soldUnits * 10 + localHits;
+    return { product, index, score };
+  });
+
+  indexed.sort((a, b) => {
+    if (b.score !== a.score) return b.score - a.score;
+    return a.index - b.index;
+  });
+
+  return {
+    rankedProducts: indexed.map((entry) => entry.product),
+    salesCounts,
+  };
+}
+

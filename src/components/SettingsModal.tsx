@@ -1,8 +1,8 @@
-import React, { useState } from 'react';
-import { Check, Cloud, Code2, Copy, Lock, LogOut, MailCheck, MailPlus, Plus, Shield, Trash2, Users, X } from 'lucide-react';
+import React, { useEffect, useState } from 'react';
+import { Check, Cloud, Code2, Copy, Lock, LogOut, MailCheck, MailPlus, Plus, Receipt, Shield, Trash2, Users, X } from 'lucide-react';
 import { usePosStore } from '../services/posStore';
 import { ADMIN_BOOTSTRAP_EMAIL } from '../data/initialCatalog';
-import type { StaffRole } from '../types/pos';
+import type { BusinessBillingConfig, StaffRole } from '../types/pos';
 import { resolveAssetUrl } from '../utils/orderMath';
 import { ROLE_DESCRIPTIONS, ROLE_LABELS } from '../utils/rolePermissions';
 import { buildBrandVerificationEmailHtml } from '../utils/verificationEmailTemplate';
@@ -26,6 +26,8 @@ export const SettingsModal: React.FC<Props> = ({ open, onClose, onOpenVerifyEmai
     myLinkedStaff,
     authorizedEmails,
     allowSelfRegistration,
+    billingConfig,
+    saveBillingConfig,
     updateAuthorizedEmails,
     updateAllowSelfRegistration,
     staff,
@@ -47,7 +49,42 @@ export const SettingsModal: React.FC<Props> = ({ open, onClose, onOpenVerifyEmai
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [copiedHtml, setCopiedHtml] = useState(false);
 
+  const [billingDraft, setBillingDraft] = useState<BusinessBillingConfig>(billingConfig);
+  const [savingBilling, setSavingBilling] = useState(false);
+  const [billingStatus, setBillingStatus] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
+
+  useEffect(() => {
+    if (open) {
+      setBillingDraft(billingConfig);
+      setBillingStatus(null);
+    }
+  }, [open, billingConfig]);
+
   if (!open) return null;
+
+  const handleSaveBilling = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setBillingStatus(null);
+    if (!billingDraft.businessName.trim()) {
+      setBillingStatus({ type: 'err', text: 'El nombre comercial del negocio es obligatorio.' });
+      return;
+    }
+    setSavingBilling(true);
+    try {
+      await saveBillingConfig(billingDraft);
+      setBillingStatus({
+        type: 'ok',
+        text: 'Datos del negocio guardados para todas las colillas PDF.',
+      });
+    } catch (err) {
+      setBillingStatus({
+        type: 'err',
+        text: err instanceof Error ? err.message : 'No se pudieron guardar los datos.',
+      });
+    } finally {
+      setSavingBilling(false);
+    }
+  };
 
   const handleCopyBrandEmailHtml = async () => {
     const logoAbsolute =
@@ -240,6 +277,188 @@ export const SettingsModal: React.FC<Props> = ({ open, onClose, onOpenVerifyEmai
               )}
             </div>
           </section>
+
+          {/* Admin-only Business Billing Data (Colillas PDF & future DIAN) */}
+          {isAdmin && (
+            <section className="space-y-2.5">
+              <h3 className="text-xs font-bold text-amber-400 uppercase tracking-wide flex items-center gap-1.5">
+                <Receipt className="w-4 h-4" />
+                <span>Datos del negocio y facturación (Colillas PDF / DIAN)</span>
+              </h3>
+
+              <form
+                onSubmit={handleSaveBilling}
+                className="rounded-xl border border-[#27272E] bg-[#0A0A0A] p-4 space-y-3"
+              >
+                <p className="text-[11px] text-zinc-400 leading-relaxed">
+                  Esta información aparecerá en el encabezado de cada colilla de compra PDF y prepara el formato para futura facturación electrónica ante la DIAN.
+                </p>
+
+                {billingStatus && (
+                  <div
+                    className={`rounded-xl border px-3 py-2 text-xs font-medium ${
+                      billingStatus.type === 'ok'
+                        ? 'bg-emerald-950/60 border-emerald-700 text-emerald-200'
+                        : 'bg-red-950/60 border-red-700 text-red-200'
+                    }`}
+                  >
+                    {billingStatus.text}
+                  </div>
+                )}
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                  <div>
+                    <label htmlFor="bill-biz-name" className="block text-[11px] font-semibold text-zinc-300 mb-1">
+                      Nombre comercial *
+                    </label>
+                    <input
+                      id="bill-biz-name"
+                      type="text"
+                      maxLength={120}
+                      value={billingDraft.businessName}
+                      onChange={(e) => setBillingDraft({ ...billingDraft, businessName: e.target.value })}
+                      placeholder="O'NDE LUIGI"
+                      className="w-full min-h-[38px] rounded-lg border border-[#27272E] bg-[#141418] px-2.5 text-xs text-white focus:outline-none focus:ring-2 focus:ring-amber-500"
+                    />
+                  </div>
+                  <div>
+                    <label htmlFor="bill-legal-name" className="block text-[11px] font-semibold text-zinc-300 mb-1">
+                      Razón social / Propietario
+                    </label>
+                    <input
+                      id="bill-legal-name"
+                      type="text"
+                      maxLength={120}
+                      value={billingDraft.legalName}
+                      onChange={(e) => setBillingDraft({ ...billingDraft, legalName: e.target.value })}
+                      placeholder="Ej. Luigi S.A.S. o Persona Natural"
+                      className="w-full min-h-[38px] rounded-lg border border-[#27272E] bg-[#141418] px-2.5 text-xs text-white focus:outline-none focus:ring-2 focus:ring-amber-500"
+                    />
+                  </div>
+                  <div>
+                    <label htmlFor="bill-nit" className="block text-[11px] font-semibold text-zinc-300 mb-1">
+                      NIT o Cédula del comercio
+                    </label>
+                    <input
+                      id="bill-nit"
+                      type="text"
+                      maxLength={40}
+                      value={billingDraft.nit}
+                      onChange={(e) => setBillingDraft({ ...billingDraft, nit: e.target.value })}
+                      placeholder="Ej. 900.123.456-7"
+                      className="w-full min-h-[38px] rounded-lg border border-[#27272E] bg-[#141418] px-2.5 font-mono text-xs text-white focus:outline-none focus:ring-2 focus:ring-amber-500"
+                    />
+                  </div>
+                  <div>
+                    <label htmlFor="bill-regime" className="block text-[11px] font-semibold text-zinc-300 mb-1">
+                      Régimen tributario (DIAN)
+                    </label>
+                    <input
+                      id="bill-regime"
+                      type="text"
+                      maxLength={80}
+                      value={billingDraft.regime}
+                      onChange={(e) => setBillingDraft({ ...billingDraft, regime: e.target.value })}
+                      placeholder="No responsable de IVA / Régimen Simple"
+                      className="w-full min-h-[38px] rounded-lg border border-[#27272E] bg-[#141418] px-2.5 text-xs text-white focus:outline-none focus:ring-2 focus:ring-amber-500"
+                    />
+                  </div>
+                  <div>
+                    <label htmlFor="bill-address" className="block text-[11px] font-semibold text-zinc-300 mb-1">
+                      Dirección del local
+                    </label>
+                    <input
+                      id="bill-address"
+                      type="text"
+                      maxLength={160}
+                      value={billingDraft.address}
+                      onChange={(e) => setBillingDraft({ ...billingDraft, address: e.target.value })}
+                      placeholder="Ej. Calle 10 # 25-30"
+                      className="w-full min-h-[38px] rounded-lg border border-[#27272E] bg-[#141418] px-2.5 text-xs text-white focus:outline-none focus:ring-2 focus:ring-amber-500"
+                    />
+                  </div>
+                  <div>
+                    <label htmlFor="bill-city" className="block text-[11px] font-semibold text-zinc-300 mb-1">
+                      Ciudad / Municipio
+                    </label>
+                    <input
+                      id="bill-city"
+                      type="text"
+                      maxLength={80}
+                      value={billingDraft.city}
+                      onChange={(e) => setBillingDraft({ ...billingDraft, city: e.target.value })}
+                      placeholder="Colombia"
+                      className="w-full min-h-[38px] rounded-lg border border-[#27272E] bg-[#141418] px-2.5 text-xs text-white focus:outline-none focus:ring-2 focus:ring-amber-500"
+                    />
+                  </div>
+                  <div>
+                    <label htmlFor="bill-phone" className="block text-[11px] font-semibold text-zinc-300 mb-1">
+                      Teléfono / WhatsApp
+                    </label>
+                    <input
+                      id="bill-phone"
+                      type="text"
+                      maxLength={40}
+                      value={billingDraft.phone}
+                      onChange={(e) => setBillingDraft({ ...billingDraft, phone: e.target.value })}
+                      placeholder="Ej. 300 000 0000"
+                      className="w-full min-h-[38px] rounded-lg border border-[#27272E] bg-[#141418] px-2.5 text-xs text-white focus:outline-none focus:ring-2 focus:ring-amber-500"
+                    />
+                  </div>
+                  <div>
+                    <label htmlFor="bill-email" className="block text-[11px] font-semibold text-zinc-300 mb-1">
+                      Correo del negocio
+                    </label>
+                    <input
+                      id="bill-email"
+                      type="email"
+                      maxLength={160}
+                      value={billingDraft.email}
+                      onChange={(e) => setBillingDraft({ ...billingDraft, email: e.target.value })}
+                      placeholder="facturacion@ondeluigi.com"
+                      className="w-full min-h-[38px] rounded-lg border border-[#27272E] bg-[#141418] px-2.5 text-xs text-white focus:outline-none focus:ring-2 focus:ring-amber-500"
+                    />
+                  </div>
+                  <div>
+                    <label htmlFor="bill-prefix" className="block text-[11px] font-semibold text-zinc-300 mb-1">
+                      Prefijo de colilla
+                    </label>
+                    <input
+                      id="bill-prefix"
+                      type="text"
+                      maxLength={12}
+                      value={billingDraft.receiptPrefix}
+                      onChange={(e) => setBillingDraft({ ...billingDraft, receiptPrefix: e.target.value.toUpperCase() })}
+                      placeholder="COL"
+                      className="w-full min-h-[38px] rounded-lg border border-[#27272E] bg-[#141418] px-2.5 font-mono text-xs text-white focus:outline-none focus:ring-2 focus:ring-amber-500"
+                    />
+                  </div>
+                  <div>
+                    <label htmlFor="bill-footer" className="block text-[11px] font-semibold text-zinc-300 mb-1">
+                      Pie de colilla
+                    </label>
+                    <input
+                      id="bill-footer"
+                      type="text"
+                      maxLength={280}
+                      value={billingDraft.footerNote}
+                      onChange={(e) => setBillingDraft({ ...billingDraft, footerNote: e.target.value })}
+                      placeholder="Gracias por su compra..."
+                      className="w-full min-h-[38px] rounded-lg border border-[#27272E] bg-[#141418] px-2.5 text-xs text-white focus:outline-none focus:ring-2 focus:ring-amber-500"
+                    />
+                  </div>
+                </div>
+
+                <button
+                  type="submit"
+                  disabled={savingBilling}
+                  className="min-h-[40px] px-4 rounded-xl bg-amber-500 text-black text-xs font-bold hover:bg-amber-400 disabled:opacity-50"
+                >
+                  {savingBilling ? 'Guardando datos...' : 'Guardar datos de facturación'}
+                </button>
+              </form>
+            </section>
+          )}
 
           {/* Admin-only Authorized Waiter Emails & Open Link Registration */}
           {isAdmin && (

@@ -8,12 +8,16 @@ import {
   calculateItemLineTotal,
   calculateItemUnitPrice,
   calculateOrderTotals,
+  computeProductSalesCounts,
   diffOrderItems,
   formatAutoOrderReference,
   formatCustomizationSummary,
   getNextCyclicOrderRefNumber,
   isOrderInCourse,
+  normalizeProductImageUrl,
+  rankProductsByInteraction,
   splitCartLineUnit,
+  validateImageFileCandidate,
   validateItemSauces,
   validateOrderItemsSauces,
 } from './orderMath';
@@ -263,5 +267,103 @@ test('merges matching cart items, splits single units, and adjusts quantities cl
   const decremented = adjustCartLineQuantity(split, split[1].lineId, -1);
   assert.equal(decremented.length, 1);
   assert.equal(decremented[0].quantity, 2);
+});
+
+test('validates gallery image files and preserves explicit image clearing or truncation bounds', () => {
+  assert.deepEqual(
+    validateImageFileCandidate({ name: 'burger.jpg', type: 'image/jpeg', size: 120000 }),
+    { ok: true }
+  );
+  assert.deepEqual(
+    validateImageFileCandidate({ name: 'foto_galeria.HEIC', type: '', size: 420000 }),
+    { ok: true }
+  );
+  assert.equal(
+    validateImageFileCandidate({ name: 'documento.pdf', type: 'application/pdf', size: 5000 }).ok,
+    false
+  );
+  assert.equal(
+    validateImageFileCandidate({ name: 'huge.png', type: 'image/png', size: 30 * 1024 * 1024 }).ok,
+    false
+  );
+
+  assert.equal(normalizeProductImageUrl('', '/menu/mixta.jpg'), '');
+  assert.equal(normalizeProductImageUrl(undefined, '/menu/mixta.jpg'), '/menu/mixta.jpg');
+  assert.equal(
+    normalizeProductImageUrl('  data:image/jpeg;base64,abc  ', '/menu/mixta.jpg'),
+    'data:image/jpeg;base64,abc'
+  );
+});
+
+test('computes non-cancelled sales counts and ranks most-interacted products first with stable tie-breaking', () => {
+  const catalog = [
+    { id: 'p_classic', name: 'Clásica' },
+    { id: 'p_hotdog', name: 'Perro Especial' },
+    { id: 'p_mixta', name: 'Hamburguesa Mixta' },
+    { id: 'p_soda', name: 'Gaseosa' },
+  ];
+
+  const orders = [
+    {
+      status: 'entregado' as const,
+      items: [
+        buildOrderItem({
+          lineId: 'l1',
+          productId: 'p_mixta',
+          productName: 'Hamburguesa Mixta',
+          category: 'Hamburguesas',
+          quantity: 3,
+          basePrice: 26000,
+          removedIngredients: [],
+          addedExtras: [],
+          selectedSauces: [],
+          customNote: '',
+        }),
+        buildOrderItem({
+          lineId: 'l2',
+          productId: 'p_hotdog',
+          productName: 'Perro Especial',
+          category: 'Perros',
+          quantity: 1,
+          basePrice: 18000,
+          removedIngredients: [],
+          addedExtras: [],
+          selectedSauces: [],
+          customNote: '',
+        }),
+      ],
+    },
+    {
+      status: 'cancelado' as const,
+      items: [
+        buildOrderItem({
+          lineId: 'l3',
+          productId: 'p_soda',
+          productName: 'Gaseosa',
+          category: 'Bebidas',
+          quantity: 20,
+          basePrice: 4500,
+          removedIngredients: [],
+          addedExtras: [],
+          selectedSauces: [],
+          customNote: '',
+        }),
+      ],
+    },
+  ];
+
+  const sales = computeProductSalesCounts(orders);
+  assert.equal(sales['p_mixta'].soldUnits, 3);
+  assert.equal(sales['p_hotdog'].soldUnits, 1);
+  assert.equal(sales['p_soda'], undefined);
+
+  const { rankedProducts } = rankProductsByInteraction(catalog, sales, {
+    p_soda: 4, // score 4 (beats tied 0-score p_classic, stays below p_hotdog score 10)
+  });
+
+  assert.deepEqual(
+    rankedProducts.map((p) => p.id),
+    ['p_mixta', 'p_hotdog', 'p_soda', 'p_classic']
+  );
 });
 

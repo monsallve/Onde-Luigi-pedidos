@@ -1,8 +1,14 @@
-import React, { useState } from 'react';
-import { Droplets, Plus, Trash2, X } from 'lucide-react';
+import React, { useRef, useState } from 'react';
+import { Droplets, Image as ImageIcon, Plus, Trash2, Upload, X } from 'lucide-react';
 import { usePosStore } from '../services/posStore';
 import type { AddonOption, Product } from '../types/pos';
-import { createSafeId, formatCurrency } from '../utils/orderMath';
+import {
+  createSafeId,
+  formatCurrency,
+  PRODUCT_IMAGE_MAX_URL_LENGTH,
+  resolveAssetUrl,
+  validateImageFileCandidate,
+} from '../utils/orderMath';
 
 interface Props {
   product?: Product | null;
@@ -18,7 +24,10 @@ export const ProductEditorModal: React.FC<Props> = ({ product, onClose }) => {
   const [category, setCategory] = useState(product ? product.category : 'Hamburguesas');
   const [basePrice, setBasePrice] = useState(product ? String(product.basePrice) : '');
   const [imageUrl, setImageUrl] = useState(product ? product.imageUrl : '');
+  const [imageFile, setImageFile] = useState<File | null>(null);
+  const [imagePreviewUrl, setImagePreviewUrl] = useState('');
   const [active, setActive] = useState(product ? product.active : true);
+  const galleryInputRef = useRef<HTMLInputElement>(null);
 
   const [allowSauces, setAllowSauces] = useState(
     product ? product.allowSauces : true
@@ -91,6 +100,31 @@ export const ProductEditorModal: React.FC<Props> = ({ product, onClose }) => {
     }
   };
 
+  const handleGalleryFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+
+    const validation = validateImageFileCandidate(file);
+    if (!validation.ok) {
+      setErrorMsg(validation.error);
+      return;
+    }
+
+    setErrorMsg(null);
+    setImageFile(file);
+    const reader = new FileReader();
+    reader.onload = () => setImagePreviewUrl(String(reader.result || ''));
+    reader.onerror = () => setErrorMsg('No se pudo generar la vista previa de la imagen.');
+    reader.readAsDataURL(file);
+  };
+
+  const handleClearPhoto = () => {
+    setImageFile(null);
+    setImagePreviewUrl('');
+    setImageUrl('');
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     const numPrice = Number(basePrice);
@@ -112,6 +146,7 @@ export const ProductEditorModal: React.FC<Props> = ({ product, onClose }) => {
         category,
         basePrice: numPrice,
         imageUrl,
+        imageFile,
         baseRecipe,
         removableOptions,
         addonOptions,
@@ -485,30 +520,108 @@ export const ProductEditorModal: React.FC<Props> = ({ product, onClose }) => {
             )}
           </section>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 border-t border-[#27272E] pt-4">
-            <div>
-              <label htmlFor="prod-img" className="block text-xs font-semibold text-zinc-300 mb-1">
-                Ruta de imagen (opcional)
-              </label>
-              <input
-                id="prod-img"
-                type="text"
-                maxLength={500}
-                value={imageUrl}
-                onChange={(e) => setImageUrl(e.target.value)}
-                placeholder="/menu/mixta.jpg"
-                className="w-full min-h-[42px] rounded-xl border border-[#27272E] bg-[#0A0A0A] px-3 font-mono text-xs text-zinc-200 placeholder:text-zinc-500"
-              />
+          {/* Product photo picker from gallery + optional path */}
+          <section className="rounded-xl border border-[#27272E] bg-[#101014] p-4 space-y-3">
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <ImageIcon className="w-4 h-4 text-amber-400 shrink-0" />
+                <div>
+                  <p className="text-xs font-bold text-white">Foto del producto (opcional)</p>
+                  <p className="text-[11px] text-zinc-400">
+                    Elige una imagen de tu galería para mostrarla en el menú y al tomar pedidos.
+                  </p>
+                </div>
+              </div>
+              <span className="text-[11px] text-zinc-400 hidden sm:inline">
+                Compresión automática
+              </span>
             </div>
 
-            <div className="flex items-end justify-between gap-2">
-              <span className="text-xs font-medium text-zinc-300 pb-2.5">
+            <input
+              ref={galleryInputRef}
+              type="file"
+              accept="image/*"
+              onChange={handleGalleryFileChange}
+              aria-label="Seleccionar foto del producto desde galería"
+              className="hidden"
+            />
+
+            <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3">
+              <div className="w-full sm:w-28 h-28 rounded-xl border border-[#27272E] bg-[#0A0A0A] overflow-hidden flex items-center justify-center shrink-0">
+                {imagePreviewUrl || imageUrl ? (
+                  <img
+                    src={imagePreviewUrl || resolveAssetUrl(imageUrl)}
+                    alt={name || 'Vista previa del producto'}
+                    className="w-full h-full object-cover object-center"
+                  />
+                ) : (
+                  <div className="flex flex-col items-center justify-center gap-1 text-zinc-500 px-2 text-center">
+                    <ImageIcon className="w-6 h-6" />
+                    <span className="text-[10px]">Sin foto</span>
+                  </div>
+                )}
+              </div>
+
+              <div className="flex-1 space-y-2.5 min-w-0">
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={() => galleryInputRef.current?.click()}
+                    className="min-h-[42px] px-4 rounded-xl bg-amber-500 text-black text-xs font-bold hover:bg-amber-400 flex items-center gap-2 transition-colors"
+                  >
+                    <Upload className="w-4 h-4" />
+                    <span>
+                      {imagePreviewUrl || imageUrl ? 'Cambiar foto de galería' : 'Elegir foto de galería'}
+                    </span>
+                  </button>
+
+                  {(imagePreviewUrl || imageUrl) && (
+                    <button
+                      type="button"
+                      onClick={handleClearPhoto}
+                      className="min-h-[42px] px-3 rounded-xl border border-red-900/70 bg-red-950/40 text-xs font-semibold text-red-300 hover:bg-red-950 flex items-center gap-1.5"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                      <span>Quitar foto</span>
+                    </button>
+                  )}
+                </div>
+
+                {imageFile ? (
+                  <p className="text-[11px] text-emerald-300 font-medium truncate">
+                    Archivo listo: {imageFile.name}
+                  </p>
+                ) : (
+                  <div>
+                    <label htmlFor="prod-img" className="block text-[11px] font-medium text-zinc-400 mb-1">
+                      O pegar URL / ruta de imagen
+                    </label>
+                    <input
+                      id="prod-img"
+                      type="text"
+                      maxLength={PRODUCT_IMAGE_MAX_URL_LENGTH}
+                      value={imageUrl}
+                      onChange={(e) => {
+                        setImageFile(null);
+                        setImagePreviewUrl('');
+                        setImageUrl(e.target.value);
+                      }}
+                      placeholder="/menu/mixta.jpg o https://..."
+                      className="w-full min-h-[38px] rounded-xl border border-[#27272E] bg-[#0A0A0A] px-3 font-mono text-xs text-zinc-200 placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-amber-500"
+                    />
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="flex items-center justify-between gap-2 pt-2 border-t border-[#27272E]">
+              <span className="text-xs font-medium text-zinc-300">
                 Visible en pedidos
               </span>
               <button
                 type="button"
                 onClick={() => setActive((a) => !a)}
-                className={`min-h-[42px] px-4 rounded-xl text-xs font-semibold border transition-colors ${
+                className={`min-h-[40px] px-4 rounded-xl text-xs font-semibold border transition-colors ${
                   active
                     ? 'bg-emerald-950/60 border-emerald-700 text-emerald-300'
                     : 'bg-[#1C1C22] border-[#27272E] text-zinc-400'
@@ -517,7 +630,7 @@ export const ProductEditorModal: React.FC<Props> = ({ product, onClose }) => {
                 {active ? 'Activo en menú' : 'Desactivado'}
               </button>
             </div>
-          </div>
+          </section>
         </div>
 
         <div className="px-5 py-4 border-t border-[#27272E] bg-[#101014] flex items-center justify-end gap-2">

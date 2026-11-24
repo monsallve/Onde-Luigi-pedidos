@@ -124,14 +124,37 @@ service cloud.firestore {
     }
 
     // 3. Entity Validation Blueprints
+    function isValidBillingConfig(cfg) {
+      return cfg is map &&
+        cfg.keys().hasAll([
+          'businessName', 'legalName', 'nit', 'regime', 'address',
+          'city', 'phone', 'email', 'receiptPrefix', 'footerNote'
+        ]) &&
+        cfg.keys().hasOnly([
+          'businessName', 'legalName', 'nit', 'regime', 'address',
+          'city', 'phone', 'email', 'receiptPrefix', 'footerNote'
+        ]) &&
+        isStringBounded(cfg.businessName, 1, 120) &&
+        isStringBounded(cfg.legalName, 0, 120) &&
+        isStringBounded(cfg.nit, 0, 40) &&
+        isStringBounded(cfg.regime, 0, 80) &&
+        isStringBounded(cfg.address, 0, 160) &&
+        isStringBounded(cfg.city, 0, 80) &&
+        isStringBounded(cfg.phone, 0, 40) &&
+        isStringBounded(cfg.email, 0, 160) &&
+        isStringBounded(cfg.receiptPrefix, 1, 12) &&
+        isStringBounded(cfg.footerNote, 0, 280);
+    }
+
     function isValidWorkspace(data, workspaceId) {
       return data.keys().hasAll(['id', 'name', 'ownerUid', 'ownerEmail', 'authorizedEmails', 'createdAt', 'updatedAt']) &&
-        data.keys().hasOnly(['id', 'name', 'ownerUid', 'ownerEmail', 'authorizedEmails', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['id', 'name', 'ownerUid', 'ownerEmail', 'authorizedEmails', 'billingConfig', 'createdAt', 'updatedAt']) &&
         data.id == workspaceId &&
         isStringBounded(data.name, 1, 120) &&
         isStringBounded(data.ownerUid, 1, 128) &&
         isStringBounded(data.ownerEmail, 3, 160) &&
         isStringListBounded(data.authorizedEmails, 25) &&
+        (!('billingConfig' in data) || isValidBillingConfig(data.billingConfig)) &&
         data.createdAt is timestamp &&
         data.updatedAt is timestamp;
     }
@@ -193,7 +216,7 @@ service cloud.firestore {
         isStringBounded(data.name, 1, 100) &&
         isStringBounded(data.category, 1, 60) &&
         data.basePrice is number && data.basePrice >= 0 && data.basePrice <= 100000000 &&
-        isStringBounded(data.imageUrl, 0, 500) &&
+        isStringBounded(data.imageUrl, 0, 250000) &&
         isStringListBounded(data.baseRecipe, 30) &&
         isStringListBounded(data.removableOptions, 30) &&
         data.addonOptions is list && data.addonOptions.size() <= 30 &&
@@ -211,7 +234,7 @@ service cloud.firestore {
 
     function isValidOrder(data, orderId) {
       return data.keys().hasAll(['id', 'orderNumber', 'reference', 'waiterId', 'waiterName', 'status', 'paymentStatus', 'paymentMethod', 'items', 'subtotal', 'total', 'notes', 'receiptCount', 'latestReceiptUrl', 'ownerUid', 'createdByUid', 'allowedEmails', 'createdAt', 'updatedAt']) &&
-        data.keys().hasOnly(['id', 'orderNumber', 'reference', 'waiterId', 'waiterName', 'status', 'paymentStatus', 'paymentMethod', 'items', 'subtotal', 'total', 'notes', 'receiptCount', 'latestReceiptUrl', 'voidReason', 'voidedByName', 'voidedAtMs', 'ownerUid', 'createdByUid', 'allowedEmails', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['id', 'orderNumber', 'reference', 'waiterId', 'waiterName', 'status', 'paymentStatus', 'paymentMethod', 'items', 'subtotal', 'total', 'notes', 'receiptCount', 'latestReceiptUrl', 'customerId', 'customerDocument', 'customerName', 'customerPhone', 'customerEmail', 'voidReason', 'voidedByName', 'voidedAtMs', 'ownerUid', 'createdByUid', 'allowedEmails', 'createdAt', 'updatedAt']) &&
         data.id == orderId &&
         data.orderNumber is number && data.orderNumber >= 1 && data.orderNumber <= 10000000 &&
         isStringBounded(data.reference, 1, 100) &&
@@ -227,6 +250,11 @@ service cloud.firestore {
         isStringBounded(data.notes, 0, 400) &&
         data.receiptCount is number && data.receiptCount >= 0 && data.receiptCount <= 100 &&
         isStringBounded(data.latestReceiptUrl, 0, 250000) &&
+        (!('customerId' in data) || isStringBounded(data.customerId, 0, 128)) &&
+        (!('customerDocument' in data) || isStringBounded(data.customerDocument, 0, 40)) &&
+        (!('customerName' in data) || isStringBounded(data.customerName, 0, 120)) &&
+        (!('customerPhone' in data) || isStringBounded(data.customerPhone, 0, 40)) &&
+        (!('customerEmail' in data) || isStringBounded(data.customerEmail, 0, 160)) &&
         (!('voidReason' in data) || isStringBounded(data.voidReason, 0, 240)) &&
         (!('voidedByName' in data) || isStringBounded(data.voidedByName, 0, 80)) &&
         (!('voidedAtMs' in data) || data.voidedAtMs is number) &&
@@ -280,6 +308,75 @@ service cloud.firestore {
         data.createdAt is timestamp;
     }
 
+    function isValidShift(data, shiftId) {
+      return data.keys().hasAll([
+          'id', 'status', 'openingBaseAmount', 'openingNote',
+          'openedByStaffId', 'openedByName', 'openedByUid',
+          'closedByStaffId', 'closedByName', 'closedByUid', 'closingNote',
+          'usedPaymentMethods', 'declaredClosingBase', 'declaredByMethod',
+          'expectedBaseAmount', 'expectedByMethod', 'expectedTotal',
+          'declaredTotal', 'differenceTotal', 'paidOrdersCount', 'pendingOrdersCount',
+          'ownerUid', 'createdByUid', 'allowedEmails', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'status', 'openingBaseAmount', 'openingNote',
+          'openedByStaffId', 'openedByName', 'openedByUid',
+          'closedByStaffId', 'closedByName', 'closedByUid', 'closingNote',
+          'usedPaymentMethods', 'declaredClosingBase', 'declaredByMethod',
+          'expectedBaseAmount', 'expectedByMethod', 'expectedTotal',
+          'declaredTotal', 'differenceTotal', 'paidOrdersCount', 'pendingOrdersCount',
+          'ownerUid', 'createdByUid', 'allowedEmails', 'createdAt', 'updatedAt'
+        ]) &&
+        data.id == shiftId &&
+        data.status in ['abierto', 'cerrado'] &&
+        data.openingBaseAmount is number && data.openingBaseAmount >= 0 && data.openingBaseAmount <= 100000000 &&
+        isStringBounded(data.openingNote, 0, 300) &&
+        isStringBounded(data.openedByStaffId, 1, 128) &&
+        isStringBounded(data.openedByName, 1, 80) &&
+        isStringBounded(data.openedByUid, 1, 128) &&
+        isStringBounded(data.closedByStaffId, 0, 128) &&
+        isStringBounded(data.closedByName, 0, 80) &&
+        isStringBounded(data.closedByUid, 0, 128) &&
+        isStringBounded(data.closingNote, 0, 300) &&
+        isStringListBounded(data.usedPaymentMethods, 6) &&
+        data.declaredClosingBase is number && data.declaredClosingBase >= 0 && data.declaredClosingBase <= 100000000 &&
+        data.declaredByMethod is map &&
+        data.expectedBaseAmount is number && data.expectedBaseAmount >= 0 && data.expectedBaseAmount <= 100000000 &&
+        data.expectedByMethod is map &&
+        data.expectedTotal is number && data.expectedTotal >= 0 && data.expectedTotal <= 100000000 &&
+        data.declaredTotal is number && data.declaredTotal >= 0 && data.declaredTotal <= 100000000 &&
+        data.differenceTotal is number && data.differenceTotal >= -100000000 && data.differenceTotal <= 100000000 &&
+        data.paidOrdersCount is number && data.paidOrdersCount >= 0 && data.paidOrdersCount <= 100000 &&
+        data.pendingOrdersCount is number && data.pendingOrdersCount >= 0 && data.pendingOrdersCount <= 100000 &&
+        isStringBounded(data.ownerUid, 1, 128) &&
+        isStringBounded(data.createdByUid, 1, 128) &&
+        isStringListBounded(data.allowedEmails, 25) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidCustomer(data, customerId) {
+      return data.keys().hasAll([
+          'id', 'documentNumber', 'name', 'phone', 'email', 'notes',
+          'ownerUid', 'createdByUid', 'allowedEmails', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'documentNumber', 'name', 'phone', 'email', 'notes',
+          'ownerUid', 'createdByUid', 'allowedEmails', 'createdAt', 'updatedAt'
+        ]) &&
+        data.id == customerId &&
+        isStringBounded(data.documentNumber, 1, 40) &&
+        isStringBounded(data.name, 1, 120) &&
+        isStringBounded(data.phone, 0, 40) &&
+        isStringBounded(data.email, 0, 160) &&
+        isStringBounded(data.notes, 0, 300) &&
+        isStringBounded(data.ownerUid, 1, 128) &&
+        isStringBounded(data.createdByUid, 1, 128) &&
+        isStringListBounded(data.allowedEmails, 25) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
     // 4. Workspaces & Admin Role Control vs Waiter/Cashier/Kitchen Operations
     match /workspaceDirectory/{workspaceId} {
       allow get: if isAuthenticatedEmailUser() && isValidId(workspaceId);
@@ -324,7 +421,7 @@ service cloud.firestore {
         incoming().createdAt == existing().createdAt &&
         existing().ownerEmail in incoming().authorizedEmails &&
         incoming().updatedAt == request.time &&
-        incoming().diff(existing()).affectedKeys().hasOnly(['name', 'authorizedEmails', 'updatedAt']);
+        incoming().diff(existing()).affectedKeys().hasOnly(['name', 'authorizedEmails', 'billingConfig', 'updatedAt']);
       allow delete: if false;
 
       // ADMINS CAN MANAGE NON-OWNER MEMBERS; OWNER IS PROTECTED
@@ -473,10 +570,10 @@ service cloud.firestore {
             (
               existing().status != 'cancelado' &&
               (
-                incoming().diff(existing()).affectedKeys().hasOnly(['items', 'subtotal', 'total', 'notes', 'reference', 'waiterId', 'waiterName', 'updatedAt']) ||
+                incoming().diff(existing()).affectedKeys().hasOnly(['items', 'subtotal', 'total', 'notes', 'reference', 'customerId', 'customerDocument', 'customerName', 'customerPhone', 'customerEmail', 'waiterId', 'waiterName', 'updatedAt']) ||
                 incoming().diff(existing()).affectedKeys().hasOnly(['status', 'waiterId', 'waiterName', 'updatedAt']) ||
                 incoming().diff(existing()).affectedKeys().hasOnly(['status', 'voidReason', 'voidedByName', 'voidedAtMs', 'waiterId', 'waiterName', 'updatedAt']) ||
-                incoming().diff(existing()).affectedKeys().hasOnly(['paymentStatus', 'paymentMethod', 'receiptCount', 'latestReceiptUrl', 'waiterId', 'waiterName', 'updatedAt'])
+                incoming().diff(existing()).affectedKeys().hasOnly(['paymentStatus', 'paymentMethod', 'receiptCount', 'latestReceiptUrl', 'customerId', 'customerDocument', 'customerName', 'customerPhone', 'customerEmail', 'waiterId', 'waiterName', 'updatedAt'])
               )
             )
           );
@@ -515,6 +612,66 @@ service cloud.firestore {
           incoming().createdAt == existing().createdAt &&
           incoming().diff(existing()).affectedKeys().hasOnly(['paymentStatus', 'notes', 'annulled', 'annulledByName', 'annulledReason', 'annulledAtMs']);
         allow delete: if isValidId(transferId) && isWorkspaceAdmin(workspaceId);
+      }
+
+      // CASH SHIFTS (Open/Close by authorized staff; Admin can delete closed records)
+      match /shifts/{shiftId} {
+        allow get: if isValidId(shiftId) && isAuthorizedWorkspaceUser(workspaceId);
+        allow list: if canListWorkspaceSubcollection(workspaceId);
+        allow create: if isValidId(shiftId) && isAuthorizedWorkspaceUser(workspaceId) &&
+          isValidShift(incoming(), shiftId) &&
+          incoming().status == 'abierto' &&
+          incoming().openedByUid == request.auth.uid &&
+          incoming().createdByUid == request.auth.uid &&
+          incoming().ownerUid == getAfter(workspacePath(workspaceId)).data.ownerUid &&
+          incoming().createdAt == request.time &&
+          incoming().updatedAt == request.time;
+        allow update: if isValidId(shiftId) && isAuthorizedWorkspaceUser(workspaceId) &&
+          isValidShift(incoming(), shiftId) &&
+          (existing().status == 'abierto' || isWorkspaceAdmin(workspaceId)) &&
+          incoming().ownerUid == existing().ownerUid &&
+          incoming().createdByUid == existing().createdByUid &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time &&
+          (
+            (
+              existing().status == 'abierto' &&
+              incoming().status == 'cerrado' &&
+              incoming().closedByUid == request.auth.uid &&
+              incoming().diff(existing()).affectedKeys().hasOnly([
+                'status', 'closedByStaffId', 'closedByName', 'closedByUid',
+                'closingNote', 'usedPaymentMethods', 'declaredClosingBase', 'declaredByMethod',
+                'expectedBaseAmount', 'expectedByMethod', 'expectedTotal',
+                'declaredTotal', 'differenceTotal', 'paidOrdersCount', 'pendingOrdersCount',
+                'updatedAt'
+              ])
+            ) ||
+            (
+              isWorkspaceAdmin(workspaceId) &&
+              incoming().diff(existing()).affectedKeys().hasOnly(['allowedEmails', 'updatedAt'])
+            )
+          );
+        allow delete: if isValidId(shiftId) && isWorkspaceAdmin(workspaceId);
+      }
+
+      // SAVED CUSTOMERS (NIT/Cédula directory for optional receipt generation)
+      match /customers/{customerId} {
+        allow get: if isValidId(customerId) && isAuthorizedWorkspaceUser(workspaceId);
+        allow list: if canListWorkspaceSubcollection(workspaceId);
+        allow create: if isValidId(customerId) && isAuthorizedWorkspaceUser(workspaceId) &&
+          isValidCustomer(incoming(), customerId) &&
+          incoming().createdByUid == request.auth.uid &&
+          incoming().ownerUid == getAfter(workspacePath(workspaceId)).data.ownerUid &&
+          incoming().createdAt == request.time &&
+          incoming().updatedAt == request.time;
+        allow update: if isValidId(customerId) && isAuthorizedWorkspaceUser(workspaceId) &&
+          isValidCustomer(incoming(), customerId) &&
+          incoming().ownerUid == existing().ownerUid &&
+          incoming().createdByUid == existing().createdByUid &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['documentNumber', 'name', 'phone', 'email', 'notes', 'allowedEmails', 'updatedAt']);
+        allow delete: if isValidId(customerId) && isWorkspaceAdmin(workspaceId);
       }
     }
   }

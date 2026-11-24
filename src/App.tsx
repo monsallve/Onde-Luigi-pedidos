@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   BarChart3,
   ClipboardList,
+  Clock,
   History,
   Image as ImageIcon,
   LogOut,
@@ -20,6 +21,7 @@ import { OrderComposerModal } from './components/OrderComposerModal';
 import { PaymentSheetModal } from './components/PaymentSheetModal';
 import { PWAInstallButton } from './components/PWAInstallBanner';
 import { SettingsModal } from './components/SettingsModal';
+import { ShiftModal } from './components/ShiftModal';
 import { WaiterSelectorModal } from './components/WaiterSelectorModal';
 import { WhatsAppReceiptViewer } from './components/WhatsAppReceiptViewer';
 import { PosProvider, usePosStore } from './services/posStore';
@@ -96,6 +98,7 @@ const PosShell: React.FC = () => {
     clearVerificationNotice,
     orders,
     transfers,
+    openShift,
     cloudError,
     voidTransferReceipt,
     deleteTransferReceipt,
@@ -109,6 +112,7 @@ const PosShell: React.FC = () => {
   const [waiterModalOpen, setWaiterModalOpen] = useState(false);
   const [verifyModalOpen, setVerifyModalOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [shiftModalOpen, setShiftModalOpen] = useState(false);
   const [exitConfirmOpen, setExitConfirmOpen] = useState(false);
   const autoPromptedRef = useRef(false);
 
@@ -157,6 +161,7 @@ const PosShell: React.FC = () => {
     hasViewer: false,
     verifyModalOpen: false,
     settingsOpen: false,
+    shiftModalOpen: false,
     waiterModalOpen: false,
     waiterModalRequired: false,
     hasPaymentOrder: false,
@@ -175,6 +180,7 @@ const PosShell: React.FC = () => {
     hasViewer: Boolean(viewerState),
     verifyModalOpen,
     settingsOpen,
+    shiftModalOpen,
     waiterModalOpen,
     waiterModalRequired: requiresOneTimeName,
     hasPaymentOrder: Boolean(paymentOrder),
@@ -238,6 +244,11 @@ const PosShell: React.FC = () => {
       }
       if (ms.settingsOpen) {
         setSettingsOpen(false);
+        pushGuard();
+        return;
+      }
+      if (ms.shiftModalOpen) {
+        setShiftModalOpen(false);
         pushGuard();
         return;
       }
@@ -412,22 +423,38 @@ const PosShell: React.FC = () => {
     <div className="min-h-screen bg-[#0A0A0A] text-white flex flex-col">
       {/* Desktop & Mobile Top Navigation */}
       <header className="sticky top-0 z-30 bg-[#101014]/95 backdrop-blur-md border-b border-[#27272E]">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 h-14 flex items-center justify-between gap-4 lg:gap-6">
+        <div className="max-w-7xl mx-auto px-3 sm:px-6 h-14 flex items-center justify-between gap-2 sm:gap-4 lg:gap-6">
           {/* Zone 1: O'NDE LUIGI Brand Emblem + Wordmark */}
           <button
             type="button"
             onClick={() => navigateToTab(permissions.defaultTab)}
-            className="flex items-center gap-2.5 shrink-0 text-left"
+            className="flex items-center gap-1.5 sm:gap-2.5 shrink-0 text-left"
           >
             <img
               src={resolveAssetUrl('/onde-luigi-logo.png')}
               alt="O'NDE LUIGI"
-              className="w-8 h-8 rounded-full border border-red-600 object-cover shrink-0"
+              className="w-7 h-7 sm:w-8 sm:h-8 rounded-full border border-red-600 object-cover shrink-0"
             />
-            <span className="font-poster text-xl font-extrabold tracking-wide text-white whitespace-nowrap">
+            <span className="font-poster text-base sm:text-xl font-extrabold tracking-wide text-white whitespace-nowrap">
               O&apos;NDE LUIGI
             </span>
           </button>
+
+          {/* Mobile Center Shift Control (Admin / Mesero / Cajero only; hidden for Cocina) */}
+          {permissions.canManageShifts && (
+            <button
+              type="button"
+              onClick={() => setShiftModalOpen(true)}
+              className={`lg:hidden min-h-[34px] px-2.5 rounded-lg border text-[11px] font-bold flex items-center gap-1 whitespace-nowrap shrink-0 transition-colors ${
+                openShift
+                  ? 'border-emerald-600 bg-emerald-950/70 text-emerald-300 hover:bg-emerald-950'
+                  : 'border-amber-400 bg-amber-500 text-black hover:bg-amber-400'
+              }`}
+            >
+              <Clock className="w-3.5 h-3.5 shrink-0" />
+              <span>{openShift ? 'Cerrar turno' : 'Abrir turno'}</span>
+            </button>
+          )}
 
           {/* Zone 2: Desktop Navigation */}
           <nav
@@ -459,19 +486,19 @@ const PosShell: React.FC = () => {
           </nav>
 
           {/* Zone 3: Single Primary CTA on Desktop + Mobile Quick Controls */}
-          <div className="flex items-center gap-2 shrink-0">
+          <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
             <button
               type="button"
               onClick={() => setWaiterModalOpen(true)}
-              className={`lg:hidden min-h-[38px] px-2.5 rounded-lg border text-xs font-semibold flex items-center gap-1.5 whitespace-nowrap ${
+              className={`lg:hidden min-h-[34px] px-2 sm:px-2.5 rounded-lg border text-[11px] sm:text-xs font-semibold flex items-center gap-1 whitespace-nowrap ${
                 activeWaiter
                   ? 'border-[#27272E] bg-[#1C1C22] text-zinc-200'
                   : 'border-amber-500 bg-amber-500/20 text-amber-300'
               }`}
             >
-              <UserCheck className="w-3.5 h-3.5 text-amber-400" />
-              <span className="max-w-[105px] truncate">
-                {activeWaiter ? activeWaiter.name : 'Asociar cuenta'}
+              <UserCheck className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+              <span className="max-w-[58px] sm:max-w-[105px] truncate">
+                {activeWaiter ? activeWaiter.name : 'Asociar'}
               </span>
             </button>
 
@@ -479,7 +506,7 @@ const PosShell: React.FC = () => {
               type="button"
               onClick={() => setSettingsOpen(true)}
               aria-label="Abrir ajustes y permisos"
-              className="lg:hidden min-h-[40px] min-w-[40px] flex items-center justify-center rounded-xl border border-[#27272E] bg-[#1C1C22] text-zinc-200"
+              className="lg:hidden min-h-[36px] min-w-[36px] flex items-center justify-center rounded-xl border border-[#27272E] bg-[#1C1C22] text-zinc-200"
             >
               <Settings className="w-4 h-4" />
             </button>
@@ -497,10 +524,10 @@ const PosShell: React.FC = () => {
           </div>
         </div>
 
-        {/* Workspace Toolbar (Desktop secondary controls) */}
+        {/* Workspace Toolbar (Desktop secondary controls + centered Shift action) */}
         <div className="hidden lg:block bg-[#0A0A0A] border-t border-[#27272E]">
-          <div className="max-w-7xl mx-auto px-6 h-11 flex items-center justify-between text-xs">
-            <div className="flex items-center gap-3 text-zinc-400">
+          <div className="max-w-7xl mx-auto px-6 h-11 grid grid-cols-3 items-center text-xs">
+            <div className="flex items-center gap-3 text-zinc-400 justify-self-start">
               <span>
                 Rol:{' '}
                 <strong className={effectiveRole === 'admin' ? 'text-amber-400' : 'text-white'}>
@@ -524,7 +551,24 @@ const PosShell: React.FC = () => {
               </button>
             </div>
 
-            <div className="flex items-center gap-2">
+            <div className="justify-self-center">
+              {permissions.canManageShifts && (
+                <button
+                  type="button"
+                  onClick={() => setShiftModalOpen(true)}
+                  className={`inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg border font-bold transition-colors whitespace-nowrap ${
+                    openShift
+                      ? 'border-emerald-600 bg-emerald-950/70 text-emerald-300 hover:bg-emerald-950'
+                      : 'border-amber-400 bg-amber-500 text-black hover:bg-amber-400'
+                  }`}
+                >
+                  <Clock className="w-3.5 h-3.5 shrink-0" />
+                  <span>{openShift ? 'Cerrar turno' : 'Abrir turno'}</span>
+                </button>
+              )}
+            </div>
+
+            <div className="flex items-center gap-2 justify-self-end">
               <PWAInstallButton compact />
               <button
                 type="button"
@@ -657,17 +701,19 @@ const PosShell: React.FC = () => {
       >
         <div
           className={`grid h-16 items-center ${
-            navItems.length >= 6
-              ? 'grid-cols-6'
-              : navItems.length === 5
-                ? 'grid-cols-5'
-                : navItems.length === 4
-                  ? 'grid-cols-4'
-                  : navItems.length === 3
-                    ? 'grid-cols-3'
-                    : navItems.length === 2
-                      ? 'grid-cols-2'
-                      : 'grid-cols-1'
+            navItems.length >= 7
+              ? 'grid-cols-7'
+              : navItems.length === 6
+                ? 'grid-cols-6'
+                : navItems.length === 5
+                  ? 'grid-cols-5'
+                  : navItems.length === 4
+                    ? 'grid-cols-4'
+                    : navItems.length === 3
+                      ? 'grid-cols-3'
+                      : navItems.length === 2
+                        ? 'grid-cols-2'
+                        : 'grid-cols-1'
           }`}
         >
           {navItems.map((item) => {
@@ -677,12 +723,12 @@ const PosShell: React.FC = () => {
                 key={item.id}
                 type="button"
                 onClick={() => navigateToTab(item.id)}
-                className={`h-full flex flex-col items-center justify-center gap-0.5 ${
+                className={`h-full min-w-0 px-0.5 flex flex-col items-center justify-center gap-0.5 ${
                   active ? 'text-amber-400' : 'text-zinc-400 hover:text-white'
                 }`}
               >
                 {item.icon}
-                <span className="text-[10px] font-semibold tracking-tight whitespace-nowrap">
+                <span className="text-[9.5px] sm:text-[10px] font-semibold tracking-tight whitespace-nowrap truncate max-w-full">
                   {item.shortLabel}
                 </span>
               </button>
@@ -734,6 +780,10 @@ const PosShell: React.FC = () => {
         onClose={() => setSettingsOpen(false)}
         onOpenVerifyEmail={() => setVerifyModalOpen(true)}
       />
+
+      {permissions.canManageShifts && (
+        <ShiftModal open={shiftModalOpen} onClose={() => setShiftModalOpen(false)} />
+      )}
 
       {viewerState && viewerReceipts.length > 0 && permissions.canViewTransfers && (
         <WhatsAppReceiptViewer

@@ -17,9 +17,46 @@ export type MovementType =
 
 export type DateRangePreset = 'hoy' | 'ayer' | 'semana' | 'mes' | 'personalizado';
 
-export type AppTab = 'pedidos' | 'comandas' | 'historial' | 'transferencias' | 'ventas' | 'menu';
+export type TrackedPaymentMethod = 'efectivo' | 'transferencia' | 'tarjeta' | 'otro';
+
+export type ShiftStatus = 'abierto' | 'cerrado';
+
+export type AppTab =
+  | 'pedidos'
+  | 'comandas'
+  | 'historial'
+  | 'transferencias'
+  | 'ventas'
+  | 'menu';
 
 export type ConnectionMode = 'cloud';
+
+export interface BusinessBillingConfig {
+  businessName: string;
+  legalName: string;
+  nit: string;
+  regime: string;
+  address: string;
+  city: string;
+  phone: string;
+  email: string;
+  receiptPrefix: string;
+  footerNote: string;
+}
+
+export interface Customer {
+  id: string;
+  documentNumber: string;
+  name: string;
+  phone: string;
+  email: string;
+  notes: string;
+  ownerUid: string;
+  createdByUid: string;
+  allowedEmails: string[];
+  createdAtMs: number;
+  updatedAtMs: number;
+}
 
 export interface AddonOption {
   id: string;
@@ -96,6 +133,11 @@ export interface Order {
   notes: string;
   receiptCount: number;
   latestReceiptUrl: string;
+  customerId?: string;
+  customerDocument?: string;
+  customerName?: string;
+  customerPhone?: string;
+  customerEmail?: string;
   voidReason?: string;
   voidedByName?: string;
   voidedAtMs?: number;
@@ -158,3 +200,35 @@ export interface StaffMember {
   createdAtMs: number;
   updatedAtMs: number;
 }
+
+export interface Shift {
+  id: string;
+  status: ShiftStatus;
+  openingBaseAmount: number;
+  openingNote: string;
+  openedByStaffId: string;
+  openedByName: string;
+  openedByUid: string;
+  openedAtMs: number;
+  closedAtMs: number;
+  closedByStaffId: string;
+  closedByName: string;
+  closedByUid: string;
+  closingNote: string;
+  usedPaymentMethods: TrackedPaymentMethod[];
+  declaredClosingBase: number;
+  declaredByMethod: Partial<Record<TrackedPaymentMethod, number>>;
+  expectedBaseAmount: number;
+  expectedByMethod: Partial<Record<TrackedPaymentMethod, number>>;
+  expectedTotal: number;
+  declaredTotal: number;
+  differenceTotal: number;
+  paidOrdersCount: number;
+  pendingOrdersCount: number;
+  ownerUid: string;
+  createdByUid: string;
+  allowedEmails: string[];
+  createdAtMs: number;
+  updatedAtMs: number;
+}
+

@@ -1,8 +1,22 @@
 import React, { useRef, useState } from 'react';
-import { Camera, CheckCircle2, Image as ImageIcon, Upload, X } from 'lucide-react';
+import {
+  AlertTriangle,
+  Camera,
+  CheckCircle2,
+  FileDown,
+  Image as ImageIcon,
+  Upload,
+  X,
+} from 'lucide-react';
 import { usePosStore } from '../services/posStore';
 import type { Order, PaymentMethod, PaymentStatus } from '../types/pos';
+import {
+  DEFAULT_CUSTOMER_DOCUMENT,
+  DEFAULT_CUSTOMER_NAME,
+} from '../utils/billingUtils';
 import { formatCurrency } from '../utils/orderMath';
+import { downloadOrderReceiptPdf } from '../utils/receiptPdf';
+import { CustomerOrderField, type CustomerOrderValue } from './CustomerOrderField';
 
 interface Props {
   order: Order;
@@ -15,17 +29,25 @@ export const PaymentSheetModal: React.FC<Props> = ({
   onClose,
   onOpenWaiterPicker,
 }) => {
-  const { activeWaiter, updateOrderPayment } = usePosStore();
+  const { activeWaiter, openShift, customers, billingConfig, updateOrderPayment } = usePosStore();
   const [paymentStatus, setPaymentStatus] = useState<PaymentStatus>(
-    order.paymentStatus === 'pendiente' ? 'pagado' : order.paymentStatus
+    order.paymentStatus === 'pendiente' ? (openShift ? 'pagado' : 'pendiente') : order.paymentStatus
   );
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>(
     order.paymentMethod || 'transferencia'
   );
+  const [customerValue, setCustomerValue] = useState<CustomerOrderValue>({
+    id: order.customerId,
+    documentNumber: order.customerDocument || DEFAULT_CUSTOMER_DOCUMENT,
+    name: order.customerName || DEFAULT_CUSTOMER_NAME,
+    phone: order.customerPhone || '',
+    email: order.customerEmail || '',
+  });
   const [receiptFile, setReceiptFile] = useState<File | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string>('');
   const [receiptNotes, setReceiptNotes] = useState<string>('');
   const [saving, setSaving] = useState(false);
+  const [downloadingPdf, setDownloadingPdf] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   const cameraRef = useRef<HTMLInputElement>(null);
@@ -34,6 +56,10 @@ export const PaymentSheetModal: React.FC<Props> = ({
   const handleFile = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
+    if (!openShift) {
+      setErrorMsg('Abre un turno en la barra superior antes de confirmar un pago.');
+      return;
+    }
     setReceiptFile(file);
     setPaymentStatus('pagado');
     setPaymentMethod('transferencia');
@@ -48,6 +74,10 @@ export const PaymentSheetModal: React.FC<Props> = ({
       onOpenWaiterPicker();
       return;
     }
+    if (paymentStatus === 'pagado' && !openShift) {
+      setErrorMsg('Debes abrir un turno en la barra superior antes de confirmar el pago.');
+      return;
+    }
     setSaving(true);
     setErrorMsg(null);
     try {
@@ -55,6 +85,7 @@ export const PaymentSheetModal: React.FC<Props> = ({
         orderId: order.id,
         paymentStatus,
         paymentMethod: paymentStatus === 'pagado' ? paymentMethod || 'efectivo' : paymentMethod,
+        customer: customerValue,
         receiptFile,
         receiptNotes,
       });
@@ -65,6 +96,25 @@ export const PaymentSheetModal: React.FC<Props> = ({
       setSaving(false);
     }
   };
+
+  const handleDownloadColilla = async () => {
+    setDownloadingPdf(true);
+    try {
+      const previewOrder: Order = {
+        ...order,
+        customerId: customerValue.id,
+        customerDocument: customerValue.documentNumber,
+        customerName: customerValue.name,
+        customerPhone: customerValue.phone,
+        customerEmail: customerValue.email,
+      };
+      await downloadOrderReceiptPdf(previewOrder, billingConfig);
+    } finally {
+      setDownloadingPdf(false);
+    }
+  };
+
+  const payBlocked = paymentStatus === 'pagado' && !openShift;
 
   return (
     <div
@@ -94,6 +144,15 @@ export const PaymentSheetModal: React.FC<Props> = ({
         </div>
 
         <div className="p-5 overflow-y-auto space-y-5">
+          {!openShift && (
+            <div className="rounded-xl bg-amber-950/50 border border-amber-600/70 px-3.5 py-2.5 text-xs text-amber-200 flex items-start gap-2">
+              <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+              <span>
+                <strong>Turno cerrado:</strong> no se pueden confirmar pagos ni finalizar comandas hasta que abras un turno desde la barra superior.
+              </span>
+            </div>
+          )}
+
           {errorMsg && (
             <div className="rounded-xl bg-red-950/60 border border-red-700 px-3 py-2 text-xs font-medium text-red-200">
               {errorMsg}
@@ -107,13 +166,21 @@ export const PaymentSheetModal: React.FC<Props> = ({
             </span>
           </div>
 
+          <CustomerOrderField
+            value={customerValue}
+            onChange={setCustomerValue}
+            customers={customers}
+            compact
+          />
+
           <div>
             <p className="text-xs font-bold text-zinc-300 mb-2">Estado de pago</p>
             <div className="grid grid-cols-2 gap-2">
               <button
                 type="button"
+                disabled={!openShift}
                 onClick={() => setPaymentStatus('pagado')}
-                className={`min-h-[46px] rounded-xl border text-sm font-bold transition-colors ${
+                className={`min-h-[46px] rounded-xl border text-sm font-bold transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
                   paymentStatus === 'pagado'
                     ? 'bg-emerald-600 border-emerald-500 text-white'
                     : 'bg-[#1C1C22] border-[#27272E] text-zinc-300 hover:border-zinc-500'
@@ -189,16 +256,18 @@ export const PaymentSheetModal: React.FC<Props> = ({
             <div className="grid grid-cols-2 gap-2">
               <button
                 type="button"
+                disabled={!openShift}
                 onClick={() => cameraRef.current?.click()}
-                className="min-h-[46px] rounded-xl border border-[#27272E] bg-[#1C1C22] text-xs font-semibold text-white flex items-center justify-center gap-2 hover:border-zinc-500"
+                className="min-h-[46px] rounded-xl border border-[#27272E] bg-[#1C1C22] text-xs font-semibold text-white flex items-center justify-center gap-2 hover:border-zinc-500 disabled:opacity-40"
               >
                 <Camera className="w-4 h-4 text-amber-400" />
                 <span>Abrir cámara</span>
               </button>
               <button
                 type="button"
+                disabled={!openShift}
                 onClick={() => galleryRef.current?.click()}
-                className="min-h-[46px] rounded-xl border border-[#27272E] bg-[#1C1C22] text-xs font-semibold text-white flex items-center justify-center gap-2 hover:border-zinc-500"
+                className="min-h-[46px] rounded-xl border border-[#27272E] bg-[#1C1C22] text-xs font-semibold text-white flex items-center justify-center gap-2 hover:border-zinc-500 disabled:opacity-40"
               >
                 <ImageIcon className="w-4 h-4 text-zinc-300" />
                 <span>Desde galería</span>
@@ -254,12 +323,21 @@ export const PaymentSheetModal: React.FC<Props> = ({
           </div>
         </div>
 
-        <div className="px-5 py-4 border-t border-[#27272E] bg-[#101014]">
+        <div className="px-5 py-4 border-t border-[#27272E] bg-[#101014] flex flex-col sm:flex-row gap-2">
           <button
             type="button"
-            disabled={saving}
+            disabled={downloadingPdf}
+            onClick={() => void handleDownloadColilla()}
+            className="min-h-[46px] px-3.5 rounded-xl border border-[#27272E] bg-[#1C1C22] text-zinc-200 text-xs font-bold hover:border-amber-500 flex items-center justify-center gap-1.5 whitespace-nowrap"
+          >
+            <FileDown className="w-4 h-4 text-amber-400" />
+            <span>{downloadingPdf ? 'Generando...' : 'Colilla PDF'}</span>
+          </button>
+          <button
+            type="button"
+            disabled={saving || payBlocked}
             onClick={handleSave}
-            className="w-full min-h-[48px] rounded-xl bg-amber-500 text-black text-sm font-bold hover:bg-amber-400 disabled:opacity-60 flex items-center justify-center gap-2 transition-colors"
+            className="flex-1 min-h-[46px] rounded-xl bg-amber-500 text-black text-sm font-bold hover:bg-amber-400 disabled:opacity-50 flex items-center justify-center gap-2 transition-colors"
           >
             <CheckCircle2 className="w-4 h-4" />
             <span>

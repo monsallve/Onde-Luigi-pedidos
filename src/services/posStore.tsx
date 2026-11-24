@@ -39,7 +39,9 @@ import { ADMIN_BOOTSTRAP_EMAIL } from '../data/initialCatalog';
 import type {
   AccountRole,
   AddonOption,
+  BusinessBillingConfig,
   ConnectionMode,
+  Customer,
   Movement,
   MovementType,
   Order,
@@ -49,16 +51,28 @@ import type {
   PaymentStatus,
   Product,
   Sauce,
+  Shift,
   StaffMember,
   StaffRole,
+  TrackedPaymentMethod,
   TransferReceipt,
 } from '../types/pos';
+import {
+  buildCustomerDocId,
+  DEFAULT_BILLING_CONFIG,
+  DEFAULT_CUSTOMER_DOCUMENT,
+  isDefaultFinalConsumer,
+  normalizeBillingConfig,
+  normalizeCustomerDocument,
+  normalizeCustomerName,
+} from '../utils/billingUtils';
 import {
   calculateOrderTotals,
   createSafeId,
   diffOrderItems,
   formatAutoOrderReference,
   getNextCyclicOrderRefNumber,
+  normalizeProductImageUrl,
   ORDER_STATUS_LABELS,
   PAYMENT_METHOD_LABELS,
 } from '../utils/orderMath';
@@ -73,12 +87,15 @@ import {
   resolveEffectiveRole,
   type RolePermissions,
 } from '../utils/rolePermissions';
-import { uploadTransferReceiptImage } from './storageService';
+import { evaluateShiftClose } from '../utils/shiftMath';
+import { uploadProductImage, uploadTransferReceiptImage } from './storageService';
 import {
+  mapCustomerDoc,
   mapMovementDoc,
   mapOrderDoc,
   mapProductDoc,
   mapSauceDoc,
+  mapShiftDoc,
   mapStaffDoc,
   mapTransferDoc,
   resolveOrBootstrapCloudWorkspace,
@@ -89,12 +106,21 @@ import {
 const ACTIVE_WAITER_STORAGE_KEY = 'ondeluigi_active_waiter_v2';
 const CYCLIC_REF_COUNTER_KEY = 'ondeluigi_cyclic_ref_counter_v1';
 
+export interface OrderCustomerInput {
+  id?: string;
+  documentNumber?: string;
+  name?: string;
+  phone?: string;
+  email?: string;
+}
+
 export interface CreateOrderInput {
   reference: string;
   items: OrderItem[];
   notes: string;
   paymentStatus: PaymentStatus;
   paymentMethod: PaymentMethod;
+  customer?: OrderCustomerInput;
   receiptFile?: File | null;
   receiptNotes?: string;
 }
@@ -105,6 +131,7 @@ export interface SaveProductInput {
   category: string;
   basePrice: number;
   imageUrl?: string;
+  imageFile?: File | null;
   baseRecipe: string[];
   removableOptions: string[];
   addonOptions: AddonOption[];
@@ -138,6 +165,10 @@ interface PosContextValue {
   orders: Order[];
   movements: Movement[];
   transfers: TransferReceipt[];
+  shifts: Shift[];
+  openShift: Shift | null;
+  customers: Customer[];
+  billingConfig: BusinessBillingConfig;
 
   activeWaiter: StaffMember | null;
   myLinkedStaff: StaffMember | null;
@@ -168,6 +199,7 @@ interface PosContextValue {
     orderId: string;
     paymentStatus: PaymentStatus;
     paymentMethod: PaymentMethod;
+    customer?: OrderCustomerInput;
     receiptFile?: File | null;
     receiptNotes?: string;
   }) => Promise<{ usedFallbackInline?: boolean }>;
@@ -192,6 +224,25 @@ interface PosContextValue {
   deleteStaffMember: (staffId: string) => Promise<void>;
   updateAuthorizedEmails: (emails: string[]) => Promise<void>;
   updateAllowSelfRegistration: (allow: boolean) => Promise<void>;
+  saveBillingConfig: (config: BusinessBillingConfig) => Promise<void>;
+  upsertCustomer: (input: {
+    id?: string;
+    documentNumber: string;
+    name: string;
+    phone?: string;
+    email?: string;
+    notes?: string;
+  }) => Promise<Customer | null>;
+  deleteCustomerRecord: (customerId: string) => Promise<void>;
+
+  openCashShift: (openingBaseAmount: number, openingNote?: string) => Promise<Shift>;
+  closeCashShift: (params: {
+    shiftId: string;
+    declaredClosingBase: number;
+    declaredByMethod: Partial<Record<TrackedPaymentMethod, number>>;
+    closingNote?: string;
+  }) => Promise<void>;
+  deleteShiftRecord: (shiftId: string) => Promise<void>;
 }
 
 const PosContext = createContext<PosContextValue | null>(null);
@@ -252,6 +303,14 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [orders, setOrders] = useState<Order[]>([]);
   const [movements, setMovements] = useState<Movement[]>([]);
   const [transfers, setTransfers] = useState<TransferReceipt[]>([]);
+  const [shifts, setShifts] = useState<Shift[]>([]);
+  const [customers, setCustomers] = useState<Customer[]>([]);
+  const [billingConfig, setBillingConfig] = useState<BusinessBillingConfig>(DEFAULT_BILLING_CONFIG);
+
+  const openShift = useMemo(
+    () => shifts.find((s) => s.status === 'abierto') || null,
+    [shifts]
+  );
 
   const [activeWaiterId, setActiveWaiterIdState] = useState<string>(
     () => safeStorageGet(ACTIVE_WAITER_STORAGE_KEY) || ''
@@ -458,6 +517,7 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         setAuthorizedEmails(wsInfo.authorizedEmails);
         setAllowSelfRegistration(wsInfo.allowSelfRegistration);
         setCloudMemberRole(wsInfo.memberRole);
+        setBillingConfig(wsInfo.billingConfig);
         setCloudReadyForUid(firebaseUser.uid);
 
         unsubs.push(
@@ -465,10 +525,17 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             doc(db, 'workspaces', SHARED_WORKSPACE_ID),
             (snap) => {
               if (!snap.exists()) return;
-              const d = snap.data() as { ownerUid: string; authorizedEmails?: string[] };
+              const d = snap.data() as {
+                ownerUid: string;
+                authorizedEmails?: string[];
+                billingConfig?: Partial<BusinessBillingConfig>;
+              };
               setWorkspaceOwnerUid(d.ownerUid);
               if (Array.isArray(d.authorizedEmails)) {
                 setAuthorizedEmails(d.authorizedEmails.map((e) => e.toLowerCase()));
+              }
+              if (d.billingConfig) {
+                setBillingConfig(normalizeBillingConfig(d.billingConfig));
               }
             },
             (err) => handleFirestoreError(err, OperationType.GET, `workspaces/${SHARED_WORKSPACE_ID}`)
@@ -542,6 +609,8 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         listenSubCollection<Order>('orders', (d) => mapOrderDoc(d), setOrders, true);
         listenSubCollection<Movement>('movements', (d) => mapMovementDoc(d), setMovements, true);
         listenSubCollection<TransferReceipt>('transfers', (d) => mapTransferDoc(d), setTransfers, true);
+        listenSubCollection<Shift>('shifts', (d, id) => mapShiftDoc(d, id), setShifts, true);
+        listenSubCollection<Customer>('customers', (d, id) => mapCustomerDoc(d, id), setCustomers, false);
       })
       .catch((err) => {
         setCloudError(err instanceof Error ? err.message : 'Error al conectar con Firestore');
@@ -641,6 +710,9 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setOrders([]);
     setMovements([]);
     setTransfers([]);
+    setShifts([]);
+    setCustomers([]);
+    setBillingConfig(DEFAULT_BILLING_CONFIG);
   }, [firebaseUser]);
 
   // Guard & shared record builders
@@ -691,6 +763,75 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   );
 
   // Order & Transfer mutations
+  const syncCustomCustomerRecord = useCallback(
+    async (customer?: OrderCustomerInput): Promise<{
+      customerId: string;
+      customerDocument: string;
+      customerName: string;
+      customerPhone: string;
+      customerEmail: string;
+    }> => {
+      const customerDocument = normalizeCustomerDocument(customer?.documentNumber);
+      const customerName = normalizeCustomerName(customer?.name, customerDocument);
+      const customerPhone = (customer?.phone || '').trim().slice(0, 40);
+      const customerEmail = (customer?.email || '').trim().slice(0, 160);
+
+      if (isDefaultFinalConsumer(customerDocument)) {
+        return {
+          customerId: DEFAULT_CUSTOMER_DOCUMENT,
+          customerDocument,
+          customerName,
+          customerPhone,
+          customerEmail,
+        };
+      }
+
+      const custId = (customer?.id || buildCustomerDocId(customerDocument)).slice(0, 128);
+      const custPath = `workspaces/${SHARED_WORKSPACE_ID}/customers/${custId}`;
+      try {
+        const custRef = doc(db!, custPath);
+        const existingSnap = await getDoc(custRef);
+        if (existingSnap.exists()) {
+          const prev = existingSnap.data() as { phone?: string; email?: string; notes?: string };
+          await updateDoc(custRef, {
+            documentNumber: customerDocument,
+            name: customerName,
+            phone: customerPhone || String(prev.phone || ''),
+            email: customerEmail || String(prev.email || ''),
+            notes: String(prev.notes || ''),
+            allowedEmails: authorizedEmails,
+            updatedAt: serverTimestamp(),
+          });
+        } else {
+          await setDoc(custRef, {
+            id: custId,
+            documentNumber: customerDocument,
+            name: customerName,
+            phone: customerPhone,
+            email: customerEmail,
+            notes: '',
+            ownerUid: workspaceOwnerUid,
+            createdByUid: actorUid,
+            allowedEmails: authorizedEmails,
+            createdAt: serverTimestamp(),
+            updatedAt: serverTimestamp(),
+          });
+        }
+      } catch (err) {
+        handleFirestoreError(err, OperationType.UPDATE, custPath);
+      }
+
+      return {
+        customerId: custId,
+        customerDocument,
+        customerName,
+        customerPhone,
+        customerEmail,
+      };
+    },
+    [authorizedEmails, workspaceOwnerUid, actorUid]
+  );
+
   const createOrder = useCallback(
     async (input: CreateOrderInput): Promise<Order> => {
       if (!permissions.canTakeOrders) {
@@ -701,7 +842,13 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       if (input.items.length === 0) {
         throw new Error('Agrega al menos un producto al pedido.');
       }
+      if (input.paymentStatus === 'pagado' && !openShift) {
+        throw new Error(
+          'El turno está cerrado: no puedes confirmar pagos todavía. Envía el pedido como "Por cobrar" o abre un turno en la barra superior.'
+        );
+      }
 
+      const resolvedCustomer = await syncCustomCustomerRecord(input.customer);
       const now = Date.now();
       const orderId = createSafeId('ord');
       const orderNumber = orders.reduce((m, o) => Math.max(m, o.orderNumber), 100) + 1;
@@ -756,6 +903,11 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         notes: input.notes.trim().slice(0, 400),
         receiptCount,
         latestReceiptUrl: receiptUrl,
+        customerId: resolvedCustomer.customerId,
+        customerDocument: resolvedCustomer.customerDocument,
+        customerName: resolvedCustomer.customerName,
+        customerPhone: resolvedCustomer.customerPhone,
+        customerEmail: resolvedCustomer.customerEmail,
         ownerUid: workspaceOwnerUid,
         createdByUid: actorUid,
         allowedEmails: authorizedEmails,
@@ -819,7 +971,18 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
       return newOrder;
     },
-    [permissions.canTakeOrders, requireCloud, requireWaiter, orders, workspaceOwnerUid, actorUid, authorizedEmails, buildMovementRecord]
+    [
+      permissions.canTakeOrders,
+      requireCloud,
+      requireWaiter,
+      openShift,
+      syncCustomCustomerRecord,
+      orders,
+      workspaceOwnerUid,
+      actorUid,
+      authorizedEmails,
+      buildMovementRecord,
+    ]
   );
 
   const updateOrderItems = useCallback(
@@ -988,12 +1151,14 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       orderId,
       paymentStatus,
       paymentMethod,
+      customer,
       receiptFile,
       receiptNotes,
     }: {
       orderId: string;
       paymentStatus: PaymentStatus;
       paymentMethod: PaymentMethod;
+      customer?: OrderCustomerInput;
       receiptFile?: File | null;
       receiptNotes?: string;
     }) => {
@@ -1005,6 +1170,13 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       const target = orders.find((o) => o.id === orderId);
       if (!target) throw new Error('Pedido no encontrado.');
 
+      if (paymentStatus === 'pagado' && !openShift) {
+        throw new Error(
+          'El turno está cerrado: debes abrir un turno en la barra superior antes de confirmar el pago o finalizar una comanda.'
+        );
+      }
+
+      const resolvedCustomer = customer ? await syncCustomCustomerRecord(customer) : null;
       const now = Date.now();
       let newReceipt: TransferReceipt | null = null;
       let usedFallbackInline = false;
@@ -1057,6 +1229,15 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           paymentMethod,
           receiptCount: target.receiptCount + (newReceipt ? 1 : 0),
           latestReceiptUrl: newReceipt ? newReceipt.imageUrl : target.latestReceiptUrl,
+          ...(resolvedCustomer
+            ? {
+                customerId: resolvedCustomer.customerId,
+                customerDocument: resolvedCustomer.customerDocument,
+                customerName: resolvedCustomer.customerName,
+                customerPhone: resolvedCustomer.customerPhone,
+                customerEmail: resolvedCustomer.customerEmail,
+              }
+            : {}),
           waiterId: waiter.id,
           waiterName: waiter.name,
           updatedAt: serverTimestamp(),
@@ -1083,7 +1264,19 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
       return { usedFallbackInline };
     },
-    [permissions.canManagePayments, requireCloud, requireWaiter, orders, transfers, workspaceOwnerUid, actorUid, authorizedEmails, buildMovementRecord]
+    [
+      permissions.canManagePayments,
+      requireCloud,
+      requireWaiter,
+      orders,
+      openShift,
+      syncCustomCustomerRecord,
+      transfers,
+      workspaceOwnerUid,
+      actorUid,
+      authorizedEmails,
+      buildMovementRecord,
+    ]
   );
 
   const attachReceiptToOrder = useCallback(
@@ -1103,6 +1296,9 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       }
       requireCloud();
       const waiter = requireWaiter();
+      if (!openShift) {
+        throw new Error('El turno está cerrado: abre un turno antes de confirmar pagos con comprobante.');
+      }
       const target = orders.find((o) => o.id === orderId);
       if (!target) throw new Error('Pedido no encontrado.');
 
@@ -1168,7 +1364,17 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
       return { usedFallbackInline: uploadRes.usedFallbackInline };
     },
-    [permissions.canUploadReceipts, requireCloud, requireWaiter, orders, workspaceOwnerUid, actorUid, authorizedEmails, buildMovementRecord]
+    [
+      permissions.canUploadReceipts,
+      requireCloud,
+      requireWaiter,
+      openShift,
+      orders,
+      workspaceOwnerUid,
+      actorUid,
+      authorizedEmails,
+      buildMovementRecord,
+    ]
   );
 
   const voidTransferReceipt = useCallback(
@@ -1308,11 +1514,21 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       const minS = input.allowSauces ? Math.max(0, Math.min(4, Math.round(input.minSauces))) : 0;
       const maxS = input.allowSauces ? Math.max(minS, Math.min(4, Math.round(input.maxSauces))) : 0;
 
+      let resolvedImageUrl = normalizeProductImageUrl(input.imageUrl, existing?.imageUrl);
+      if (input.imageFile) {
+        const uploaded = await uploadProductImage({
+          workspaceId: SHARED_WORKSPACE_ID,
+          productId: prodId,
+          file: input.imageFile,
+        });
+        resolvedImageUrl = normalizeProductImageUrl(uploaded.imageUrl, existing?.imageUrl);
+      }
+
       const payload = {
         name: input.name.trim().slice(0, 100),
         category: input.category.trim().slice(0, 60) || 'General',
         basePrice: Math.round(input.basePrice),
-        imageUrl: (input.imageUrl || existing?.imageUrl || '').trim().slice(0, 500),
+        imageUrl: resolvedImageUrl,
         baseRecipe: input.baseRecipe.map((s) => s.trim()).filter(Boolean).slice(0, 30),
         removableOptions: input.removableOptions.map((s) => s.trim()).filter(Boolean).slice(0, 30),
         addonOptions: input.addonOptions.slice(0, 30),
@@ -1612,7 +1828,7 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           authorizedEmails: cleanList,
           updatedAt: serverTimestamp(),
         });
-        for (const colName of ['staff', 'sauces', 'products', 'orders'] as const) {
+        for (const colName of ['staff', 'sauces', 'products', 'orders', 'shifts', 'customers'] as const) {
           const snap = await getDocs(
             query(
               collection(db!, `workspaces/${SHARED_WORKSPACE_ID}/${colName}`),
@@ -1660,6 +1876,280 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     [requireAdmin, requireCloud, workspaceOwnerUid]
   );
 
+  const saveBillingConfig = useCallback(
+    async (config: BusinessBillingConfig) => {
+      requireAdmin();
+      requireCloud();
+      const normalized = normalizeBillingConfig(config);
+      const wsPath = `workspaces/${SHARED_WORKSPACE_ID}`;
+      try {
+        await updateDoc(doc(db!, wsPath), {
+          billingConfig: normalized,
+          updatedAt: serverTimestamp(),
+        });
+        setBillingConfig(normalized);
+      } catch (err) {
+        handleFirestoreError(err, OperationType.UPDATE, wsPath);
+      }
+    },
+    [requireAdmin, requireCloud]
+  );
+
+  const upsertCustomer = useCallback(
+    async (input: {
+      id?: string;
+      documentNumber: string;
+      name: string;
+      phone?: string;
+      email?: string;
+      notes?: string;
+    }): Promise<Customer | null> => {
+      requireCloud();
+      const cleanDoc = normalizeCustomerDocument(input.documentNumber);
+      if (isDefaultFinalConsumer(cleanDoc)) {
+        return null;
+      }
+      const cleanName = normalizeCustomerName(input.name, cleanDoc);
+      const cleanPhone = (input.phone || '').trim().slice(0, 40);
+      const cleanEmail = (input.email || '').trim().slice(0, 160);
+      const cleanNotes = (input.notes || '').trim().slice(0, 300);
+
+      const custId = (input.id || buildCustomerDocId(cleanDoc)).slice(0, 128);
+      const path = `workspaces/${SHARED_WORKSPACE_ID}/customers/${custId}`;
+      const now = Date.now();
+      let createdAtMs = now;
+
+      try {
+        const ref = doc(db!, path);
+        const snap = await getDoc(ref);
+        if (snap.exists()) {
+          const prev = snap.data() as { createdAt?: unknown };
+          createdAtMs = typeof prev.createdAt === 'number' ? prev.createdAt : now;
+          await updateDoc(ref, {
+            documentNumber: cleanDoc,
+            name: cleanName,
+            phone: cleanPhone,
+            email: cleanEmail,
+            notes: cleanNotes,
+            allowedEmails: authorizedEmails,
+            updatedAt: serverTimestamp(),
+          });
+        } else {
+          await setDoc(ref, {
+            id: custId,
+            documentNumber: cleanDoc,
+            name: cleanName,
+            phone: cleanPhone,
+            email: cleanEmail,
+            notes: cleanNotes,
+            ownerUid: workspaceOwnerUid,
+            createdByUid: actorUid,
+            allowedEmails: authorizedEmails,
+            createdAt: serverTimestamp(),
+            updatedAt: serverTimestamp(),
+          });
+        }
+      } catch (err) {
+        handleFirestoreError(err, OperationType.UPDATE, path);
+      }
+
+      return {
+        id: custId,
+        documentNumber: cleanDoc,
+        name: cleanName,
+        phone: cleanPhone,
+        email: cleanEmail,
+        notes: cleanNotes,
+        ownerUid: workspaceOwnerUid,
+        createdByUid: actorUid,
+        allowedEmails: authorizedEmails,
+        createdAtMs,
+        updatedAtMs: now,
+      };
+    },
+    [requireCloud, authorizedEmails, workspaceOwnerUid, actorUid]
+  );
+
+  const deleteCustomerRecord = useCallback(
+    async (customerId: string) => {
+      requireAdmin();
+      requireCloud();
+      const path = `workspaces/${SHARED_WORKSPACE_ID}/customers/${customerId}`;
+      try {
+        await deleteDoc(doc(db!, path));
+      } catch (err) {
+        handleFirestoreError(err, OperationType.DELETE, path);
+      }
+    },
+    [requireAdmin, requireCloud]
+  );
+
+  const openCashShift = useCallback(
+    async (openingBaseAmount: number, openingNote = ''): Promise<Shift> => {
+      if (!permissions.canManageShifts) {
+        throw new Error('Tu rol actual no tiene permiso para abrir o cerrar turnos de caja.');
+      }
+      requireCloud();
+      const waiter = requireWaiter();
+      if (shifts.some((s) => s.status === 'abierto')) {
+        throw new Error('Ya hay un turno abierto. Ciérralo antes de abrir uno nuevo.');
+      }
+      if (!Number.isFinite(openingBaseAmount) || openingBaseAmount < 0) {
+        throw new Error('Ingresa un valor válido para la base inicial en caja.');
+      }
+
+      const safeBase = Math.round(openingBaseAmount);
+      const shiftId = createSafeId('shift');
+      const now = Date.now();
+      const cleanNote = openingNote.trim().slice(0, 300);
+
+      const newShift: Shift = {
+        id: shiftId,
+        status: 'abierto',
+        openingBaseAmount: safeBase,
+        openingNote: cleanNote,
+        openedByStaffId: waiter.id,
+        openedByName: waiter.name.slice(0, 80),
+        openedByUid: actorUid,
+        openedAtMs: now,
+        closedAtMs: 0,
+        closedByStaffId: '',
+        closedByName: '',
+        closedByUid: '',
+        closingNote: '',
+        usedPaymentMethods: [],
+        declaredClosingBase: 0,
+        declaredByMethod: {},
+        expectedBaseAmount: safeBase,
+        expectedByMethod: {},
+        expectedTotal: safeBase,
+        declaredTotal: 0,
+        differenceTotal: 0,
+        paidOrdersCount: 0,
+        pendingOrdersCount: 0,
+        ownerUid: workspaceOwnerUid,
+        createdByUid: actorUid,
+        allowedEmails: authorizedEmails,
+        createdAtMs: now,
+        updatedAtMs: now,
+      };
+
+      const path = `workspaces/${SHARED_WORKSPACE_ID}/shifts/${shiftId}`;
+      try {
+        await setDoc(doc(db!, path), {
+          id: newShift.id,
+          status: newShift.status,
+          openingBaseAmount: newShift.openingBaseAmount,
+          openingNote: newShift.openingNote,
+          openedByStaffId: newShift.openedByStaffId,
+          openedByName: newShift.openedByName,
+          openedByUid: newShift.openedByUid,
+          closedByStaffId: '',
+          closedByName: '',
+          closedByUid: '',
+          closingNote: '',
+          usedPaymentMethods: [],
+          declaredClosingBase: 0,
+          declaredByMethod: {},
+          expectedBaseAmount: newShift.expectedBaseAmount,
+          expectedByMethod: {},
+          expectedTotal: newShift.expectedTotal,
+          declaredTotal: 0,
+          differenceTotal: 0,
+          paidOrdersCount: 0,
+          pendingOrdersCount: 0,
+          ownerUid: newShift.ownerUid,
+          createdByUid: newShift.createdByUid,
+          allowedEmails: newShift.allowedEmails,
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
+      } catch (err) {
+        handleFirestoreError(err, OperationType.CREATE, path);
+      }
+
+      return newShift;
+    },
+    [permissions.canManageShifts, requireCloud, requireWaiter, shifts, actorUid, workspaceOwnerUid, authorizedEmails]
+  );
+
+  const closeCashShift = useCallback(
+    async ({
+      shiftId,
+      declaredClosingBase,
+      declaredByMethod,
+      closingNote = '',
+    }: {
+      shiftId: string;
+      declaredClosingBase: number;
+      declaredByMethod: Partial<Record<TrackedPaymentMethod, number>>;
+      closingNote?: string;
+    }) => {
+      if (!permissions.canManageShifts) {
+        throw new Error('Tu rol actual no tiene permiso para cerrar turnos de caja.');
+      }
+      requireCloud();
+      const waiter = requireWaiter();
+      const target = shifts.find((s) => s.id === shiftId);
+      if (!target) throw new Error('Turno no encontrado.');
+      if (target.status !== 'abierto') {
+        throw new Error('Este turno ya fue cerrado.');
+      }
+      if (!Number.isFinite(declaredClosingBase) || declaredClosingBase < 0) {
+        throw new Error('Ingresa un valor válido para la base que quedó en caja.');
+      }
+
+      const evaluation = evaluateShiftClose({
+        orders,
+        movements,
+        openedAtMs: target.openedAtMs,
+        closedAtMs: Date.now(),
+        openingBaseAmount: target.openingBaseAmount,
+        declaredClosingBase,
+        declaredByMethod,
+      });
+
+      const path = `workspaces/${SHARED_WORKSPACE_ID}/shifts/${shiftId}`;
+      try {
+        await updateDoc(doc(db!, path), {
+          status: 'cerrado',
+          closedByStaffId: waiter.id,
+          closedByName: waiter.name.slice(0, 80),
+          closedByUid: actorUid,
+          closingNote: closingNote.trim().slice(0, 300),
+          usedPaymentMethods: evaluation.usedPaymentMethods,
+          declaredClosingBase: evaluation.declaredClosingBase,
+          declaredByMethod: evaluation.declaredByMethod,
+          expectedBaseAmount: evaluation.expectedBaseAmount,
+          expectedByMethod: evaluation.expectedByMethod,
+          expectedTotal: evaluation.expectedTotal,
+          declaredTotal: evaluation.declaredTotal,
+          differenceTotal: evaluation.differenceTotal,
+          paidOrdersCount: evaluation.paidOrdersCount,
+          pendingOrdersCount: evaluation.pendingOrdersCount,
+          updatedAt: serverTimestamp(),
+        });
+      } catch (err) {
+        handleFirestoreError(err, OperationType.UPDATE, path);
+      }
+    },
+    [permissions.canManageShifts, requireCloud, requireWaiter, shifts, orders, movements, actorUid]
+  );
+
+  const deleteShiftRecord = useCallback(
+    async (shiftId: string) => {
+      requireAdmin();
+      requireCloud();
+      const path = `workspaces/${SHARED_WORKSPACE_ID}/shifts/${shiftId}`;
+      try {
+        await deleteDoc(doc(db!, path));
+      } catch (err) {
+        handleFirestoreError(err, OperationType.DELETE, path);
+      }
+    },
+    [requireAdmin, requireCloud]
+  );
+
   const value: PosContextValue = {
     sessionMode,
     authReady,
@@ -1684,6 +2174,10 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     orders,
     movements,
     transfers,
+    shifts,
+    openShift,
+    customers,
+    billingConfig,
 
     activeWaiter,
     myLinkedStaff,
@@ -1721,6 +2215,12 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     deleteStaffMember,
     updateAuthorizedEmails,
     updateAllowSelfRegistration,
+    saveBillingConfig,
+    upsertCustomer,
+    deleteCustomerRecord,
+    openCashShift,
+    closeCashShift,
+    deleteShiftRecord,
   };
 
   return <PosContext.Provider value={value}>{children}</PosContext.Provider>;

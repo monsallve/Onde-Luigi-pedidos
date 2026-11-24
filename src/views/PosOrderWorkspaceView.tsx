@@ -3,6 +3,7 @@ import {
   Camera,
   Check,
   CheckCircle2,
+  FileDown,
   Image as ImageIcon,
   Lock,
   ShoppingBag,
@@ -22,10 +23,20 @@ import {
   adjustCartLineQuantity,
   buildOrderItem,
   calculateOrderTotals,
+  computeProductSalesCounts,
   formatCurrency,
+  type ProductInteractionStats,
+  rankProductsByInteraction,
   splitCartLineUnit,
   validateOrderItemsSauces,
 } from '../utils/orderMath';
+import { downloadOrderReceiptPdf } from '../utils/receiptPdf';
+import {
+  createDefaultCustomerOrderValue,
+  CustomerOrderField,
+  type CustomerOrderValue,
+} from '../components/CustomerOrderField';
+import { CustomersModal } from '../components/CustomersModal';
 import { OrderCartItemsList, ProductCatalogPanel } from '../components/OrderMenuAndCart';
 import { RecipeCustomizeModal } from '../components/RecipeCustomizeModal';
 
@@ -36,6 +47,36 @@ interface Props {
 
 const QUICK_REFS = ['Mesa 1', 'Mesa 2', 'Mesa 3', 'Mesa 4', 'Barra', 'Para llevar', 'Domicilio'];
 export const ORDER_DRAFT_STORAGE_KEY = 'ondeluigi_order_draft_v1';
+const PRODUCT_INTERACTIONS_STORAGE_KEY = 'ondeluigi_product_interactions_v1';
+
+function loadProductInteractions(): Record<string, number> {
+  try {
+    if (typeof window === 'undefined') return {};
+    const raw = window.localStorage.getItem(PRODUCT_INTERACTIONS_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    if (!parsed || typeof parsed !== 'object') return {};
+    const out: Record<string, number> = {};
+    for (const [k, v] of Object.entries(parsed)) {
+      if (typeof v === 'number' && Number.isFinite(v) && v > 0) {
+        out[k] = Math.floor(v);
+      }
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+function saveProductInteractions(map: Record<string, number>): void {
+  try {
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem(PRODUCT_INTERACTIONS_STORAGE_KEY, JSON.stringify(map));
+    }
+  } catch {
+    // ignore storage quota errors
+  }
+}
 
 interface OrderDraftPayload {
   reference: string;
@@ -86,7 +127,18 @@ export const PosOrderWorkspaceView: React.FC<Props> = ({
   onOpenWaiterPicker,
   onGoToOrders,
 }) => {
-  const { products, sauces, activeWaiter, effectiveRole, permissions, createOrder } = usePosStore();
+  const {
+    products,
+    sauces,
+    orders,
+    customers,
+    billingConfig,
+    openShift,
+    activeWaiter,
+    effectiveRole,
+    permissions,
+    createOrder,
+  } = usePosStore();
 
   const initialDraft = useMemo(() => loadOrderDraft(), []);
   const [reference, setReference] = useState(initialDraft?.reference ?? '');
@@ -99,6 +151,10 @@ export const PosOrderWorkspaceView: React.FC<Props> = ({
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>(
     initialDraft?.paymentMethod ?? 'transferencia'
   );
+  const [customerValue, setCustomerValue] = useState<CustomerOrderValue>(() =>
+    createDefaultCustomerOrderValue()
+  );
+  const [customersModalOpen, setCustomersModalOpen] = useState(false);
   const [receiptFile, setReceiptFile] = useState<File | null>(null);
   const [receiptPreview, setReceiptPreview] = useState('');
   const [receiptNotes, setReceiptNotes] = useState<string>(initialDraft?.receiptNotes ?? '');
@@ -112,9 +168,17 @@ export const PosOrderWorkspaceView: React.FC<Props> = ({
   const [submitting, setSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [lastCreatedOrder, setLastCreatedOrder] = useState<Order | null>(null);
+  const [downloadingPdf, setDownloadingPdf] = useState(false);
 
   const cameraRef = useRef<HTMLInputElement>(null);
   const galleryRef = useRef<HTMLInputElement>(null);
+
+  // If shift is closed, force initial payment status back to 'pendiente' (Por cobrar)
+  useEffect(() => {
+    if (!openShift && paymentStatus === 'pagado') {
+      setPaymentStatus('pendiente');
+    }
+  }, [openShift, paymentStatus]);
 
   useEffect(() => {
     const hasDraft =
@@ -159,6 +223,49 @@ export const PosOrderWorkspaceView: React.FC<Props> = ({
     return () => window.removeEventListener('ondeluigi:back-intercept', handleBackIntercept);
   }, [customizingProduct, mobileComandaOpen]);
 
+  const [localInteractions, setLocalInteractions] = useState<Record<string, number>>(() =>
+    loadProductInteractions()
+  );
+  const localInteractionsRef = useRef(localInteractions);
+  localInteractionsRef.current = localInteractions;
+
+  const liveSalesCounts = useMemo(() => computeProductSalesCounts(orders), [orders]);
+  const [rankingSnapshot, setRankingSnapshot] = useState<{
+    salesCounts: Record<string, ProductInteractionStats>;
+    localInteractions: Record<string, number>;
+  }>(() => ({
+    salesCounts: computeProductSalesCounts(orders),
+    localInteractions: loadProductInteractions(),
+  }));
+
+  // Refresh ranking snapshot when switching categories or receiving initial orders from cloud,
+  // while keeping grid positions stable during active multi-tap item selection.
+  const prevOrdersCountRef = useRef(orders.length);
+  useEffect(() => {
+    if (prevOrdersCountRef.current === 0 && orders.length > 0) {
+      setRankingSnapshot({
+        salesCounts: liveSalesCounts,
+        localInteractions: localInteractionsRef.current,
+      });
+    }
+    prevOrdersCountRef.current = orders.length;
+  }, [orders.length, liveSalesCounts]);
+
+  const refreshRankingSnapshot = () => {
+    setRankingSnapshot({
+      salesCounts: liveSalesCounts,
+      localInteractions: localInteractionsRef.current,
+    });
+  };
+
+  const recordProductInteraction = (productId: string) => {
+    setLocalInteractions((prev) => {
+      const next = { ...prev, [productId]: (prev[productId] || 0) + 1 };
+      saveProductInteractions(next);
+      return next;
+    });
+  };
+
   const activeProducts = useMemo(() => products.filter((p) => p.active), [products]);
   const activeSauceCount = useMemo(() => sauces.filter((s) => s.active).length, [sauces]);
   const productMap = useMemo(() => new Map(products.map((p) => [p.id, p])), [products]);
@@ -168,15 +275,37 @@ export const PosOrderWorkspaceView: React.FC<Props> = ({
     [activeProducts]
   );
 
+  const rankedActiveProducts = useMemo(
+    () =>
+      rankProductsByInteraction(
+        activeProducts,
+        rankingSnapshot.salesCounts,
+        rankingSnapshot.localInteractions
+      ).rankedProducts,
+    [activeProducts, rankingSnapshot]
+  );
+
+  const topProductIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const p of rankedActiveProducts) {
+      const score =
+        (rankingSnapshot.salesCounts[p.id]?.soldUnits || 0) * 10 +
+        (rankingSnapshot.localInteractions[p.id] || 0);
+      if (score > 0) ids.add(p.id);
+      if (ids.size >= 3) break;
+    }
+    return ids;
+  }, [rankedActiveProducts, rankingSnapshot]);
+
   const filteredProducts = useMemo(() => {
     const q = searchTerm.trim().toLowerCase();
-    return activeProducts.filter((p) => {
+    return rankedActiveProducts.filter((p) => {
       const catMatch = selectedCategory === 'Todas' || p.category === selectedCategory;
       const textMatch =
         !q || p.name.toLowerCase().includes(q) || p.category.toLowerCase().includes(q);
       return catMatch && textMatch;
     });
-  }, [activeProducts, selectedCategory, searchTerm]);
+  }, [rankedActiveProducts, selectedCategory, searchTerm]);
 
   const totals = useMemo(() => calculateOrderTotals(items), [items]);
   const totalUnits = useMemo(() => items.reduce((s, i) => s + i.quantity, 0), [items]);
@@ -185,6 +314,7 @@ export const PosOrderWorkspaceView: React.FC<Props> = ({
   const handleQuickAdd = (product: Product) => {
     setErrorMsg(null);
     setLastCreatedOrder(null);
+    recordProductInteraction(product.id);
     const candidate = buildOrderItem({
       productId: product.id,
       productName: product.name,
@@ -208,6 +338,7 @@ export const PosOrderWorkspaceView: React.FC<Props> = ({
       setCustomizingProduct(null);
       return;
     }
+    recordProductInteraction(built.productId);
     setItems((prev) => addOrMergeCartItem(prev, built));
     setCustomizingProduct(null);
   };
@@ -227,6 +358,7 @@ export const PosOrderWorkspaceView: React.FC<Props> = ({
     setItems([]);
     setPaymentStatus('pendiente');
     setPaymentMethod('transferencia');
+    setCustomerValue(createDefaultCustomerOrderValue());
     setReceiptFile(null);
     setReceiptPreview('');
     setReceiptNotes('');
@@ -252,6 +384,12 @@ export const PosOrderWorkspaceView: React.FC<Props> = ({
       setMobileComandaOpen(true);
       return;
     }
+    if (paymentStatus === 'pagado' && !openShift) {
+      setErrorMsg(
+        'El turno está cerrado: envíalo como "Por cobrar" o abre un turno en la barra superior para confirmar pagos.'
+      );
+      return;
+    }
 
     setSubmitting(true);
     try {
@@ -261,12 +399,14 @@ export const PosOrderWorkspaceView: React.FC<Props> = ({
         notes,
         paymentStatus,
         paymentMethod: paymentStatus === 'pagado' ? paymentMethod : '',
+        customer: customerValue,
         receiptFile,
         receiptNotes,
       });
       setLastCreatedOrder(created);
       handleClearDraft();
       setMobileComandaOpen(false);
+      refreshRankingSnapshot();
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : 'No se pudo enviar el pedido.');
     } finally {
@@ -308,11 +448,27 @@ export const PosOrderWorkspaceView: React.FC<Props> = ({
         </div>
 
         {lastCreatedOrder && (
-          <div className="flex items-center gap-3 rounded-xl bg-emerald-950/70 border border-emerald-700 px-3.5 py-2 text-xs text-emerald-200">
+          <div className="flex flex-wrap items-center gap-2.5 rounded-xl bg-emerald-950/70 border border-emerald-700 px-3.5 py-2 text-xs text-emerald-200">
             <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
             <span>
               Pedido <strong>#{lastCreatedOrder.orderNumber}</strong> ({lastCreatedOrder.reference}) enviado
             </span>
+            <button
+              type="button"
+              disabled={downloadingPdf}
+              onClick={async () => {
+                setDownloadingPdf(true);
+                try {
+                  await downloadOrderReceiptPdf(lastCreatedOrder, billingConfig);
+                } finally {
+                  setDownloadingPdf(false);
+                }
+              }}
+              className="min-h-[30px] px-2.5 rounded-lg bg-amber-500 text-black font-bold hover:bg-amber-400 inline-flex items-center gap-1 whitespace-nowrap"
+            >
+              <FileDown className="w-3.5 h-3.5" />
+              <span>{downloadingPdf ? 'PDF...' : 'Colilla PDF'}</span>
+            </button>
             <button
               type="button"
               onClick={onGoToOrders}
@@ -329,9 +485,13 @@ export const PosOrderWorkspaceView: React.FC<Props> = ({
           <ProductCatalogPanel
             products={filteredProducts}
             itemsInOrder={items}
+            topProductIds={topProductIds}
             categories={categories}
             selectedCategory={selectedCategory}
-            onSelectCategory={setSelectedCategory}
+            onSelectCategory={(cat) => {
+              setSelectedCategory(cat);
+              refreshRankingSnapshot();
+            }}
             searchTerm={searchTerm}
             onSearchChange={setSearchTerm}
             onQuickAdd={handleQuickAdd}
@@ -447,6 +607,14 @@ export const PosOrderWorkspaceView: React.FC<Props> = ({
               />
             </div>
 
+            <CustomerOrderField
+              value={customerValue}
+              onChange={setCustomerValue}
+              customers={customers}
+              onOpenDirectory={() => setCustomersModalOpen(true)}
+              compact
+            />
+
             <div className="border border-[#27272E] rounded-xl p-3 space-y-2.5 bg-[#0A0A0A]">
               <div className="flex items-center justify-between gap-2">
                 <span className="text-xs font-bold text-zinc-300">Pago inicial</span>
@@ -464,8 +632,10 @@ export const PosOrderWorkspaceView: React.FC<Props> = ({
                   </button>
                   <button
                     type="button"
+                    disabled={!openShift}
                     onClick={() => setPaymentStatus('pagado')}
-                    className={`min-h-[32px] px-2.5 rounded-md text-xs font-bold transition-colors ${
+                    title={!openShift ? 'Abre un turno para confirmar pagos' : undefined}
+                    className={`min-h-[32px] px-2.5 rounded-md text-xs font-bold transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
                       paymentStatus === 'pagado'
                         ? 'bg-emerald-600 text-white'
                         : 'text-zinc-400 hover:text-white'
@@ -475,6 +645,12 @@ export const PosOrderWorkspaceView: React.FC<Props> = ({
                   </button>
                 </div>
               </div>
+
+              {!openShift && (
+                <p className="text-[11px] text-amber-300/90 leading-snug">
+                  Turno cerrado: puedes tomar pedidos &quot;Por cobrar&quot; para adelantar. Para confirmar pagos abre un turno arriba.
+                </p>
+              )}
 
               {paymentStatus === 'pagado' && (
                 <div className="space-y-2.5 pt-2 border-t border-[#27272E]">
@@ -616,6 +792,11 @@ export const PosOrderWorkspaceView: React.FC<Props> = ({
           onConfirm={handleConfirmCustomized}
         />
       )}
+
+      <CustomersModal
+        open={customersModalOpen}
+        onClose={() => setCustomersModalOpen(false)}
+      />
     </div>
   );
 };

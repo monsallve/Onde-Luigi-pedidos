@@ -17,6 +17,7 @@ import {
 } from 'lucide-react';
 import { usePosStore } from '../services/posStore';
 import type { Order, OrderStatus } from '../types/pos';
+import { isDefaultFinalConsumer, resolveOrderCustomerInfo } from '../utils/billingUtils';
 import {
   formatCurrency,
   formatCustomizationSummary,
@@ -78,6 +79,7 @@ export const OrdersView: React.FC<Props> = ({
 }) => {
   const {
     orders,
+    openShift,
     activeWaiter,
     effectiveRole,
     permissions,
@@ -161,7 +163,9 @@ export const OrdersView: React.FC<Props> = ({
         const matchNum = String(o.orderNumber).includes(q);
         const matchRef = o.reference.toLowerCase().includes(q);
         const matchWaiter = o.waiterName.toLowerCase().includes(q);
-        if (!matchNum && !matchRef && !matchWaiter) return false;
+        const matchCustDoc = (o.customerDocument || '').toLowerCase().includes(q);
+        const matchCustName = (o.customerName || '').toLowerCase().includes(q);
+        if (!matchNum && !matchRef && !matchWaiter && !matchCustDoc && !matchCustName) return false;
       }
       return true;
     });
@@ -363,6 +367,16 @@ export const OrdersView: React.FC<Props> = ({
                       <p className="text-xs text-zinc-400 mt-0.5">
                         Atiende: <span className="font-semibold text-zinc-200">{order.waiterName}</span>
                       </p>
+                      {permissions.canManagePayments &&
+                        order.customerDocument &&
+                        !isDefaultFinalConsumer(order.customerDocument) && (() => {
+                          const cust = resolveOrderCustomerInfo(order);
+                          return (
+                            <p className="text-[11px] text-amber-300 mt-0.5 truncate">
+                              {cust.name} · <span className="font-mono">{cust.documentNumber}</span>
+                            </p>
+                          );
+                        })()}
                     </div>
 
                     <div className="flex flex-col items-end gap-1.5 shrink-0">
@@ -479,11 +493,19 @@ export const OrdersView: React.FC<Props> = ({
                           className={`min-h-[42px] px-3 rounded-xl border text-xs font-bold flex items-center justify-center gap-1.5 transition-colors ${
                             order.paymentStatus === 'pagado'
                               ? 'border-emerald-700 bg-emerald-950/60 text-emerald-300 hover:bg-emerald-950'
-                              : 'border-amber-400 bg-amber-500 text-black hover:bg-amber-400'
+                              : openShift
+                                ? 'border-amber-400 bg-amber-500 text-black hover:bg-amber-400'
+                                : 'border-amber-700/70 bg-amber-950/40 text-amber-200 hover:bg-amber-950/60'
                           }`}
                         >
                           <CreditCard className="w-3.5 h-3.5" />
-                          <span>{order.paymentStatus === 'pagado' ? 'Pago / Foto' : 'Confirmar pago'}</span>
+                          <span>
+                            {order.paymentStatus === 'pagado'
+                              ? 'Pago / Colilla'
+                              : openShift
+                                ? 'Confirmar pago'
+                                : 'Turno cerrado · Cobrar'}
+                          </span>
                         </button>
                       )}
                     </div>
