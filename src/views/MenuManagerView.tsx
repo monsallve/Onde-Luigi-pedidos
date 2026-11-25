@@ -1,8 +1,13 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { AlertTriangle, Copy, Droplets, Edit3, Lock, Plus, Search, Trash2, X } from 'lucide-react';
+import { AlertTriangle, ChevronDown, Copy, Droplets, Edit3, Lock, Plus, Search, Trash2, X } from 'lucide-react';
 import { usePosStore } from '../services/posStore';
 import type { Product } from '../types/pos';
 import { formatCurrency, formatWithoutIngredientLabel, resolveAssetUrl } from '../utils/orderMath';
+import {
+  calculateProductRecipeCost,
+  formatInventoryQuantity,
+  isRecipeSpecInventoriable,
+} from '../utils/inventoryMath';
 import { ROLE_LABELS } from '../utils/rolePermissions';
 import { ProductEditorModal } from '../components/ProductEditorModal';
 
@@ -16,6 +21,7 @@ export const MenuManagerView: React.FC = () => {
   const {
     products,
     sauces,
+    inventory,
     effectiveRole,
     permissions,
     toggleProductActive,
@@ -24,6 +30,11 @@ export const MenuManagerView: React.FC = () => {
     toggleSauceActive,
     deleteSauce,
   } = usePosStore();
+
+  const inventoryMap = useMemo(
+    () => new Map(inventory.map((i) => [i.id, i])),
+    [inventory]
+  );
 
   const [selectedCategory, setSelectedCategory] = useState('Todas');
   const [searchTerm, setSearchTerm] = useState('');
@@ -37,6 +48,7 @@ export const MenuManagerView: React.FC = () => {
   const [newSauceName, setNewSauceName] = useState('');
   const [savingSauce, setSavingSauce] = useState(false);
   const [sauceError, setSauceError] = useState<string | null>(null);
+  const [saucesDropdownOpen, setSaucesDropdownOpen] = useState(false);
 
   const [pendingDelete, setPendingDelete] = useState<PendingMenuDelete | null>(null);
   const [deleting, setDeleting] = useState(false);
@@ -121,47 +133,62 @@ export const MenuManagerView: React.FC = () => {
     }
   };
 
+  const activeSaucesCount = useMemo(
+    () => sauces.filter((s) => s.active).length,
+    [sauces]
+  );
+
   return (
-    <div className="space-y-6">
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-        <div>
+    <div className="space-y-4">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+        <div className="flex items-baseline gap-2.5 flex-wrap">
           <h1 className="font-poster text-3xl sm:text-4xl font-extrabold tracking-wide text-white leading-none">
-            MENÚ, RECETAS, BEBIDAS Y SALSAS
+            MENÚ Y SALSAS
           </h1>
-          <p className="text-xs text-zinc-400 mt-1 tabular-nums">
-            Panel exclusivo Administrador · {products.filter((p) => p.active).length} productos activos ·{' '}
-            {sauces.filter((s) => s.active).length} salsas activas
-          </p>
+          <span className="text-xs text-zinc-400 tabular-nums">
+            {products.filter((p) => p.active).length} activos · {activeSaucesCount} salsas
+          </span>
         </div>
 
         <button
           type="button"
           onClick={() => setEditorState({ mode: 'create' })}
-          className="min-h-[46px] px-5 rounded-xl bg-amber-500 text-black text-sm font-bold hover:bg-amber-400 flex items-center justify-center gap-2 whitespace-nowrap shrink-0 shadow-sm"
+          className="min-h-[42px] px-4 rounded-xl bg-amber-500 text-black text-xs sm:text-sm font-bold hover:bg-amber-400 flex items-center justify-center gap-1.5 whitespace-nowrap shrink-0 shadow-sm"
         >
           <Plus className="w-4 h-4" />
-          <span>Nuevo producto o bebida</span>
+          <span>Nuevo producto</span>
         </button>
       </div>
 
-      {/* Sauces Management Card */}
-      <section className="bg-[#141418] border border-[#27272E] rounded-2xl p-4 sm:p-5 space-y-3.5">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-          <div className="flex items-center gap-2">
-            <Droplets className="w-5 h-5 text-amber-400 shrink-0" />
-            <div>
-              <h2 className="font-poster text-xl font-extrabold text-white tracking-wide leading-none">
-                SALSAS DEL SISTEMA (SELECCIÓN 1 A 4 POR PRODUCTO)
-              </h2>
-              <p className="text-xs text-zinc-400 mt-0.5">
-                Toca el nombre para activar/desactivar, o usa el ícono de papelera para eliminar una salsa definitivamente.
-              </p>
-            </div>
+      {/* Compact Sauces Management Card with Collapsible Dropdown */}
+      <section className="bg-[#141418] border border-[#27272E] rounded-xl p-3 sm:p-3.5 space-y-2.5">
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2 min-w-0">
+            <Droplets className="w-4 h-4 text-amber-400 shrink-0" />
+            <h2 className="font-poster text-lg font-extrabold text-white tracking-wide uppercase leading-none truncate">
+              MENÚ DE SALSAS
+            </h2>
           </div>
+
+          <button
+            type="button"
+            aria-expanded={saucesDropdownOpen}
+            onClick={() => setSaucesDropdownOpen((v) => !v)}
+            className="min-h-[32px] px-3 rounded-lg border border-[#27272E] bg-[#0A0A0A] text-xs font-semibold text-zinc-200 hover:border-amber-500 flex items-center gap-1.5 shrink-0"
+          >
+            <span className="tabular-nums">
+              {saucesDropdownOpen ? 'Ocultar' : `Salsas (${activeSaucesCount}/${sauces.length})`}
+            </span>
+            <ChevronDown
+              className={`w-3.5 h-3.5 text-amber-400 transition-transform ${
+                saucesDropdownOpen ? 'rotate-180' : ''
+              }`}
+            />
+          </button>
         </div>
 
         {sauceError && (
-          <div className="rounded-xl bg-red-950/60 border border-red-700 px-3 py-2 text-xs font-medium text-red-200">
+          <div className="rounded-lg bg-red-950/60 border border-red-700 px-3 py-1.5 text-xs font-medium text-red-200">
             {sauceError}
           </div>
         )}
@@ -172,63 +199,69 @@ export const MenuManagerView: React.FC = () => {
             aria-label="Nombre de nueva salsa"
             value={newSauceName}
             onChange={(e) => setNewSauceName(e.target.value)}
-            placeholder="Ej. Salsa Maíz, Chipotle, Miel Mostaza..."
-            className="flex-1 min-h-[42px] rounded-xl border border-[#27272E] bg-[#0A0A0A] px-3 text-sm text-white placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-amber-500"
+            placeholder="Nueva salsa (ej. Chipotle, Miel Mostaza)..."
+            className="flex-1 min-h-[38px] rounded-lg border border-[#27272E] bg-[#0A0A0A] px-3 text-xs sm:text-sm text-white placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-amber-500"
           />
           <button
             type="submit"
             disabled={savingSauce}
-            className="min-h-[42px] px-4 rounded-xl bg-red-600 text-white text-xs font-bold hover:bg-red-500 flex items-center gap-1.5 whitespace-nowrap shrink-0"
+            className="min-h-[38px] px-3.5 rounded-lg bg-red-600 text-white text-xs font-bold hover:bg-red-500 flex items-center gap-1 whitespace-nowrap shrink-0"
           >
-            <Plus className="w-4 h-4" />
-            <span>{savingSauce ? 'Agregando...' : 'Agregar salsa'}</span>
+            <Plus className="w-3.5 h-3.5" />
+            <span>{savingSauce ? '...' : 'Agregar'}</span>
           </button>
         </form>
 
-        <div className="flex flex-wrap gap-2">
-          {sauces.map((sauce) => (
-            <div
-              key={sauce.id}
-              className={`inline-flex items-center rounded-xl border overflow-hidden transition-colors ${
-                sauce.active
-                  ? 'bg-[#1C1C22] border-amber-500/60 text-white'
-                  : 'bg-[#0A0A0A] border-[#27272E] text-zinc-500'
-              }`}
-            >
-              <button
-                type="button"
-                onClick={() => toggleSauceActive(sauce.id, !sauce.active)}
-                className={`min-h-[38px] px-3 text-xs font-semibold flex items-center gap-2 hover:bg-white/5 ${
-                  !sauce.active ? 'line-through' : ''
-                }`}
-              >
-                <span>{sauce.name}</span>
-                <span
-                  className={`text-[10px] font-mono uppercase px-1.5 py-0.5 rounded ${
-                    sauce.active ? 'bg-emerald-950 text-emerald-300' : 'bg-zinc-900 text-zinc-500'
+        {saucesDropdownOpen && (
+          <div className="pt-1 border-t border-[#27272E] flex flex-wrap gap-1.5">
+            {sauces.length === 0 ? (
+              <p className="text-xs text-zinc-500 py-1">Sin salsas registradas.</p>
+            ) : (
+              sauces.map((sauce) => (
+                <div
+                  key={sauce.id}
+                  className={`inline-flex items-center rounded-lg border overflow-hidden transition-colors ${
+                    sauce.active
+                      ? 'bg-[#1C1C22] border-amber-500/60 text-white'
+                      : 'bg-[#0A0A0A] border-[#27272E] text-zinc-500'
                   }`}
                 >
-                  {sauce.active ? 'Activa' : 'Inactiva'}
-                </span>
-              </button>
-              <button
-                type="button"
-                aria-label={`Eliminar salsa ${sauce.name}`}
-                onClick={() => {
-                  setDeleteError(null);
-                  setPendingDelete({ kind: 'sauce', id: sauce.id, name: sauce.name });
-                }}
-                className="min-h-[38px] min-w-[36px] flex items-center justify-center border-l border-[#27272E] text-red-400 hover:bg-red-950/60"
-              >
-                <Trash2 className="w-3.5 h-3.5" />
-              </button>
-            </div>
-          ))}
-        </div>
+                  <button
+                    type="button"
+                    onClick={() => toggleSauceActive(sauce.id, !sauce.active)}
+                    className={`min-h-[34px] px-2.5 text-xs font-semibold flex items-center gap-1.5 hover:bg-white/5 ${
+                      !sauce.active ? 'line-through' : ''
+                    }`}
+                  >
+                    <span>{sauce.name}</span>
+                    <span
+                      className={`text-[10px] font-mono uppercase px-1 py-0.5 rounded ${
+                        sauce.active ? 'bg-emerald-950 text-emerald-300' : 'bg-zinc-900 text-zinc-500'
+                      }`}
+                    >
+                      {sauce.active ? 'Activa' : 'Inactiva'}
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    aria-label={`Eliminar salsa ${sauce.name}`}
+                    onClick={() => {
+                      setDeleteError(null);
+                      setPendingDelete({ kind: 'sauce', id: sauce.id, name: sauce.name });
+                    }}
+                    className="min-h-[34px] min-w-[32px] flex items-center justify-center border-l border-[#27272E] text-red-400 hover:bg-red-950/60"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              ))
+            )}
+          </div>
+        )}
       </section>
 
       {/* Filters */}
-      <div className="bg-[#141418] border border-[#27272E] rounded-2xl p-3.5 flex flex-col sm:flex-row gap-3">
+      <div className="bg-[#141418] border border-[#27272E] rounded-xl p-2.5 flex flex-col sm:flex-row gap-2.5">
         <div className="relative flex-1">
           <Search className="w-4 h-4 text-zinc-400 absolute left-3 top-1/2 -translate-y-1/2" />
           <input
@@ -237,16 +270,16 @@ export const MenuManagerView: React.FC = () => {
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
             placeholder="Buscar producto, bebida o categoría..."
-            className="w-full min-h-[42px] pl-9 pr-3 rounded-xl border border-[#27272E] bg-[#0A0A0A] text-sm text-white placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-amber-500"
+            className="w-full min-h-[38px] pl-9 pr-3 rounded-lg border border-[#27272E] bg-[#0A0A0A] text-sm text-white placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-amber-500"
           />
         </div>
-        <div className="flex items-center gap-1 p-1 bg-[#0A0A0A] border border-[#27272E] rounded-xl overflow-x-auto">
+        <div className="flex items-center gap-1 p-1 bg-[#0A0A0A] border border-[#27272E] rounded-lg overflow-x-auto">
           {categories.map((cat) => (
             <button
               key={cat}
               type="button"
               onClick={() => setSelectedCategory(cat)}
-              className={`min-h-[34px] px-3 rounded-lg text-xs font-semibold whitespace-nowrap shrink-0 transition-colors ${
+              className={`min-h-[32px] px-2.5 rounded-md text-xs font-semibold whitespace-nowrap shrink-0 transition-colors ${
                 selectedCategory === cat
                   ? 'bg-amber-500 text-black font-bold'
                   : 'text-zinc-300 hover:text-white'
@@ -259,21 +292,23 @@ export const MenuManagerView: React.FC = () => {
       </div>
 
       {/* Product Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 items-stretch">
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3 items-stretch">
         {filtered.map((product) => (
           <article
             key={product.id}
-            className={`bg-[#141418] border rounded-2xl p-4 flex flex-col justify-between gap-4 ${
+            className={`bg-[#141418] border rounded-xl p-3.5 flex flex-col justify-between gap-3 ${
               product.active ? 'border-[#27272E]' : 'border-[#27272E] opacity-60'
             }`}
           >
-            <div className="space-y-3">
-              <div className="flex items-start gap-3">
+            <div className="space-y-2.5">
+              <div className="flex items-start gap-2.5">
                 {product.imageUrl && (
                   <img
                     src={resolveAssetUrl(product.imageUrl)}
                     alt={product.name}
-                    className="w-16 h-16 rounded-xl object-cover object-top border border-[#27272E] shrink-0"
+                    loading="lazy"
+                    decoding="async"
+                    className="w-14 h-14 rounded-lg object-cover object-top border border-[#27272E] shrink-0"
                   />
                 )}
                 <div className="flex-1 min-w-0 flex items-start justify-between gap-2">
@@ -296,11 +331,47 @@ export const MenuManagerView: React.FC = () => {
                   : 'Sin salsas (Bebida / Fijo)'}
               </p>
 
-              {product.baseRecipe.length > 0 && (
-                <p className="text-xs text-zinc-400 leading-relaxed">
-                  <strong className="text-zinc-200">Receta base:</strong>{' '}
-                  {product.baseRecipe.join(' · ')}
-                </p>
+              {product.recipeIngredients && product.recipeIngredients.length > 0 ? (
+                <div className="space-y-1">
+                  <p className="text-xs text-zinc-400 leading-relaxed">
+                    <strong className="text-zinc-200">Receta:</strong>{' '}
+                    {product.recipeIngredients
+                      .map((spec) =>
+                        isRecipeSpecInventoriable(spec)
+                          ? `${spec.name} (${
+                              spec.quantity > 0
+                                ? formatInventoryQuantity(spec.quantity, spec.unit)
+                                : `0 ${spec.unit}`
+                            })`
+                          : `${spec.name} (no inv.)`
+                      )
+                      .join(' · ')}
+                  </p>
+                  <div className="flex flex-wrap items-center gap-2 text-[11px]">
+                    {calculateProductRecipeCost(product.recipeIngredients, inventoryMap) > 0 && (
+                      <span className="font-mono font-semibold text-emerald-400 tabular-nums">
+                        Costo receta:{' '}
+                        {formatCurrency(
+                          calculateProductRecipeCost(product.recipeIngredients, inventoryMap)
+                        )}
+                      </span>
+                    )}
+                    {product.recipeIngredients.some(
+                      (s) => isRecipeSpecInventoriable(s) && s.quantity <= 0
+                    ) && (
+                      <span className="text-amber-400 font-medium">
+                        · Falta asignar gramaje en receta
+                      </span>
+                    )}
+                  </div>
+                </div>
+              ) : (
+                product.baseRecipe.length > 0 && (
+                  <p className="text-xs text-zinc-400 leading-relaxed">
+                    <strong className="text-zinc-200">Receta base:</strong>{' '}
+                    {product.baseRecipe.join(' · ')}
+                  </p>
+                )
               )}
 
               {product.removableOptions.length > 0 && (

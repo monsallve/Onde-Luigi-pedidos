@@ -10,9 +10,9 @@ export const ROLE_LABELS: Record<StaffRole, string> = {
 };
 
 export const ROLE_DESCRIPTIONS: Record<StaffRole, string> = {
-  admin: 'Acceso total: pedidos, comandas, cobros, ventas, menú, equipo y eliminar rastros.',
-  mesero: 'Toma y edita pedidos, entrega comandas, cobra y anula; sin Ventas, Menú ni eliminar rastros.',
-  cajero: 'Cobra pedidos, gestiona transferencias, anula y toma pedidos en caja; sin cocina, Ventas, Menú ni eliminar rastros.',
+  admin: 'Acceso total: pedidos, comandas, cobros, ventas, menú, inventario, equipo y eliminar rastros.',
+  mesero: 'Toma y edita pedidos, entrega comandas, cobra y anula; sin Ventas, Menú, Inventario ni eliminar rastros.',
+  cajero: 'Cobra pedidos, gestiona transferencias, anula y toma pedidos en caja; sin cocina, Ventas, Menú ni Inventario.',
   cocina: 'Solo pantalla de Comandas en preparación (Tomado → En preparación → Listo); sin cobros, caja, pedidos ni anulaciones.',
 };
 
@@ -33,10 +33,12 @@ export interface RolePermissions {
   canViewHistory: boolean;
   canViewSales: boolean;
   canManageMenu: boolean;
+  canManageInventory: boolean;
   canHardDelete: boolean;
   canManageTeam: boolean;
   canManageShifts: boolean;
   canAuditShiftDifferences: boolean;
+  canManagePaymentSettings: boolean;
 }
 
 export function isValidStaffRole(value: unknown): value is StaffRole {
@@ -49,7 +51,16 @@ export function getRolePermissions(role: StaffRole): RolePermissions {
       return {
         role: 'admin',
         label: ROLE_LABELS.admin,
-        allowedTabs: ['pedidos', 'comandas', 'historial', 'transferencias', 'ventas', 'menu'],
+        allowedTabs: [
+          'pedidos',
+          'comandas',
+          'historial',
+          'transferencias',
+          'ventas',
+          'menu',
+          'inventario',
+          'datos_pago',
+        ],
         defaultTab: 'pedidos',
         canTakeOrders: true,
         canEditOrders: true,
@@ -63,10 +74,12 @@ export function getRolePermissions(role: StaffRole): RolePermissions {
         canViewHistory: true,
         canViewSales: true,
         canManageMenu: true,
+        canManageInventory: true,
         canHardDelete: true,
         canManageTeam: true,
         canManageShifts: true,
         canAuditShiftDifferences: true,
+        canManagePaymentSettings: true,
       };
     case 'mesero':
       return {
@@ -86,10 +99,12 @@ export function getRolePermissions(role: StaffRole): RolePermissions {
         canViewHistory: true,
         canViewSales: false,
         canManageMenu: false,
+        canManageInventory: false,
         canHardDelete: false,
         canManageTeam: false,
         canManageShifts: true,
         canAuditShiftDifferences: false,
+        canManagePaymentSettings: false,
       };
     case 'cajero':
       return {
@@ -109,10 +124,12 @@ export function getRolePermissions(role: StaffRole): RolePermissions {
         canViewHistory: true,
         canViewSales: false,
         canManageMenu: false,
+        canManageInventory: false,
         canHardDelete: false,
         canManageTeam: false,
         canManageShifts: true,
         canAuditShiftDifferences: false,
+        canManagePaymentSettings: false,
       };
     case 'cocina':
       return {
@@ -132,10 +149,12 @@ export function getRolePermissions(role: StaffRole): RolePermissions {
         canViewHistory: false,
         canViewSales: false,
         canManageMenu: false,
+        canManageInventory: false,
         canHardDelete: false,
         canManageTeam: false,
         canManageShifts: false,
         canAuditShiftDifferences: false,
+        canManagePaymentSettings: false,
       };
   }
 }

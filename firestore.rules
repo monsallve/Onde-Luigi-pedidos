@@ -146,15 +146,35 @@ service cloud.firestore {
         isStringBounded(cfg.footerNote, 0, 280);
     }
 
+    function isValidSelfServiceConfig(cfg) {
+      return cfg is map &&
+        cfg.keys().hasAll([
+          'enabled', 'qrImageUrl', 'brebKey', 'accountHolder',
+          'bankName', 'paymentInstructions', 'deliveryInstructions'
+        ]) &&
+        cfg.keys().hasOnly([
+          'enabled', 'qrImageUrl', 'brebKey', 'accountHolder',
+          'bankName', 'paymentInstructions', 'deliveryInstructions'
+        ]) &&
+        cfg.enabled is bool &&
+        isStringBounded(cfg.qrImageUrl, 0, 250000) &&
+        isStringBounded(cfg.brebKey, 0, 100) &&
+        isStringBounded(cfg.accountHolder, 0, 120) &&
+        isStringBounded(cfg.bankName, 0, 120) &&
+        isStringBounded(cfg.paymentInstructions, 0, 400) &&
+        isStringBounded(cfg.deliveryInstructions, 0, 400);
+    }
+
     function isValidWorkspace(data, workspaceId) {
       return data.keys().hasAll(['id', 'name', 'ownerUid', 'ownerEmail', 'authorizedEmails', 'createdAt', 'updatedAt']) &&
-        data.keys().hasOnly(['id', 'name', 'ownerUid', 'ownerEmail', 'authorizedEmails', 'billingConfig', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['id', 'name', 'ownerUid', 'ownerEmail', 'authorizedEmails', 'billingConfig', 'selfServiceConfig', 'createdAt', 'updatedAt']) &&
         data.id == workspaceId &&
         isStringBounded(data.name, 1, 120) &&
         isStringBounded(data.ownerUid, 1, 128) &&
         isStringBounded(data.ownerEmail, 3, 160) &&
         isStringListBounded(data.authorizedEmails, 25) &&
         (!('billingConfig' in data) || isValidBillingConfig(data.billingConfig)) &&
+        (!('selfServiceConfig' in data) || isValidSelfServiceConfig(data.selfServiceConfig)) &&
         data.createdAt is timestamp &&
         data.updatedAt is timestamp;
     }
@@ -211,7 +231,7 @@ service cloud.firestore {
 
     function isValidProduct(data, productId) {
       return data.keys().hasAll(['id', 'name', 'category', 'basePrice', 'imageUrl', 'baseRecipe', 'removableOptions', 'addonOptions', 'allowSauces', 'minSauces', 'maxSauces', 'active', 'ownerUid', 'createdByUid', 'allowedEmails', 'createdAt', 'updatedAt']) &&
-        data.keys().hasOnly(['id', 'name', 'category', 'basePrice', 'imageUrl', 'baseRecipe', 'removableOptions', 'addonOptions', 'allowSauces', 'minSauces', 'maxSauces', 'active', 'ownerUid', 'createdByUid', 'allowedEmails', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['id', 'name', 'category', 'basePrice', 'imageUrl', 'baseRecipe', 'removableOptions', 'recipeIngredients', 'addonOptions', 'allowSauces', 'minSauces', 'maxSauces', 'active', 'ownerUid', 'createdByUid', 'allowedEmails', 'createdAt', 'updatedAt']) &&
         data.id == productId &&
         isStringBounded(data.name, 1, 100) &&
         isStringBounded(data.category, 1, 60) &&
@@ -219,6 +239,14 @@ service cloud.firestore {
         isStringBounded(data.imageUrl, 0, 250000) &&
         isStringListBounded(data.baseRecipe, 30) &&
         isStringListBounded(data.removableOptions, 30) &&
+        (!('recipeIngredients' in data) || (
+          data.recipeIngredients is list &&
+          data.recipeIngredients.size() <= 30 &&
+          (data.recipeIngredients.size() == 0 || (
+            data.recipeIngredients[0] is map &&
+            data.recipeIngredients[0].keys().hasAll(['inventoryItemId', 'name', 'quantity', 'unit', 'removable'])
+          ))
+        )) &&
         data.addonOptions is list && data.addonOptions.size() <= 30 &&
         (data.addonOptions.size() == 0 || (data.addonOptions[0] is map && data.addonOptions[0].keys().hasAll(['id', 'name', 'price']))) &&
         data.allowSauces is bool &&
@@ -234,13 +262,13 @@ service cloud.firestore {
 
     function isValidOrder(data, orderId) {
       return data.keys().hasAll(['id', 'orderNumber', 'reference', 'waiterId', 'waiterName', 'status', 'paymentStatus', 'paymentMethod', 'items', 'subtotal', 'total', 'notes', 'receiptCount', 'latestReceiptUrl', 'ownerUid', 'createdByUid', 'allowedEmails', 'createdAt', 'updatedAt']) &&
-        data.keys().hasOnly(['id', 'orderNumber', 'reference', 'waiterId', 'waiterName', 'status', 'paymentStatus', 'paymentMethod', 'items', 'subtotal', 'total', 'notes', 'receiptCount', 'latestReceiptUrl', 'customerId', 'customerDocument', 'customerName', 'customerPhone', 'customerEmail', 'voidReason', 'voidedByName', 'voidedAtMs', 'ownerUid', 'createdByUid', 'allowedEmails', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['id', 'orderNumber', 'reference', 'waiterId', 'waiterName', 'status', 'paymentStatus', 'paymentMethod', 'items', 'subtotal', 'total', 'notes', 'receiptCount', 'latestReceiptUrl', 'receiptStoragePath', 'source', 'deliveryType', 'deliveryAddress', 'deliveryNeighborhood', 'deliveryPhone', 'deliveryNotes', 'customerId', 'customerDocument', 'customerName', 'customerPhone', 'customerEmail', 'inventoryDeducted', 'voidReason', 'voidedByName', 'voidedAtMs', 'ownerUid', 'createdByUid', 'allowedEmails', 'createdAt', 'updatedAt']) &&
         data.id == orderId &&
         data.orderNumber is number && data.orderNumber >= 1 && data.orderNumber <= 10000000 &&
         isStringBounded(data.reference, 1, 100) &&
         isStringBounded(data.waiterId, 1, 128) &&
         isStringBounded(data.waiterName, 1, 80) &&
-        data.status in ['tomado', 'preparacion', 'listo', 'entregado', 'cancelado'] &&
+        data.status in ['pendiente_validacion', 'tomado', 'preparacion', 'listo', 'entregado', 'cancelado'] &&
         data.paymentStatus in ['pendiente', 'pagado'] &&
         data.paymentMethod in ['', 'efectivo', 'transferencia', 'tarjeta', 'otro'] &&
         data.items is list && data.items.size() <= 50 &&
@@ -250,11 +278,19 @@ service cloud.firestore {
         isStringBounded(data.notes, 0, 400) &&
         data.receiptCount is number && data.receiptCount >= 0 && data.receiptCount <= 100 &&
         isStringBounded(data.latestReceiptUrl, 0, 250000) &&
+        (!('receiptStoragePath' in data) || isStringBounded(data.receiptStoragePath, 0, 500)) &&
+        (!('source' in data) || data.source in ['pos', 'autoservicio']) &&
+        (!('deliveryType' in data) || data.deliveryType in ['local', 'domicilio']) &&
+        (!('deliveryAddress' in data) || isStringBounded(data.deliveryAddress, 0, 220)) &&
+        (!('deliveryNeighborhood' in data) || isStringBounded(data.deliveryNeighborhood, 0, 100)) &&
+        (!('deliveryPhone' in data) || isStringBounded(data.deliveryPhone, 0, 40)) &&
+        (!('deliveryNotes' in data) || isStringBounded(data.deliveryNotes, 0, 240)) &&
         (!('customerId' in data) || isStringBounded(data.customerId, 0, 128)) &&
         (!('customerDocument' in data) || isStringBounded(data.customerDocument, 0, 40)) &&
         (!('customerName' in data) || isStringBounded(data.customerName, 0, 120)) &&
         (!('customerPhone' in data) || isStringBounded(data.customerPhone, 0, 40)) &&
         (!('customerEmail' in data) || isStringBounded(data.customerEmail, 0, 160)) &&
+        (!('inventoryDeducted' in data) || data.inventoryDeducted is map) &&
         (!('voidReason' in data) || isStringBounded(data.voidReason, 0, 240)) &&
         (!('voidedByName' in data) || isStringBounded(data.voidedByName, 0, 80)) &&
         (!('voidedAtMs' in data) || data.voidedAtMs is number) &&
@@ -377,6 +413,259 @@ service cloud.firestore {
         data.updatedAt is timestamp;
     }
 
+    function isValidInventoryItem(data, itemId) {
+      return data.keys().hasAll([
+          'id', 'name', 'nameKey', 'unit', 'currentStock', 'minStock',
+          'unitCost', 'lastPurchaseQuantity', 'lastPurchaseTotalCost', 'active',
+          'ownerUid', 'createdByUid', 'allowedEmails', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'name', 'nameKey', 'unit', 'currentStock', 'minStock',
+          'unitCost', 'lastPurchaseQuantity', 'lastPurchaseTotalCost', 'active',
+          'ownerUid', 'createdByUid', 'allowedEmails', 'createdAt', 'updatedAt'
+        ]) &&
+        data.id == itemId &&
+        isStringBounded(data.name, 1, 80) &&
+        isStringBounded(data.nameKey, 1, 80) &&
+        data.unit in ['g', 'ud'] &&
+        data.currentStock is number && data.currentStock >= -100000000 && data.currentStock <= 100000000 &&
+        data.minStock is number && data.minStock >= 0 && data.minStock <= 100000000 &&
+        data.unitCost is number && data.unitCost >= 0 && data.unitCost <= 100000000 &&
+        data.lastPurchaseQuantity is number && data.lastPurchaseQuantity >= 0 && data.lastPurchaseQuantity <= 100000000 &&
+        data.lastPurchaseTotalCost is number && data.lastPurchaseTotalCost >= 0 && data.lastPurchaseTotalCost <= 100000000 &&
+        data.active is bool &&
+        isStringBounded(data.ownerUid, 1, 128) &&
+        isStringBounded(data.createdByUid, 1, 128) &&
+        isStringListBounded(data.allowedEmails, 25) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidInventoryMovement(data, movId) {
+      return data.keys().hasAll([
+          'id', 'inventoryItemId', 'ingredientName', 'unit', 'type',
+          'quantityDelta', 'purchaseTotalCost', 'calculatedUnitCost',
+          'orderId', 'orderNumber', 'notes', 'actorName', 'actorUid',
+          'ownerUid', 'createdByUid', 'allowedEmails', 'createdAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'inventoryItemId', 'ingredientName', 'unit', 'type',
+          'quantityDelta', 'purchaseTotalCost', 'calculatedUnitCost',
+          'orderId', 'orderNumber', 'notes', 'actorName', 'actorUid',
+          'ownerUid', 'createdByUid', 'allowedEmails', 'createdAt'
+        ]) &&
+        data.id == movId &&
+        isStringBounded(data.inventoryItemId, 1, 128) &&
+        isStringBounded(data.ingredientName, 1, 80) &&
+        data.unit in ['g', 'ud'] &&
+        data.type in ['compra', 'consumo_pedido', 'edicion_pedido', 'anulacion_pedido', 'ajuste_manual', 'fusion'] &&
+        data.quantityDelta is number && data.quantityDelta >= -100000000 && data.quantityDelta <= 100000000 &&
+        data.purchaseTotalCost is number && data.purchaseTotalCost >= 0 && data.purchaseTotalCost <= 100000000 &&
+        data.calculatedUnitCost is number && data.calculatedUnitCost >= 0 && data.calculatedUnitCost <= 100000000 &&
+        isStringBounded(data.orderId, 0, 128) &&
+        data.orderNumber is number && data.orderNumber >= 0 && data.orderNumber <= 10000000 &&
+        isStringBounded(data.notes, 0, 300) &&
+        isStringBounded(data.actorName, 1, 80) &&
+        isStringBounded(data.actorUid, 1, 128) &&
+        isStringBounded(data.ownerUid, 1, 128) &&
+        isStringBounded(data.createdByUid, 1, 128) &&
+        isStringListBounded(data.allowedEmails, 25) &&
+        data.createdAt is timestamp;
+    }
+
+    function isValidNotification(data, notifId) {
+      return data.keys().hasAll([
+          'id', 'type', 'title', 'message', 'orderId', 'orderNumber',
+          'shiftId', 'actorName', 'actorUid', 'ownerUid', 'createdByUid',
+          'allowedEmails', 'createdAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'type', 'title', 'message', 'orderId', 'orderNumber',
+          'shiftId', 'actorName', 'actorUid', 'ownerUid', 'createdByUid',
+          'allowedEmails', 'createdAt'
+        ]) &&
+        data.id == notifId &&
+        data.type in ['nueva_comanda', 'turno_abierto', 'turno_cerrado', 'venta_anulada'] &&
+        isStringBounded(data.title, 1, 140) &&
+        isStringBounded(data.message, 1, 360) &&
+        isStringBounded(data.orderId, 0, 128) &&
+        data.orderNumber is number && data.orderNumber >= 0 && data.orderNumber <= 10000000 &&
+        isStringBounded(data.shiftId, 0, 128) &&
+        isStringBounded(data.actorName, 1, 80) &&
+        isStringBounded(data.actorUid, 1, 128) &&
+        isStringBounded(data.ownerUid, 1, 128) &&
+        isStringBounded(data.createdByUid, 1, 128) &&
+        isStringListBounded(data.allowedEmails, 25) &&
+        data.createdAt is timestamp;
+    }
+
+    function isValidPurchaseInvoice(data, invoiceId) {
+      return data.keys().hasAll([
+          'id', 'receiptCode', 'supplierId', 'supplierDocument', 'supplierName',
+          'supplierPhone', 'supplierEmail', 'paymentMethod', 'notes', 'lines',
+          'inventoriableTotal', 'expensesTotal', 'grandTotal', 'actorName', 'actorUid',
+          'ownerUid', 'createdByUid', 'allowedEmails', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'receiptCode', 'supplierId', 'supplierDocument', 'supplierName',
+          'supplierPhone', 'supplierEmail', 'paymentMethod', 'notes', 'lines',
+          'inventoriableTotal', 'expensesTotal', 'grandTotal', 'actorName', 'actorUid',
+          'ownerUid', 'createdByUid', 'allowedEmails', 'createdAt', 'updatedAt'
+        ]) &&
+        data.id == invoiceId &&
+        isStringBounded(data.receiptCode, 1, 60) &&
+        isStringBounded(data.supplierId, 1, 128) &&
+        isStringBounded(data.supplierDocument, 1, 40) &&
+        isStringBounded(data.supplierName, 1, 120) &&
+        isStringBounded(data.supplierPhone, 0, 40) &&
+        isStringBounded(data.supplierEmail, 0, 160) &&
+        isStringBounded(data.paymentMethod, 0, 40) &&
+        isStringBounded(data.notes, 0, 300) &&
+        data.lines is list && data.lines.size() >= 1 && data.lines.size() <= 80 &&
+        data.lines[0] is map &&
+        data.lines[0].keys().hasAll(['id', 'kind', 'description', 'quantity', 'totalCost', 'calculatedUnitCost']) &&
+        data.inventoriableTotal is number && data.inventoriableTotal >= 0 && data.inventoriableTotal <= 1000000000 &&
+        data.expensesTotal is number && data.expensesTotal >= 0 && data.expensesTotal <= 1000000000 &&
+        data.grandTotal is number && data.grandTotal >= 0 && data.grandTotal <= 1000000000 &&
+        isStringBounded(data.actorName, 1, 80) &&
+        isStringBounded(data.actorUid, 1, 128) &&
+        isStringBounded(data.ownerUid, 1, 128) &&
+        isStringBounded(data.createdByUid, 1, 128) &&
+        isStringListBounded(data.allowedEmails, 25) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidPublicStorefront(data, workspaceId) {
+      return data.keys().hasAll([
+          'id', 'businessName', 'enabled', 'qrImageUrl', 'brebKey',
+          'accountHolder', 'bankName', 'paymentInstructions', 'deliveryInstructions',
+          'ownerUid', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'businessName', 'enabled', 'qrImageUrl', 'brebKey',
+          'accountHolder', 'bankName', 'paymentInstructions', 'deliveryInstructions',
+          'ownerUid', 'updatedAt'
+        ]) &&
+        data.id == workspaceId &&
+        isStringBounded(data.businessName, 1, 120) &&
+        data.enabled is bool &&
+        isStringBounded(data.qrImageUrl, 0, 250000) &&
+        isStringBounded(data.brebKey, 0, 100) &&
+        isStringBounded(data.accountHolder, 0, 120) &&
+        isStringBounded(data.bankName, 0, 120) &&
+        isStringBounded(data.paymentInstructions, 0, 400) &&
+        isStringBounded(data.deliveryInstructions, 0, 400) &&
+        isStringBounded(data.ownerUid, 1, 128) &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidPublicProduct(data, productId) {
+      return data.keys().hasAll([
+          'id', 'name', 'category', 'basePrice', 'imageUrl', 'baseRecipe',
+          'removableOptions', 'addonOptions', 'allowSauces', 'minSauces',
+          'maxSauces', 'active', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'name', 'category', 'basePrice', 'imageUrl', 'baseRecipe',
+          'removableOptions', 'addonOptions', 'allowSauces', 'minSauces',
+          'maxSauces', 'active', 'updatedAt'
+        ]) &&
+        data.id == productId &&
+        isStringBounded(data.name, 1, 100) &&
+        isStringBounded(data.category, 1, 60) &&
+        data.basePrice is number && data.basePrice >= 0 && data.basePrice <= 100000000 &&
+        isStringBounded(data.imageUrl, 0, 250000) &&
+        isStringListBounded(data.baseRecipe, 30) &&
+        isStringListBounded(data.removableOptions, 30) &&
+        data.addonOptions is list && data.addonOptions.size() <= 30 &&
+        (data.addonOptions.size() == 0 || (data.addonOptions[0] is map && data.addonOptions[0].keys().hasAll(['id', 'name', 'price']))) &&
+        data.allowSauces is bool &&
+        data.minSauces is number && data.minSauces >= 0 && data.minSauces <= 4 &&
+        data.maxSauces is number && data.maxSauces >= 0 && data.maxSauces <= 4 &&
+        data.active is bool &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidPublicSauce(data, sauceId) {
+      return data.keys().hasAll(['id', 'name', 'active', 'updatedAt']) &&
+        data.keys().hasOnly(['id', 'name', 'active', 'updatedAt']) &&
+        data.id == sauceId &&
+        isStringBounded(data.name, 1, 60) &&
+        data.active is bool &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidQueueTicket(data, ticketId) {
+      return data.keys().hasAll(['id', 'orderNumber', 'status', 'deliveryType', 'createdAtMs', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['id', 'orderNumber', 'status', 'deliveryType', 'createdAtMs', 'createdAt', 'updatedAt']) &&
+        data.id == ticketId &&
+        data.orderNumber is number && data.orderNumber >= 1 && data.orderNumber <= 10000000 &&
+        data.status in ['pendiente_validacion', 'tomado', 'preparacion', 'listo', 'entregado', 'cancelado'] &&
+        data.deliveryType in ['local', 'domicilio'] &&
+        data.createdAtMs is number && data.createdAtMs > 0 &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidSelfOrder(data, orderId) {
+      return data.keys().hasAll([
+          'id', 'orderNumber', 'reference', 'source', 'deliveryType',
+          'deliveryAddress', 'deliveryNeighborhood', 'deliveryPhone', 'deliveryNotes',
+          'customerName', 'status', 'paymentStatus', 'paymentMethod',
+          'items', 'subtotal', 'total', 'notes', 'receiptCount',
+          'latestReceiptUrl', 'receiptStoragePath',
+          'ownerUid', 'createdByUid', 'createdAtMs', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'orderNumber', 'reference', 'source', 'deliveryType',
+          'deliveryAddress', 'deliveryNeighborhood', 'deliveryPhone', 'deliveryNotes',
+          'customerName', 'status', 'paymentStatus', 'paymentMethod',
+          'items', 'subtotal', 'total', 'notes', 'receiptCount',
+          'latestReceiptUrl', 'receiptStoragePath',
+          'voidReason', 'voidedByName', 'voidedAtMs',
+          'ownerUid', 'createdByUid', 'createdAtMs', 'createdAt', 'updatedAt'
+        ]) &&
+        data.id == orderId &&
+        data.orderNumber is number && data.orderNumber >= 1 && data.orderNumber <= 10000000 &&
+        isStringBounded(data.reference, 1, 100) &&
+        data.source == 'autoservicio' &&
+        data.deliveryType in ['local', 'domicilio'] &&
+        isStringBounded(data.deliveryAddress, 0, 220) &&
+        isStringBounded(data.deliveryNeighborhood, 0, 100) &&
+        isStringBounded(data.deliveryPhone, 0, 40) &&
+        isStringBounded(data.deliveryNotes, 0, 240) &&
+        isStringBounded(data.customerName, 2, 120) &&
+        (
+          data.deliveryType == 'local' ||
+          (
+            isStringBounded(data.deliveryAddress, 5, 220) &&
+            isStringBounded(data.deliveryNeighborhood, 2, 100) &&
+            isStringBounded(data.deliveryPhone, 7, 40)
+          )
+        ) &&
+        data.status in ['pendiente_validacion', 'tomado', 'preparacion', 'listo', 'entregado', 'cancelado'] &&
+        data.paymentStatus in ['pendiente', 'pagado'] &&
+        data.paymentMethod == 'transferencia' &&
+        data.items is list && data.items.size() >= 1 && data.items.size() <= 50 &&
+        data.items[0] is map &&
+        data.items[0].keys().hasAll(['lineId', 'productId', 'productName', 'quantity', 'unitPrice', 'lineTotal']) &&
+        data.subtotal is number && data.subtotal > 0 && data.subtotal <= 100000000 &&
+        data.total is number && data.total > 0 && data.total <= 100000000 &&
+        isStringBounded(data.notes, 0, 400) &&
+        data.receiptCount is number && data.receiptCount >= 0 && data.receiptCount <= 10 &&
+        isStringBounded(data.latestReceiptUrl, 0, 250000) &&
+        isStringBounded(data.receiptStoragePath, 0, 500) &&
+        (!('voidReason' in data) || isStringBounded(data.voidReason, 0, 240)) &&
+        (!('voidedByName' in data) || isStringBounded(data.voidedByName, 0, 80)) &&
+        (!('voidedAtMs' in data) || data.voidedAtMs is number) &&
+        isStringBounded(data.ownerUid, 1, 128) &&
+        isStringBounded(data.createdByUid, 1, 128) &&
+        data.createdAtMs is number && data.createdAtMs > 0 &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
     // 4. Workspaces & Admin Role Control vs Waiter/Cashier/Kitchen Operations
     match /workspaceDirectory/{workspaceId} {
       allow get: if isAuthenticatedEmailUser() && isValidId(workspaceId);
@@ -421,7 +710,7 @@ service cloud.firestore {
         incoming().createdAt == existing().createdAt &&
         existing().ownerEmail in incoming().authorizedEmails &&
         incoming().updatedAt == request.time &&
-        incoming().diff(existing()).affectedKeys().hasOnly(['name', 'authorizedEmails', 'billingConfig', 'updatedAt']);
+        incoming().diff(existing()).affectedKeys().hasOnly(['name', 'authorizedEmails', 'billingConfig', 'selfServiceConfig', 'updatedAt']);
       allow delete: if false;
 
       // ADMINS CAN MANAGE NON-OWNER MEMBERS; OWNER IS PROTECTED
@@ -545,7 +834,7 @@ service cloud.firestore {
           incoming().createdByUid == existing().createdByUid &&
           incoming().createdAt == existing().createdAt &&
           incoming().updatedAt == request.time &&
-          incoming().diff(existing()).affectedKeys().hasOnly(['name', 'category', 'basePrice', 'imageUrl', 'baseRecipe', 'removableOptions', 'addonOptions', 'allowSauces', 'minSauces', 'maxSauces', 'active', 'allowedEmails', 'updatedAt']);
+          incoming().diff(existing()).affectedKeys().hasOnly(['name', 'category', 'basePrice', 'imageUrl', 'baseRecipe', 'removableOptions', 'recipeIngredients', 'addonOptions', 'allowSauces', 'minSauces', 'maxSauces', 'active', 'allowedEmails', 'updatedAt']);
         allow delete: if isValidId(productId) && isWorkspaceAdmin(workspaceId);
       }
 
@@ -570,10 +859,10 @@ service cloud.firestore {
             (
               existing().status != 'cancelado' &&
               (
-                incoming().diff(existing()).affectedKeys().hasOnly(['items', 'subtotal', 'total', 'notes', 'reference', 'customerId', 'customerDocument', 'customerName', 'customerPhone', 'customerEmail', 'waiterId', 'waiterName', 'updatedAt']) ||
-                incoming().diff(existing()).affectedKeys().hasOnly(['status', 'waiterId', 'waiterName', 'updatedAt']) ||
-                incoming().diff(existing()).affectedKeys().hasOnly(['status', 'voidReason', 'voidedByName', 'voidedAtMs', 'waiterId', 'waiterName', 'updatedAt']) ||
-                incoming().diff(existing()).affectedKeys().hasOnly(['paymentStatus', 'paymentMethod', 'receiptCount', 'latestReceiptUrl', 'customerId', 'customerDocument', 'customerName', 'customerPhone', 'customerEmail', 'waiterId', 'waiterName', 'updatedAt'])
+                incoming().diff(existing()).affectedKeys().hasOnly(['items', 'subtotal', 'total', 'notes', 'reference', 'inventoryDeducted', 'customerId', 'customerDocument', 'customerName', 'customerPhone', 'customerEmail', 'waiterId', 'waiterName', 'updatedAt']) ||
+                incoming().diff(existing()).affectedKeys().hasOnly(['status', 'inventoryDeducted', 'waiterId', 'waiterName', 'updatedAt']) ||
+                incoming().diff(existing()).affectedKeys().hasOnly(['status', 'inventoryDeducted', 'voidReason', 'voidedByName', 'voidedAtMs', 'waiterId', 'waiterName', 'updatedAt']) ||
+                incoming().diff(existing()).affectedKeys().hasOnly(['status', 'paymentStatus', 'paymentMethod', 'receiptCount', 'latestReceiptUrl', 'customerId', 'customerDocument', 'customerName', 'customerPhone', 'customerEmail', 'inventoryDeducted', 'waiterId', 'waiterName', 'updatedAt'])
               )
             )
           );
@@ -672,6 +961,170 @@ service cloud.firestore {
           incoming().updatedAt == request.time &&
           incoming().diff(existing()).affectedKeys().hasOnly(['documentNumber', 'name', 'phone', 'email', 'notes', 'allowedEmails', 'updatedAt']);
         allow delete: if isValidId(customerId) && isWorkspaceAdmin(workspaceId);
+      }
+
+      // TRACKABLE INVENTORY INGREDIENTS (Admin full write; Authorized staff atomic stock deduction during orders)
+      match /inventory/{itemId} {
+        allow get: if isValidId(itemId) && isAuthorizedWorkspaceUser(workspaceId);
+        allow list: if canListWorkspaceSubcollection(workspaceId);
+        allow create: if isValidId(itemId) && isWorkspaceAdmin(workspaceId) &&
+          isValidInventoryItem(incoming(), itemId) &&
+          incoming().createdByUid == request.auth.uid &&
+          incoming().ownerUid == getAfter(workspacePath(workspaceId)).data.ownerUid &&
+          incoming().createdAt == request.time &&
+          incoming().updatedAt == request.time;
+        allow update: if isValidId(itemId) && isAuthorizedWorkspaceUser(workspaceId) &&
+          isValidInventoryItem(incoming(), itemId) &&
+          incoming().ownerUid == existing().ownerUid &&
+          incoming().createdByUid == existing().createdByUid &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time &&
+          (
+            (
+              isWorkspaceAdmin(workspaceId) &&
+              incoming().diff(existing()).affectedKeys().hasOnly([
+                'name', 'nameKey', 'unit', 'currentStock', 'minStock',
+                'unitCost', 'lastPurchaseQuantity', 'lastPurchaseTotalCost',
+                'active', 'allowedEmails', 'updatedAt'
+              ])
+            ) ||
+            incoming().diff(existing()).affectedKeys().hasOnly(['currentStock', 'updatedAt'])
+          );
+        allow delete: if isValidId(itemId) && isWorkspaceAdmin(workspaceId);
+      }
+
+      // IMMUTABLE INVENTORY LEDGER (Purchases, recipe consumption, edits, voids, adjustments)
+      match /inventoryMovements/{movId} {
+        allow get: if isValidId(movId) && isAuthorizedWorkspaceUser(workspaceId);
+        allow list: if canListWorkspaceSubcollection(workspaceId);
+        allow create: if isValidId(movId) && isAuthorizedWorkspaceUser(workspaceId) &&
+          isValidInventoryMovement(incoming(), movId) &&
+          incoming().actorUid == request.auth.uid &&
+          incoming().createdByUid == request.auth.uid &&
+          incoming().ownerUid == getAfter(workspacePath(workspaceId)).data.ownerUid &&
+          incoming().createdAt == request.time &&
+          (
+            isWorkspaceAdmin(workspaceId) ||
+            (
+              incoming().type in ['consumo_pedido', 'edicion_pedido', 'anulacion_pedido'] &&
+              incoming().orderId.size() > 0 &&
+              existsAfter(/databases/$(database)/documents/workspaces/$(workspaceId)/orders/$(incoming().orderId))
+            )
+          );
+        allow update: if false;
+        allow delete: if isValidId(movId) && isWorkspaceAdmin(workspaceId);
+      }
+
+      // REAL-TIME WORKSPACE NOTIFICATIONS (Orders, Shift Open/Close, Voided Orders/Sales)
+      match /notifications/{notifId} {
+        allow get: if isValidId(notifId) && isAuthorizedWorkspaceUser(workspaceId);
+        allow list: if canListWorkspaceSubcollection(workspaceId);
+        allow create: if isValidId(notifId) && isAuthorizedWorkspaceUser(workspaceId) &&
+          isValidNotification(incoming(), notifId) &&
+          incoming().actorUid == request.auth.uid &&
+          incoming().createdByUid == request.auth.uid &&
+          incoming().ownerUid == getAfter(workspacePath(workspaceId)).data.ownerUid &&
+          incoming().createdAt == request.time;
+        allow update: if false;
+        allow delete: if isValidId(notifId) && isWorkspaceAdmin(workspaceId);
+      }
+
+      // ADMIN-ONLY BULK PURCHASE INVOICES & BUSINESS EXPENSES
+      match /purchaseInvoices/{invoiceId} {
+        allow get: if isValidId(invoiceId) && isWorkspaceAdmin(workspaceId);
+        allow list: if canListWorkspaceSubcollection(workspaceId);
+        allow create: if isValidId(invoiceId) && isWorkspaceAdmin(workspaceId) &&
+          isValidPurchaseInvoice(incoming(), invoiceId) &&
+          incoming().actorUid == request.auth.uid &&
+          incoming().createdByUid == request.auth.uid &&
+          incoming().ownerUid == getAfter(workspacePath(workspaceId)).data.ownerUid &&
+          incoming().createdAt == request.time &&
+          incoming().updatedAt == request.time;
+        allow update: if isValidId(invoiceId) && isWorkspaceAdmin(workspaceId) &&
+          isValidPurchaseInvoice(incoming(), invoiceId) &&
+          incoming().ownerUid == existing().ownerUid &&
+          incoming().createdByUid == existing().createdByUid &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['allowedEmails', 'updatedAt']);
+        allow delete: if isValidId(invoiceId) && isWorkspaceAdmin(workspaceId);
+      }
+    }
+
+    // 5. Public Customer Self-Service Storefront (Strictly Isolated from Admin/POS & Staff PII)
+    match /publicStorefronts/{workspaceId} {
+      allow get: if isValidId(workspaceId);
+      allow list: if false;
+      allow create: if isValidId(workspaceId) && isWorkspaceAdmin(workspaceId) &&
+        isValidPublicStorefront(incoming(), workspaceId) &&
+        incoming().ownerUid == getAfter(workspacePath(workspaceId)).data.ownerUid &&
+        incoming().updatedAt == request.time;
+      allow update: if isValidId(workspaceId) && isWorkspaceAdmin(workspaceId) &&
+        isValidPublicStorefront(incoming(), workspaceId) &&
+        incoming().ownerUid == existing().ownerUid &&
+        incoming().updatedAt == request.time;
+      allow delete: if false;
+
+      match /products/{productId} {
+        allow get: if isValidId(productId);
+        allow list: if resource.data.active in [true, false];
+        allow create, update: if isValidId(productId) && isWorkspaceAdmin(workspaceId) &&
+          isValidPublicProduct(incoming(), productId) &&
+          incoming().updatedAt == request.time;
+        allow delete: if isValidId(productId) && isWorkspaceAdmin(workspaceId);
+      }
+
+      match /sauces/{sauceId} {
+        allow get: if isValidId(sauceId);
+        allow list: if resource.data.active in [true, false];
+        allow create, update: if isValidId(sauceId) && isWorkspaceAdmin(workspaceId) &&
+          isValidPublicSauce(incoming(), sauceId) &&
+          incoming().updatedAt == request.time;
+        allow delete: if isValidId(sauceId) && isWorkspaceAdmin(workspaceId);
+      }
+
+      match /queueTickets/{ticketId} {
+        allow get: if isValidId(ticketId);
+        allow list: if resource.data.status in ['pendiente_validacion', 'tomado', 'preparacion', 'listo', 'entregado', 'cancelado'];
+        allow create: if isValidId(ticketId) &&
+          isValidQueueTicket(incoming(), ticketId) &&
+          incoming().status == 'pendiente_validacion' &&
+          incoming().createdAt == request.time &&
+          incoming().updatedAt == request.time &&
+          (
+            isAuthorizedWorkspaceUser(workspaceId) ||
+            existsAfter(/databases/$(database)/documents/publicStorefronts/$(workspaceId)/selfOrders/$(ticketId))
+          );
+        allow update: if isValidId(ticketId) && isAuthorizedWorkspaceUser(workspaceId) &&
+          isValidQueueTicket(incoming(), ticketId) &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time;
+        allow delete: if isValidId(ticketId) && isWorkspaceAdmin(workspaceId);
+      }
+
+      match /selfOrders/{orderId} {
+        allow get: if isValidId(orderId);
+        allow list: if canListWorkspaceSubcollection(workspaceId);
+        allow create: if isValidId(orderId) &&
+          isValidSelfOrder(incoming(), orderId) &&
+          incoming().status == 'pendiente_validacion' &&
+          incoming().paymentStatus == 'pendiente' &&
+          incoming().paymentMethod == 'transferencia' &&
+          incoming().receiptCount == 1 &&
+          incoming().latestReceiptUrl.size() > 0 &&
+          incoming().createdAt == request.time &&
+          incoming().updatedAt == request.time &&
+          exists(/databases/$(database)/documents/publicStorefronts/$(workspaceId)) &&
+          get(/databases/$(database)/documents/publicStorefronts/$(workspaceId)).data.enabled == true &&
+          incoming().ownerUid == get(/databases/$(database)/documents/publicStorefronts/$(workspaceId)).data.ownerUid &&
+          existsAfter(/databases/$(database)/documents/publicStorefronts/$(workspaceId)/queueTickets/$(orderId));
+        allow update: if isValidId(orderId) && isAuthorizedWorkspaceUser(workspaceId) &&
+          isValidSelfOrder(incoming(), orderId) &&
+          incoming().ownerUid == existing().ownerUid &&
+          incoming().createdByUid == existing().createdByUid &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time;
+        allow delete: if isValidId(orderId) && isWorkspaceAdmin(workspaceId);
       }
     }
   }

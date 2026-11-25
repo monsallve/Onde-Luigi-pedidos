@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Camera,
   Check,
@@ -129,7 +129,6 @@ export const PosOrderWorkspaceView: React.FC<Props> = ({
 }) => {
   const {
     products,
-    sauces,
     orders,
     customers,
     billingConfig,
@@ -251,23 +250,22 @@ export const PosOrderWorkspaceView: React.FC<Props> = ({
     prevOrdersCountRef.current = orders.length;
   }, [orders.length, liveSalesCounts]);
 
-  const refreshRankingSnapshot = () => {
+  const refreshRankingSnapshot = useCallback(() => {
     setRankingSnapshot({
       salesCounts: liveSalesCounts,
       localInteractions: localInteractionsRef.current,
     });
-  };
+  }, [liveSalesCounts]);
 
-  const recordProductInteraction = (productId: string) => {
+  const recordProductInteraction = useCallback((productId: string) => {
     setLocalInteractions((prev) => {
       const next = { ...prev, [productId]: (prev[productId] || 0) + 1 };
       saveProductInteractions(next);
       return next;
     });
-  };
+  }, []);
 
   const activeProducts = useMemo(() => products.filter((p) => p.active), [products]);
-  const activeSauceCount = useMemo(() => sauces.filter((s) => s.active).length, [sauces]);
   const productMap = useMemo(() => new Map(products.map((p) => [p.id, p])), [products]);
 
   const categories = useMemo(
@@ -311,7 +309,7 @@ export const PosOrderWorkspaceView: React.FC<Props> = ({
   const totalUnits = useMemo(() => items.reduce((s, i) => s + i.quantity, 0), [items]);
   const sauceValidation = useMemo(() => validateOrderItemsSauces(items, products), [items, products]);
 
-  const handleQuickAdd = (product: Product) => {
+  const handleQuickAdd = useCallback((product: Product) => {
     setErrorMsg(null);
     setLastCreatedOrder(null);
     recordProductInteraction(product.id);
@@ -327,7 +325,7 @@ export const PosOrderWorkspaceView: React.FC<Props> = ({
       customNote: '',
     });
     setItems((prev) => addOrMergeCartItem(prev, candidate));
-  };
+  }, [recordProductInteraction]);
 
   const handleConfirmCustomized = (built: OrderItem) => {
     setErrorMsg(null);
@@ -414,12 +412,34 @@ export const PosOrderWorkspaceView: React.FC<Props> = ({
     }
   };
 
-  const openEditItemModal = (item: OrderItem) => {
+  const openEditItemModal = useCallback((item: OrderItem) => {
     const prod = productMap.get(item.productId);
     if (!prod) return;
     setEditingLineItem(item);
     setCustomizingProduct(prod);
-  };
+  }, [productMap]);
+
+  const handleSelectCategory = useCallback((cat: string) => {
+    setSelectedCategory(cat);
+    refreshRankingSnapshot();
+  }, [refreshRankingSnapshot]);
+
+  const handleCustomizeProduct = useCallback((product: Product) => {
+    setEditingLineItem(null);
+    setCustomizingProduct(product);
+  }, []);
+
+  const handleUpdateQty = useCallback((id: string, delta: number) => {
+    setItems((prev) => adjustCartLineQuantity(prev, id, delta));
+  }, []);
+
+  const handleSplitUnit = useCallback((id: string) => {
+    setItems((prev) => splitCartLineUnit(prev, id));
+  }, []);
+
+  const handleRemoveItem = useCallback((id: string) => {
+    setItems((prev) => prev.filter((i) => i.lineId !== id));
+  }, []);
 
   if (!permissions.canTakeOrders) {
     return (
@@ -436,16 +456,11 @@ export const PosOrderWorkspaceView: React.FC<Props> = ({
   }
 
   return (
-    <div className="space-y-4">
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-        <div>
-          <h1 className="font-poster text-3xl sm:text-4xl font-extrabold tracking-wide text-white leading-none">
-            TOMAR PEDIDO
-          </h1>
-          <p className="text-xs text-zinc-400 mt-1">
-            1. Elige varios productos · 2. Ajusta lo que no lleva y elige de 1 a 4 salsas ({activeSauceCount} disponibles)
-          </p>
-        </div>
+    <div className="space-y-3.5">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+        <h1 className="font-poster text-3xl sm:text-4xl font-extrabold tracking-wide text-white leading-none">
+          TOMAR PEDIDO
+        </h1>
 
         {lastCreatedOrder && (
           <div className="flex flex-wrap items-center gap-2.5 rounded-xl bg-emerald-950/70 border border-emerald-700 px-3.5 py-2 text-xs text-emerald-200">
@@ -488,17 +503,11 @@ export const PosOrderWorkspaceView: React.FC<Props> = ({
             topProductIds={topProductIds}
             categories={categories}
             selectedCategory={selectedCategory}
-            onSelectCategory={(cat) => {
-              setSelectedCategory(cat);
-              refreshRankingSnapshot();
-            }}
+            onSelectCategory={handleSelectCategory}
             searchTerm={searchTerm}
             onSearchChange={setSearchTerm}
             onQuickAdd={handleQuickAdd}
-            onCustomize={(product) => {
-              setEditingLineItem(null);
-              setCustomizingProduct(product);
-            }}
+            onCustomize={handleCustomizeProduct}
           />
         </section>
 
@@ -586,10 +595,10 @@ export const PosOrderWorkspaceView: React.FC<Props> = ({
             <OrderCartItemsList
               items={items}
               productMap={productMap}
-              onUpdateQty={(id, delta) => setItems((prev) => adjustCartLineQuantity(prev, id, delta))}
-              onSplitUnit={(id) => setItems((prev) => splitCartLineUnit(prev, id))}
+              onUpdateQty={handleUpdateQty}
+              onSplitUnit={handleSplitUnit}
               onEditItem={openEditItemModal}
-              onRemoveItem={(id) => setItems((prev) => prev.filter((i) => i.lineId !== id))}
+              onRemoveItem={handleRemoveItem}
             />
 
             <div>

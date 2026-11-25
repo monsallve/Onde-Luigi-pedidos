@@ -10,7 +10,7 @@ import {
   X,
 } from 'lucide-react';
 import { usePosStore } from '../services/posStore';
-import type { Customer, Order } from '../types/pos';
+import type { Customer, Order, PurchaseInvoice } from '../types/pos';
 import {
   DEFAULT_CUSTOMER_DOCUMENT,
   isDefaultFinalConsumer,
@@ -27,6 +27,7 @@ export const CustomersModal: React.FC<Props> = ({ open, onClose }) => {
   const {
     customers,
     orders,
+    purchaseInvoices,
     billingConfig,
     isAdmin,
     upsertCustomer,
@@ -73,6 +74,17 @@ export const CustomersModal: React.FC<Props> = ({ open, onClose }) => {
     }
     return map;
   }, [orders]);
+
+  const invoicesByDoc = useMemo(() => {
+    const map = new Map<string, PurchaseInvoice[]>();
+    for (const inv of purchaseInvoices) {
+      const docKey = (inv.supplierDocument || DEFAULT_CUSTOMER_DOCUMENT).trim().toLowerCase();
+      const list = map.get(docKey) || [];
+      list.push(inv);
+      map.set(docKey, list);
+    }
+    return map;
+  }, [purchaseInvoices]);
 
   const filteredCustomers = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
@@ -175,10 +187,10 @@ export const CustomersModal: React.FC<Props> = ({ open, onClose }) => {
                 id="customers-modal-title"
                 className="font-poster text-xl font-extrabold text-white tracking-wide uppercase truncate"
               >
-                REGISTRO DE CLIENTES ({customers.length})
+                REGISTRO DE CLIENTES Y PROVEEDORES ({customers.length})
               </h2>
               <p className="text-[11px] text-zinc-400 truncate">
-                Clientes frecuentes con NIT o cédula · Por defecto se usa 222222222 Consumidor Final
+                NIT o cédula para ventas y colillas de compra · 222222222 por defecto para Consumidor Final
               </p>
             </div>
           </div>
@@ -357,10 +369,13 @@ export const CustomersModal: React.FC<Props> = ({ open, onClose }) => {
           ) : (
             <div className="space-y-2.5">
               {filteredCustomers.map((cust) => {
-                const customerOrders =
-                  ordersByDoc.get(cust.documentNumber.trim().toLowerCase()) || [];
+                const docKey = cust.documentNumber.trim().toLowerCase();
+                const customerOrders = ordersByDoc.get(docKey) || [];
+                const supplierInvoices = invoicesByDoc.get(docKey) || [];
                 const activeOrders = customerOrders.filter((o) => o.status !== 'cancelado');
                 const totalSpent = activeOrders.reduce((s, o) => s + o.total, 0);
+                const totalSupplied = supplierInvoices.reduce((s, inv) => s + inv.grandTotal, 0);
+                const hasMovements = customerOrders.length > 0 || supplierInvoices.length > 0;
                 const isExpanded = expandedCustomerId === cust.id;
                 const confirmingDelete = confirmDeleteId === cust.id;
 
@@ -379,17 +394,29 @@ export const CustomersModal: React.FC<Props> = ({ open, onClose }) => {
                         </div>
                         <p className="text-[11px] text-zinc-400 mt-1">
                           {activeOrders.length}{' '}
-                          {activeOrders.length === 1 ? 'compra' : 'compras'} ·{' '}
+                          {activeOrders.length === 1 ? 'venta' : 'ventas'} (
                           <span className="font-mono text-zinc-200">
                             {formatCurrency(totalSpent)}
                           </span>
+                          )
+                          {supplierInvoices.length > 0 && (
+                            <>
+                              {' · '}
+                              {supplierInvoices.length}{' '}
+                              {supplierInvoices.length === 1 ? 'colilla compra' : 'colillas compra'} (
+                              <span className="font-mono text-emerald-300">
+                                {formatCurrency(totalSupplied)}
+                              </span>
+                              )
+                            </>
+                          )}
                           {cust.phone ? ` · Tel: ${cust.phone}` : ''}
                           {cust.email ? ` · ${cust.email}` : ''}
                         </p>
                       </div>
 
                       <div className="flex flex-wrap items-center gap-1.5 shrink-0">
-                        {customerOrders.length > 0 && (
+                        {hasMovements && (
                           <button
                             type="button"
                             onClick={() =>
@@ -397,7 +424,9 @@ export const CustomersModal: React.FC<Props> = ({ open, onClose }) => {
                             }
                             className="min-h-[34px] px-2.5 rounded-lg border border-[#27272E] bg-[#141418] text-xs font-semibold text-zinc-200 hover:border-amber-500"
                           >
-                            {isExpanded ? 'Ocultar compras' : `Compras (${customerOrders.length})`}
+                            {isExpanded
+                              ? 'Ocultar'
+                              : `Movimientos (${customerOrders.length + supplierInvoices.length})`}
                           </button>
                         )}
                         <button
@@ -442,7 +471,7 @@ export const CustomersModal: React.FC<Props> = ({ open, onClose }) => {
                       </div>
                     </div>
 
-                    {isExpanded && customerOrders.length > 0 && (
+                    {isExpanded && hasMovements && (
                       <div className="border-t border-[#27272E] bg-[#101014] px-3.5 py-2.5 space-y-2">
                         {customerOrders.slice(0, 8).map((o) => (
                           <div
@@ -451,7 +480,7 @@ export const CustomersModal: React.FC<Props> = ({ open, onClose }) => {
                           >
                             <div className="min-w-0">
                               <span className="font-mono font-bold text-amber-400">
-                                #{o.orderNumber}
+                                Venta #{o.orderNumber}
                               </span>{' '}
                               <span className="text-zinc-300">{o.reference}</span>{' '}
                               <span className="text-zinc-500">
@@ -472,6 +501,27 @@ export const CustomersModal: React.FC<Props> = ({ open, onClose }) => {
                                 <span>Colilla PDF</span>
                               </button>
                             </div>
+                          </div>
+                        ))}
+                        {supplierInvoices.slice(0, 8).map((inv) => (
+                          <div
+                            key={inv.id}
+                            className="flex flex-wrap items-center justify-between gap-2 text-xs py-1 border-b border-[#27272E]/60 last:border-b-0"
+                          >
+                            <div className="min-w-0">
+                              <span className="font-mono font-bold text-emerald-400">
+                                Colilla compra {inv.receiptCode}
+                              </span>{' '}
+                              <span className="text-zinc-300">
+                                ({inv.lines.length} ítems)
+                              </span>{' '}
+                              <span className="text-zinc-500">
+                                · {formatDateTimeShort(inv.createdAtMs)}
+                              </span>
+                            </div>
+                            <span className="font-mono font-bold text-emerald-300 shrink-0">
+                              {formatCurrency(inv.grandTotal)}
+                            </span>
                           </div>
                         ))}
                       </div>

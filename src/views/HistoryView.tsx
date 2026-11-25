@@ -10,9 +10,12 @@ import {
   FileImage,
   History,
   Lock,
+  MapPin,
   PlusCircle,
   Search,
+  Store,
   Trash2,
+  Truck,
   Users,
   X,
 } from 'lucide-react';
@@ -127,7 +130,10 @@ export const HistoryView: React.FC = () => {
         o.reference.toLowerCase().includes(q) ||
         o.waiterName.toLowerCase().includes(q) ||
         (o.customerDocument || '').toLowerCase().includes(q) ||
-        (o.customerName || '').toLowerCase().includes(q)
+        (o.customerName || '').toLowerCase().includes(q) ||
+        (o.deliveryAddress || '').toLowerCase().includes(q) ||
+        (o.deliveryNeighborhood || '').toLowerCase().includes(q) ||
+        (o.deliveryPhone || '').toLowerCase().includes(q)
       );
     });
   }, [orders, searchTerm]);
@@ -186,19 +192,14 @@ export const HistoryView: React.FC = () => {
   }
 
   return (
-    <div className="space-y-5">
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+    <div className="space-y-4">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
         <div>
           <h1 className="font-poster text-3xl sm:text-4xl font-extrabold tracking-wide text-white leading-none">
             HISTORIAL Y BITÁCORA
           </h1>
           <p className="text-xs text-zinc-400 mt-1 tabular-nums">
-            {orders.length} pedidos · {movements.length} movimientos ·{' '}
-            {permissions.canHardDelete
-              ? 'Administrador: puede anular ventas o eliminar rastros permanentes'
-              : permissions.canVoidOrders
-                ? `${ROLE_LABELS[effectiveRole]}: puede visualizar el historial y anular ventas`
-                : `${ROLE_LABELS[effectiveRole]}: solo visualización del historial`}
+            {orders.length} pedidos · {movements.length} movimientos
           </p>
         </div>
 
@@ -239,7 +240,7 @@ export const HistoryView: React.FC = () => {
         </div>
       </div>
 
-      <div className="bg-[#141418] border border-[#27272E] rounded-2xl p-3.5 space-y-3">
+      <div className="bg-[#141418] border border-[#27272E] rounded-2xl p-3 space-y-2.5">
         <div className="relative">
           <Search className="w-4 h-4 text-zinc-400 absolute left-3 top-1/2 -translate-y-1/2" />
           <input
@@ -350,6 +351,21 @@ export const HistoryView: React.FC = () => {
                         <span>{formatDateTimeShort(order.createdAtMs)}</span>
                         <span aria-hidden="true">·</span>
                         <span>{orderMovs.length} eventos</span>
+                        {order.source === 'autoservicio' && (
+                          <span className="px-2 py-0.5 rounded bg-amber-500/20 border border-amber-500/40 text-amber-300 font-sans font-bold uppercase text-[10px] inline-flex items-center gap-1">
+                            {order.deliveryType === 'domicilio' ? (
+                              <>
+                                <Truck className="w-3 h-3" />
+                                <span>Autoservicio · Domicilio</span>
+                              </>
+                            ) : (
+                              <>
+                                <Store className="w-3 h-3" />
+                                <span>Autoservicio · Local</span>
+                              </>
+                            )}
+                          </span>
+                        )}
                         {isVoided && (
                           <span className="px-2 py-0.5 rounded bg-red-950/80 border border-red-700 text-red-300 font-sans font-bold uppercase text-[10px]">
                             Venta Anulada
@@ -468,6 +484,26 @@ export const HistoryView: React.FC = () => {
 
                   {isOpen && (
                     <div className="border-t border-[#27272E] bg-[#0A0A0A] p-4 space-y-3">
+                      {order.source === 'autoservicio' && (
+                        <div className="rounded-xl border border-[#27272E] bg-[#141418] p-3 text-xs space-y-1">
+                          <p className="font-bold text-amber-300 flex items-center gap-1.5">
+                            <MapPin className="w-3.5 h-3.5" />
+                            <span>
+                              {order.deliveryType === 'domicilio'
+                                ? `Domicilio: ${order.deliveryAddress}${
+                                    order.deliveryNeighborhood ? ` · ${order.deliveryNeighborhood}` : ''
+                                  }`
+                                : 'Recoger en local'}
+                            </span>
+                          </p>
+                          {order.deliveryPhone && (
+                            <p className="text-zinc-300 font-mono">Tel: {order.deliveryPhone}</p>
+                          )}
+                          {order.deliveryNotes && (
+                            <p className="text-zinc-400">Indicaciones: {order.deliveryNotes}</p>
+                          )}
+                        </div>
+                      )}
                       <p className="text-xs font-semibold text-amber-400">
                         Línea de tiempo detallada del pedido #{order.orderNumber}
                       </p>

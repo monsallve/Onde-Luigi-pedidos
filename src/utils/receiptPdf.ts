@@ -1,4 +1,4 @@
-import { jsPDF } from 'jspdf';
+import type { jsPDF as JsPdfType } from 'jspdf';
 import type { BusinessBillingConfig, Order } from '../types/pos';
 import {
   buildReceiptFilename,
@@ -48,6 +48,7 @@ export async function downloadOrderReceiptPdf(
   const filename = buildReceiptFilename(order, cfg);
   const logoDataUrl = await loadLogoDataUrl();
 
+  const { jsPDF } = await import('jspdf');
   const pageWidth = 80;
   const marginX = 5;
   const contentWidth = pageWidth - marginX * 2;
@@ -55,7 +56,7 @@ export async function downloadOrderReceiptPdf(
   // First pass with generous height, then create exact-fit ticket PDF
   const measureDoc = new jsPDF({ unit: 'mm', format: [pageWidth, 297] });
 
-  const drawContent = (doc: jsPDF): number => {
+  const drawContent = (doc: JsPdfType): number => {
     let y = 6;
 
     if (logoDataUrl) {

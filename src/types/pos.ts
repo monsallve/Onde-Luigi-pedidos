@@ -1,4 +1,40 @@
-export type OrderStatus = 'tomado' | 'preparacion' | 'listo' | 'entregado' | 'cancelado';
+export type OrderStatus =
+  | 'pendiente_validacion'
+  | 'tomado'
+  | 'preparacion'
+  | 'listo'
+  | 'entregado'
+  | 'cancelado';
+
+export type OrderSource = 'pos' | 'autoservicio';
+
+export type DeliveryType = 'local' | 'domicilio';
+
+export interface SelfServicePaymentConfig {
+  enabled: boolean;
+  qrImageUrl: string;
+  brebKey: string;
+  accountHolder: string;
+  bankName: string;
+  paymentInstructions: string;
+  deliveryInstructions: string;
+}
+
+export interface PublicStorefrontConfig extends SelfServicePaymentConfig {
+  id: string;
+  businessName: string;
+  ownerUid: string;
+  updatedAtMs: number;
+}
+
+export interface PublicQueueTicket {
+  id: string;
+  orderNumber: number;
+  status: OrderStatus;
+  deliveryType: DeliveryType;
+  createdAtMs: number;
+  updatedAtMs: number;
+}
 
 export type PaymentStatus = 'pendiente' | 'pagado';
 
@@ -21,13 +57,25 @@ export type TrackedPaymentMethod = 'efectivo' | 'transferencia' | 'tarjeta' | 'o
 
 export type ShiftStatus = 'abierto' | 'cerrado';
 
+export type InventoryUnit = 'g' | 'ud';
+
+export type InventoryMovementType =
+  | 'compra'
+  | 'consumo_pedido'
+  | 'edicion_pedido'
+  | 'anulacion_pedido'
+  | 'ajuste_manual'
+  | 'fusion';
+
 export type AppTab =
   | 'pedidos'
   | 'comandas'
   | 'historial'
   | 'transferencias'
   | 'ventas'
-  | 'menu';
+  | 'menu'
+  | 'inventario'
+  | 'datos_pago';
 
 export type ConnectionMode = 'cloud';
 
@@ -58,11 +106,60 @@ export interface Customer {
   updatedAtMs: number;
 }
 
+export interface InventoryItem {
+  id: string;
+  name: string;
+  nameKey: string;
+  unit: InventoryUnit;
+  currentStock: number;
+  minStock: number;
+  unitCost: number;
+  lastPurchaseQuantity: number;
+  lastPurchaseTotalCost: number;
+  active: boolean;
+  ownerUid: string;
+  createdByUid: string;
+  allowedEmails: string[];
+  createdAtMs: number;
+  updatedAtMs: number;
+}
+
+export interface InventoryMovement {
+  id: string;
+  inventoryItemId: string;
+  ingredientName: string;
+  unit: InventoryUnit;
+  type: InventoryMovementType;
+  quantityDelta: number;
+  purchaseTotalCost: number;
+  calculatedUnitCost: number;
+  orderId: string;
+  orderNumber: number;
+  notes: string;
+  actorName: string;
+  actorUid: string;
+  ownerUid: string;
+  createdByUid: string;
+  allowedEmails: string[];
+  createdAtMs: number;
+}
+
+export interface RecipeIngredientSpec {
+  inventoryItemId: string;
+  name: string;
+  quantity: number;
+  unit: InventoryUnit;
+  removable: boolean;
+  inventoriable?: boolean;
+}
+
 export interface AddonOption {
   id: string;
   name: string;
   price: number;
   allowMultiple?: boolean;
+  inventoryItemId?: string;
+  inventoryQuantity?: number;
 }
 
 export interface Sauce {
@@ -84,6 +181,7 @@ export interface Product {
   imageUrl: string;
   baseRecipe: string[];
   removableOptions: string[];
+  recipeIngredients?: RecipeIngredientSpec[];
   addonOptions: AddonOption[];
   allowSauces: boolean;
   minSauces: number;
@@ -133,11 +231,19 @@ export interface Order {
   notes: string;
   receiptCount: number;
   latestReceiptUrl: string;
+  receiptStoragePath?: string;
+  source?: OrderSource;
+  deliveryType?: DeliveryType;
+  deliveryAddress?: string;
+  deliveryNeighborhood?: string;
+  deliveryPhone?: string;
+  deliveryNotes?: string;
   customerId?: string;
   customerDocument?: string;
   customerName?: string;
   customerPhone?: string;
   customerEmail?: string;
+  inventoryDeducted?: Record<string, number>;
   voidReason?: string;
   voidedByName?: string;
   voidedAtMs?: number;
@@ -231,4 +337,68 @@ export interface Shift {
   createdAtMs: number;
   updatedAtMs: number;
 }
+
+export type WorkspaceNotificationType =
+  | 'nueva_comanda'
+  | 'turno_abierto'
+  | 'turno_cerrado'
+  | 'venta_anulada';
+
+export interface WorkspaceNotification {
+  id: string;
+  type: WorkspaceNotificationType;
+  title: string;
+  message: string;
+  orderId: string;
+  orderNumber: number;
+  shiftId: string;
+  actorName: string;
+  actorUid: string;
+  ownerUid: string;
+  createdByUid: string;
+  allowedEmails: string[];
+  createdAtMs: number;
+}
+
+export type ExpenseLineKind =
+  | 'inventariable'
+  | 'no_inventariable'
+  | 'servicio'
+  | 'gasto'
+  | 'inversion';
+
+export interface PurchaseInvoiceLine {
+  id: string;
+  kind: ExpenseLineKind;
+  description: string;
+  inventoryItemId?: string;
+  unit?: InventoryUnit;
+  quantity: number;
+  totalCost: number;
+  calculatedUnitCost: number;
+}
+
+export interface PurchaseInvoice {
+  id: string;
+  receiptCode: string;
+  supplierId: string;
+  supplierDocument: string;
+  supplierName: string;
+  supplierPhone: string;
+  supplierEmail: string;
+  paymentMethod: string;
+  notes: string;
+  lines: PurchaseInvoiceLine[];
+  inventoriableTotal: number;
+  expensesTotal: number;
+  grandTotal: number;
+  actorName: string;
+  actorUid: string;
+  ownerUid: string;
+  createdByUid: string;
+  allowedEmails: string[];
+  createdAtMs: number;
+  updatedAtMs: number;
+}
+
 

@@ -1,6 +1,7 @@
 import type { Order, OrderItem, OrderItemAddon, OrderStatus, PaymentMethod, Product } from '../types/pos';
 
 export const ORDER_STATUS_LABELS: Record<OrderStatus, string> = {
+  pendiente_validacion: 'Validando pago',
   tomado: 'Tomado',
   preparacion: 'En preparación',
   listo: 'Listo',
@@ -9,6 +10,7 @@ export const ORDER_STATUS_LABELS: Record<OrderStatus, string> = {
 };
 
 export const ORDER_STATUS_FLOW: OrderStatus[] = [
+  'pendiente_validacion',
   'tomado',
   'preparacion',
   'listo',

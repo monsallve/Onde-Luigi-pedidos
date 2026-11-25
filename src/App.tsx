@@ -1,13 +1,16 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   BarChart3,
+  Boxes,
   ClipboardList,
   Clock,
   History,
   Image as ImageIcon,
+  LayoutGrid,
   LogOut,
   MailCheck,
   PlusCircle,
+  QrCode,
   Settings,
   UserCheck,
   UtensilsCrossed,
@@ -17,6 +20,7 @@ import {
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { AuthGate } from './components/AuthGate';
 import { EmailVerificationModal } from './components/EmailVerificationModal';
+import { NotificationCenter } from './components/NotificationCenter';
 import { OrderComposerModal } from './components/OrderComposerModal';
 import { PaymentSheetModal } from './components/PaymentSheetModal';
 import { PWAInstallButton } from './components/PWAInstallBanner';
@@ -29,12 +33,41 @@ import type { AppTab, Order } from './types/pos';
 import { shouldPromptPermanentRegistration } from './utils/identityState';
 import { isOrderInCourse, resolveAssetUrl } from './utils/orderMath';
 import { ROLE_LABELS } from './utils/rolePermissions';
-import { HistoryView } from './views/HistoryView';
-import { MenuManagerView } from './views/MenuManagerView';
-import { OrdersView } from './views/OrdersView';
 import { PosOrderWorkspaceView } from './views/PosOrderWorkspaceView';
-import { SalesReportView } from './views/SalesReportView';
-import { TransfersGalleryView } from './views/TransfersGalleryView';
+
+const OrdersView = lazy(() =>
+  import('./views/OrdersView').then((m) => ({ default: m.OrdersView }))
+);
+const HistoryView = lazy(() =>
+  import('./views/HistoryView').then((m) => ({ default: m.HistoryView }))
+);
+const TransfersGalleryView = lazy(() =>
+  import('./views/TransfersGalleryView').then((m) => ({ default: m.TransfersGalleryView }))
+);
+const SalesReportView = lazy(() =>
+  import('./views/SalesReportView').then((m) => ({ default: m.SalesReportView }))
+);
+const MenuManagerView = lazy(() =>
+  import('./views/MenuManagerView').then((m) => ({ default: m.MenuManagerView }))
+);
+const InventoryView = lazy(() =>
+  import('./views/InventoryView').then((m) => ({ default: m.InventoryView }))
+);
+const PaymentSettingsAdminView = lazy(() =>
+  import('./views/PaymentSettingsAdminView').then((m) => ({
+    default: m.PaymentSettingsAdminView,
+  }))
+);
+const SelfServiceView = lazy(() =>
+  import('./views/SelfServiceView').then((m) => ({ default: m.SelfServiceView }))
+);
+
+const MOBILE_PRIMARY_TAB_IDS = new Set<AppTab>([
+  'pedidos',
+  'comandas',
+  'historial',
+  'transferencias',
+]);
 
 interface NavDef {
   id: AppTab;
@@ -50,7 +83,43 @@ const ALL_NAV_ITEMS: NavDef[] = [
   { id: 'transferencias', label: 'Transferencias', shortLabel: 'Pagos', icon: <ImageIcon className="w-5 h-5" /> },
   { id: 'ventas', label: 'Ventas', shortLabel: 'Ventas', icon: <BarChart3 className="w-5 h-5" /> },
   { id: 'menu', label: 'Menú y Salsas', shortLabel: 'Menú', icon: <UtensilsCrossed className="w-5 h-5" /> },
+  { id: 'inventario', label: 'Inventario', shortLabel: 'Stock', icon: <Boxes className="w-5 h-5" /> },
+  { id: 'datos_pago', label: 'Datos de Pago', shortLabel: 'Pago QR', icon: <QrCode className="w-5 h-5" /> },
 ];
+
+function resolveRequestedProtectedTabFromUrl(): AppTab | null {
+  if (typeof window === 'undefined') return null;
+  const pathname = window.location.pathname.toLowerCase();
+  const hash = (window.location.hash || '').toLowerCase();
+  const searchParams = new URLSearchParams(window.location.search);
+  const tabParam = (searchParams.get('tab') || '').trim().toLowerCase();
+  if (
+    pathname === '/admin/pagos' ||
+    pathname.endsWith('/admin/pagos') ||
+    hash.startsWith('#/admin/pagos') ||
+    tabParam === 'datos_pago'
+  ) {
+    return 'datos_pago';
+  }
+  return null;
+}
+
+function clearProtectedTabFromUrl(): void {
+  if (typeof window === 'undefined') return;
+  try {
+    const url = new URL(window.location.href);
+    url.searchParams.delete('tab');
+    const cleanPath = url.pathname.toLowerCase().endsWith('/admin/pagos') ? '/' : url.pathname;
+    const cleanHash = url.hash.toLowerCase().startsWith('#/admin/pagos') ? '' : url.hash;
+    window.history.replaceState(
+      window.history.state,
+      '',
+      `${cleanPath}${url.search}${cleanHash}`
+    );
+  } catch {
+    // ignore URL errors
+  }
+}
 
 const OfflineIndicator: React.FC = () => {
   const [isOnline, setIsOnline] = useState(
@@ -114,6 +183,8 @@ const PosShell: React.FC = () => {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [shiftModalOpen, setShiftModalOpen] = useState(false);
   const [exitConfirmOpen, setExitConfirmOpen] = useState(false);
+  const [mobileMoreOpen, setMobileMoreOpen] = useState(false);
+  const [routeAccessDeniedNotice, setRouteAccessDeniedNotice] = useState<string | null>(null);
   const autoPromptedRef = useRef(false);
 
   const [viewerState, setViewerState] = useState<{
@@ -132,6 +203,7 @@ const PosShell: React.FC = () => {
 
   const navigateToTab = useCallback((nextTab: AppTab) => {
     if (!permissionsRef.current.allowedTabs.includes(nextTab)) return;
+    setMobileMoreOpen(false);
     setActiveTab((prev) => {
       if (prev !== nextTab) {
         const currentStack = tabHistoryRef.current;
@@ -148,12 +220,62 @@ const PosShell: React.FC = () => {
     [permissions]
   );
 
+  const hasMobileOverflow = navItems.length > 5;
+  const mobilePrimaryItems = useMemo(() => {
+    if (!hasMobileOverflow) return navItems;
+    return navItems.filter((item) => MOBILE_PRIMARY_TAB_IDS.has(item.id));
+  }, [navItems, hasMobileOverflow]);
+
+  const mobileOverflowItems = useMemo(() => {
+    if (!hasMobileOverflow) return [];
+    return navItems.filter((item) => !MOBILE_PRIMARY_TAB_IDS.has(item.id));
+  }, [navItems, hasMobileOverflow]);
+
+  // Protect admin-only /admin/pagos and ?tab=datos_pago routes strictly by role
+  useEffect(() => {
+    if (!sessionMode || !identityReady) return;
+    const syncProtectedRoute = () => {
+      const requested = resolveRequestedProtectedTabFromUrl();
+      if (requested === 'datos_pago') {
+        if (permissions.canManagePaymentSettings) {
+          setRouteAccessDeniedNotice(null);
+          setActiveTab('datos_pago');
+        } else {
+          setActiveTab(permissions.defaultTab);
+          setRouteAccessDeniedNotice(
+            'Acceso restringido: solo los usuarios con rol de Administrador pueden acceder al módulo de Datos de Pago.'
+          );
+          clearProtectedTabFromUrl();
+        }
+      }
+    };
+    syncProtectedRoute();
+    window.addEventListener('hashchange', syncProtectedRoute);
+    return () => window.removeEventListener('hashchange', syncProtectedRoute);
+  }, [sessionMode, identityReady, permissions.canManagePaymentSettings, permissions.defaultTab]);
+
   // Redirect away from disallowed tabs whenever effective role/permissions change
   useEffect(() => {
     if (!permissions.allowedTabs.includes(activeTab)) {
+      if (activeTab === 'datos_pago') {
+        setRouteAccessDeniedNotice(
+          'Acceso restringido: tu rol actual no tiene permisos para administrar los Datos de Pago.'
+        );
+        clearProtectedTabFromUrl();
+      }
       setActiveTab(permissions.defaultTab);
     }
   }, [permissions, activeTab]);
+
+  useEffect(() => {
+    if (!mobileMoreOpen) return;
+    const handleBack = (e: Event) => {
+      e.preventDefault();
+      setMobileMoreOpen(false);
+    };
+    window.addEventListener('ondeluigi:back-intercept', handleBack);
+    return () => window.removeEventListener('ondeluigi:back-intercept', handleBack);
+  }, [mobileMoreOpen]);
 
   // Anchor Android/Browser back button sentinel and handle popstate consistently across views/modals
   const modalStateRef = useRef({
@@ -459,7 +581,7 @@ const PosShell: React.FC = () => {
           {/* Zone 2: Desktop Navigation */}
           <nav
             aria-label="Navegación principal"
-            className="hidden lg:flex items-center gap-5 text-sm font-semibold"
+            className="hidden lg:flex items-center gap-2.5 xl:gap-4 text-xs xl:text-sm font-semibold"
           >
             {navItems.map((item) => {
               const active = activeTab === item.id;
@@ -501,6 +623,13 @@ const PosShell: React.FC = () => {
                 {activeWaiter ? activeWaiter.name : 'Asociar'}
               </span>
             </button>
+
+            <div className="lg:hidden">
+              <NotificationCenter
+                onNavigateTab={navigateToTab}
+                onOpenShiftModal={() => setShiftModalOpen(true)}
+              />
+            </div>
 
             <button
               type="button"
@@ -569,6 +698,10 @@ const PosShell: React.FC = () => {
             </div>
 
             <div className="flex items-center gap-2 justify-self-end">
+              <NotificationCenter
+                onNavigateTab={navigateToTab}
+                onOpenShiftModal={() => setShiftModalOpen(true)}
+              />
               <PWAInstallButton compact />
               <button
                 type="button"
@@ -585,6 +718,23 @@ const PosShell: React.FC = () => {
 
       {/* Main Content */}
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 py-5 pb-32 lg:pb-10">
+        {routeAccessDeniedNotice && (
+          <div
+            role="alert"
+            className="mb-4 rounded-xl bg-red-950/60 border border-red-700 px-4 py-3 text-xs font-medium text-red-200 flex items-center justify-between gap-2.5"
+          >
+            <span>{routeAccessDeniedNotice}</span>
+            <button
+              type="button"
+              onClick={() => setRouteAccessDeniedNotice(null)}
+              aria-label="Cerrar aviso de acceso restringido"
+              className="min-h-[32px] min-w-[32px] flex items-center justify-center rounded-lg text-red-300 hover:bg-red-900/40 shrink-0"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        )}
+
         {cloudError && (
           <div
             role="alert"
@@ -668,31 +818,90 @@ const PosShell: React.FC = () => {
           />
         )}
 
-        {activeTab === 'comandas' && permissions.allowedTabs.includes('comandas') && (
-          <OrdersView
-            onNewOrder={handleOpenNewOrderModal}
-            onEditOrder={handleEditOrder}
-            onOpenPayment={(order) => {
-              if (permissions.canManagePayments) setPaymentOrder(order);
-            }}
-            onViewOrderReceipt={handleViewOrderReceipt}
-            onOpenWaiterPicker={() => setWaiterModalOpen(true)}
-          />
-        )}
+        <Suspense
+          fallback={
+            <div className="py-16 flex items-center justify-center">
+              <div className="w-8 h-8 rounded-full border-2 border-[#27272E] border-t-amber-500 animate-spin" />
+            </div>
+          }
+        >
+          {activeTab === 'comandas' && permissions.allowedTabs.includes('comandas') && (
+            <OrdersView
+              onNewOrder={handleOpenNewOrderModal}
+              onEditOrder={handleEditOrder}
+              onOpenPayment={(order) => {
+                if (permissions.canManagePayments) setPaymentOrder(order);
+              }}
+              onViewOrderReceipt={handleViewOrderReceipt}
+              onOpenWaiterPicker={() => setWaiterModalOpen(true)}
+            />
+          )}
 
-        {activeTab === 'historial' && permissions.canViewHistory && <HistoryView />}
+          {activeTab === 'historial' && permissions.canViewHistory && <HistoryView />}
 
-        {activeTab === 'transferencias' && permissions.canViewTransfers && (
-          <TransfersGalleryView
-            onOpenViewer={(index, receiptIds) => setViewerState({ index, receiptIds })}
-            onOpenWaiterPicker={() => setWaiterModalOpen(true)}
-          />
-        )}
+          {activeTab === 'transferencias' && permissions.canViewTransfers && (
+            <TransfersGalleryView
+              onOpenViewer={(index, receiptIds) => setViewerState({ index, receiptIds })}
+              onOpenWaiterPicker={() => setWaiterModalOpen(true)}
+            />
+          )}
 
-        {activeTab === 'ventas' && permissions.canViewSales && <SalesReportView />}
+          {activeTab === 'ventas' && permissions.canViewSales && <SalesReportView />}
 
-        {activeTab === 'menu' && permissions.canManageMenu && <MenuManagerView />}
+          {activeTab === 'menu' && permissions.canManageMenu && <MenuManagerView />}
+
+          {activeTab === 'inventario' && permissions.canManageInventory && <InventoryView />}
+
+          {activeTab === 'datos_pago' && permissions.canManagePaymentSettings && (
+            <PaymentSettingsAdminView />
+          )}
+        </Suspense>
       </main>
+
+      {/* Mobile Floating Icon Launcher for Overflow Admin Tabs */}
+      {hasMobileOverflow && mobileMoreOpen && (
+        <div
+          className="lg:hidden fixed inset-0 z-30 bg-black/55 backdrop-blur-sm flex items-end justify-center pb-20 px-4"
+          onClick={() => setMobileMoreOpen(false)}
+          aria-label="Opciones adicionales"
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="flex flex-wrap items-end justify-center gap-3.5 max-w-sm"
+          >
+            {mobileOverflowItems.map((item) => {
+              const active = activeTab === item.id;
+              return (
+                <button
+                  key={item.id}
+                  type="button"
+                  onClick={() => navigateToTab(item.id)}
+                  className="group flex flex-col items-center gap-1.5 min-w-[74px]"
+                >
+                  <span
+                    className={`w-14 h-14 rounded-2xl border backdrop-blur-xl shadow-2xl flex items-center justify-center transition-transform active:scale-95 ${
+                      active
+                        ? 'bg-amber-500 border-amber-300 text-black'
+                        : 'bg-[#18181F]/95 border-[#32323D] text-amber-400 group-hover:border-amber-500/80'
+                    }`}
+                  >
+                    {item.icon}
+                  </span>
+                  <span
+                    className={`px-2.5 py-0.5 rounded-full text-[11px] font-bold tracking-tight border shadow-lg ${
+                      active
+                        ? 'bg-amber-500 border-amber-300 text-black'
+                        : 'bg-[#141418]/95 border-[#27272E] text-zinc-100'
+                    }`}
+                  >
+                    {item.shortLabel}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
       {/* Mobile Fixed Bottom Navigation Bar (<= 15% sticky height cap) */}
       <nav
@@ -701,23 +910,19 @@ const PosShell: React.FC = () => {
       >
         <div
           className={`grid h-16 items-center ${
-            navItems.length >= 7
-              ? 'grid-cols-7'
-              : navItems.length === 6
-                ? 'grid-cols-6'
-                : navItems.length === 5
-                  ? 'grid-cols-5'
-                  : navItems.length === 4
-                    ? 'grid-cols-4'
-                    : navItems.length === 3
-                      ? 'grid-cols-3'
-                      : navItems.length === 2
-                        ? 'grid-cols-2'
-                        : 'grid-cols-1'
+            hasMobileOverflow || navItems.length === 5
+              ? 'grid-cols-5'
+              : navItems.length === 4
+                ? 'grid-cols-4'
+                : navItems.length === 3
+                  ? 'grid-cols-3'
+                  : navItems.length === 2
+                    ? 'grid-cols-2'
+                    : 'grid-cols-1'
           }`}
         >
-          {navItems.map((item) => {
-            const active = activeTab === item.id;
+          {mobilePrimaryItems.map((item) => {
+            const active = activeTab === item.id && !mobileMoreOpen;
             return (
               <button
                 key={item.id}
@@ -727,13 +932,45 @@ const PosShell: React.FC = () => {
                   active ? 'text-amber-400' : 'text-zinc-400 hover:text-white'
                 }`}
               >
-                {item.icon}
-                <span className="text-[9.5px] sm:text-[10px] font-semibold tracking-tight whitespace-nowrap truncate max-w-full">
+                <span className="relative">
+                  {item.icon}
+                  {item.id === 'comandas' && activeOrderCount > 0 && (
+                    <span className="absolute -top-1 -right-2 font-mono text-[9px] font-extrabold bg-red-600 text-white px-1 rounded-full leading-tight tabular-nums">
+                      {activeOrderCount}
+                    </span>
+                  )}
+                </span>
+                <span className="text-[10px] font-semibold tracking-tight whitespace-nowrap truncate max-w-full">
                   {item.shortLabel}
                 </span>
               </button>
             );
           })}
+
+          {hasMobileOverflow && (() => {
+            const overflowActive =
+              mobileMoreOpen || mobileOverflowItems.some((item) => item.id === activeTab);
+            return (
+              <button
+                type="button"
+                aria-expanded={mobileMoreOpen}
+                aria-label="Más opciones de navegación"
+                onClick={() => setMobileMoreOpen((v) => !v)}
+                className={`h-full min-w-0 px-0.5 flex flex-col items-center justify-center gap-0.5 ${
+                  overflowActive ? 'text-amber-400' : 'text-zinc-400 hover:text-white'
+                }`}
+              >
+                {mobileMoreOpen ? (
+                  <X className="w-5 h-5" />
+                ) : (
+                  <LayoutGrid className="w-5 h-5" />
+                )}
+                <span className="text-[10px] font-semibold tracking-tight whitespace-nowrap">
+                  Más
+                </span>
+              </button>
+            );
+          })()}
         </div>
       </nav>
 
@@ -779,6 +1016,14 @@ const PosShell: React.FC = () => {
         open={settingsOpen}
         onClose={() => setSettingsOpen(false)}
         onOpenVerifyEmail={() => setVerifyModalOpen(true)}
+        onOpenPaymentSettings={
+          permissions.canManagePaymentSettings
+            ? () => {
+                setSettingsOpen(false);
+                navigateToTab('datos_pago');
+              }
+            : undefined
+        }
       />
 
       {permissions.canManageShifts && (
@@ -854,7 +1099,84 @@ const PosShell: React.FC = () => {
   );
 };
 
+interface SelfServiceRouteState {
+  isSelfService: boolean;
+  orderId?: string;
+}
+
+function resolveSelfServiceRoute(): SelfServiceRouteState {
+  if (typeof window === 'undefined') {
+    return { isSelfService: false };
+  }
+  const searchParams = new URLSearchParams(window.location.search);
+  const pathname = window.location.pathname.toLowerCase();
+  const hash = window.location.hash || '';
+  const hashLower = hash.toLowerCase();
+  const hashQueryIndex = hash.indexOf('?');
+  const hashParams =
+    hashQueryIndex >= 0
+      ? new URLSearchParams(hash.slice(hashQueryIndex + 1))
+      : new URLSearchParams();
+
+  const isSelfService =
+    searchParams.get('autoservicio') === '1' ||
+    hashParams.get('autoservicio') === '1' ||
+    pathname === '/autoservicio' ||
+    pathname.endsWith('/autoservicio') ||
+    hashLower.startsWith('#/autoservicio');
+
+  const rawOrderId =
+    searchParams.get('pedido')?.trim() || hashParams.get('pedido')?.trim() || '';
+
+  return {
+    isSelfService,
+    orderId: rawOrderId || undefined,
+  };
+}
+
 export default function App() {
+  const [selfServiceRoute, setSelfServiceRoute] = useState<SelfServiceRouteState>(
+    () => resolveSelfServiceRoute()
+  );
+
+  useEffect(() => {
+    const syncRoute = () => {
+      setSelfServiceRoute(resolveSelfServiceRoute());
+    };
+    window.addEventListener('popstate', syncRoute);
+    window.addEventListener('hashchange', syncRoute);
+    return () => {
+      window.removeEventListener('popstate', syncRoute);
+      window.removeEventListener('hashchange', syncRoute);
+    };
+  }, []);
+
+  if (selfServiceRoute.isSelfService) {
+    return (
+      <ErrorBoundary>
+        <Suspense
+          fallback={
+            <div
+              className="min-h-screen bg-[#0A0A0A] text-white flex flex-col items-center justify-center p-6 gap-4"
+              role="status"
+              aria-live="polite"
+            >
+              <div
+                className="w-10 h-10 rounded-full border-4 border-[#27272E] border-t-amber-500 animate-spin"
+                aria-hidden="true"
+              />
+              <p className="text-xs font-semibold text-zinc-400">
+                Cargando carta de autoservicio...
+              </p>
+            </div>
+          }
+        >
+          <SelfServiceView initialOrderId={selfServiceRoute.orderId} />
+        </Suspense>
+      </ErrorBoundary>
+    );
+  }
+
   return (
     <ErrorBoundary>
       <PosProvider>

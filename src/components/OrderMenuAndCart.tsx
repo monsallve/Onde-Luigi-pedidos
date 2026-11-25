@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import {
   AlertCircle,
   Droplets,
@@ -33,7 +33,7 @@ interface ProductCatalogPanelProps {
   compactHeader?: boolean;
 }
 
-export const ProductCatalogPanel: React.FC<ProductCatalogPanelProps> = ({
+export const ProductCatalogPanel: React.FC<ProductCatalogPanelProps> = React.memo(({
   products,
   itemsInOrder,
   topProductIds,
@@ -46,6 +46,14 @@ export const ProductCatalogPanel: React.FC<ProductCatalogPanelProps> = ({
   onCustomize,
   compactHeader = false,
 }) => {
+  const orderQtyByProductId = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const item of itemsInOrder) {
+      map.set(item.productId, (map.get(item.productId) || 0) + item.quantity);
+    }
+    return map;
+  }, [itemsInOrder]);
+
   return (
     <div className="space-y-3.5">
       <div className="bg-[#141418] border border-[#27272E] rounded-2xl p-3 space-y-2.5">
@@ -86,9 +94,7 @@ export const ProductCatalogPanel: React.FC<ProductCatalogPanelProps> = ({
       ) : (
         <div className="grid grid-cols-2 gap-2.5 sm:gap-3.5">
           {products.map((product) => {
-            const countInOrder = itemsInOrder
-              .filter((i) => i.productId === product.id)
-              .reduce((s, i) => s + i.quantity, 0);
+            const countInOrder = orderQtyByProductId.get(product.id) || 0;
 
             const hasCustomization =
               product.allowSauces ||
@@ -113,6 +119,8 @@ export const ProductCatalogPanel: React.FC<ProductCatalogPanelProps> = ({
                     <img
                       src={resolveAssetUrl(product.imageUrl)}
                       alt={product.name}
+                      loading="lazy"
+                      decoding="async"
                       className="w-full h-full object-cover object-top"
                     />
                     {isTopProduct && (
@@ -183,7 +191,7 @@ export const ProductCatalogPanel: React.FC<ProductCatalogPanelProps> = ({
       )}
     </div>
   );
-};
+});
 
 interface OrderCartItemsListProps {
   items: OrderItem[];
@@ -194,7 +202,7 @@ interface OrderCartItemsListProps {
   onRemoveItem: (lineId: string) => void;
 }
 
-export const OrderCartItemsList: React.FC<OrderCartItemsListProps> = ({
+export const OrderCartItemsList: React.FC<OrderCartItemsListProps> = React.memo(({
   items,
   productMap,
   onUpdateQty,
@@ -330,4 +338,4 @@ export const OrderCartItemsList: React.FC<OrderCartItemsListProps> = ({
       })}
     </div>
   );
-};
+});

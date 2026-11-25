@@ -1,8 +1,26 @@
 import React, { useEffect, useState } from 'react';
-import { Check, Cloud, Code2, Copy, Lock, LogOut, MailCheck, MailPlus, Plus, Receipt, Shield, Trash2, Users, X } from 'lucide-react';
+import {
+  Check,
+  Cloud,
+  Code2,
+  Copy,
+  ExternalLink,
+  Lock,
+  LogOut,
+  MailCheck,
+  MailPlus,
+  Plus,
+  QrCode,
+  Receipt,
+  Shield,
+  Trash2,
+  Upload,
+  Users,
+  X,
+} from 'lucide-react';
 import { usePosStore } from '../services/posStore';
 import { ADMIN_BOOTSTRAP_EMAIL } from '../data/initialCatalog';
-import type { BusinessBillingConfig, StaffRole } from '../types/pos';
+import type { BusinessBillingConfig, SelfServicePaymentConfig, StaffRole } from '../types/pos';
 import { resolveAssetUrl } from '../utils/orderMath';
 import { ROLE_DESCRIPTIONS, ROLE_LABELS } from '../utils/rolePermissions';
 import { buildBrandVerificationEmailHtml } from '../utils/verificationEmailTemplate';
@@ -12,9 +30,15 @@ interface Props {
   open: boolean;
   onClose: () => void;
   onOpenVerifyEmail?: () => void;
+  onOpenPaymentSettings?: () => void;
 }
 
-export const SettingsModal: React.FC<Props> = ({ open, onClose, onOpenVerifyEmail }) => {
+export const SettingsModal: React.FC<Props> = ({
+  open,
+  onClose,
+  onOpenVerifyEmail,
+  onOpenPaymentSettings,
+}) => {
   const {
     firebaseUser,
     emailVerified,
@@ -27,7 +51,10 @@ export const SettingsModal: React.FC<Props> = ({ open, onClose, onOpenVerifyEmai
     authorizedEmails,
     allowSelfRegistration,
     billingConfig,
+    selfServiceConfig,
     saveBillingConfig,
+    saveSelfServiceConfig,
+    uploadPaymentQrImage,
     updateAuthorizedEmails,
     updateAllowSelfRegistration,
     staff,
@@ -53,12 +80,23 @@ export const SettingsModal: React.FC<Props> = ({ open, onClose, onOpenVerifyEmai
   const [savingBilling, setSavingBilling] = useState(false);
   const [billingStatus, setBillingStatus] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
 
+  const [selfDraft, setSelfDraft] = useState<SelfServicePaymentConfig>(selfServiceConfig);
+  const [qrFile, setQrFile] = useState<File | null>(null);
+  const [qrPreviewUrl, setQrPreviewUrl] = useState('');
+  const [savingSelf, setSavingSelf] = useState(false);
+  const [selfStatus, setSelfStatus] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
+  const [copiedSelfLink, setCopiedSelfLink] = useState(false);
+
   useEffect(() => {
     if (open) {
       setBillingDraft(billingConfig);
       setBillingStatus(null);
+      setSelfDraft(selfServiceConfig);
+      setQrFile(null);
+      setQrPreviewUrl(selfServiceConfig.qrImageUrl || '');
+      setSelfStatus(null);
     }
-  }, [open, billingConfig]);
+  }, [open, billingConfig, selfServiceConfig]);
 
   if (!open) return null;
 
@@ -83,6 +121,66 @@ export const SettingsModal: React.FC<Props> = ({ open, onClose, onOpenVerifyEmai
       });
     } finally {
       setSavingBilling(false);
+    }
+  };
+
+  const selfServicePublicUrl =
+    typeof window !== 'undefined'
+      ? `${window.location.origin}${window.location.pathname}?autoservicio=1`
+      : '?autoservicio=1';
+
+  const handleQrFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setQrFile(file);
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result === 'string') {
+        setQrPreviewUrl(reader.result);
+      }
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handleSaveSelfService = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSelfStatus(null);
+    setSavingSelf(true);
+    try {
+      let nextQrUrl = selfDraft.qrImageUrl;
+      if (qrFile) {
+        const uploaded = await uploadPaymentQrImage(qrFile);
+        nextQrUrl = uploaded.imageUrl;
+      }
+      const nextConfig: SelfServicePaymentConfig = {
+        ...selfDraft,
+        qrImageUrl: nextQrUrl,
+      };
+      await saveSelfServiceConfig(nextConfig);
+      setSelfDraft(nextConfig);
+      setQrFile(null);
+      setQrPreviewUrl(nextQrUrl);
+      setSelfStatus({
+        type: 'ok',
+        text: 'Autoservicio público actualizado y sincronizado en tiempo real.',
+      });
+    } catch (err) {
+      setSelfStatus({
+        type: 'err',
+        text: err instanceof Error ? err.message : 'No se pudo guardar la configuración de Autoservicio.',
+      });
+    } finally {
+      setSavingSelf(false);
+    }
+  };
+
+  const handleCopySelfServiceLink = async () => {
+    try {
+      await navigator.clipboard.writeText(selfServicePublicUrl);
+      setCopiedSelfLink(true);
+      window.setTimeout(() => setCopiedSelfLink(false), 2500);
+    } catch {
+      setCopiedSelfLink(false);
     }
   };
 
@@ -456,6 +554,221 @@ export const SettingsModal: React.FC<Props> = ({ open, onClose, onOpenVerifyEmai
                 >
                   {savingBilling ? 'Guardando datos...' : 'Guardar datos de facturación'}
                 </button>
+              </form>
+            </section>
+          )}
+
+          {/* Admin-only Public Self-Service (Autoservicio QR & Bre-B) */}
+          {isAdmin && (
+            <section className="space-y-2.5">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <h3 className="text-xs font-bold text-amber-400 uppercase tracking-wide flex items-center gap-1.5">
+                  <QrCode className="w-4 h-4" />
+                  <span>Autoservicio Público (QR y Llave Bre-B)</span>
+                </h3>
+                {onOpenPaymentSettings && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onClose();
+                      onOpenPaymentSettings();
+                    }}
+                    className="min-h-[30px] px-2.5 rounded-lg border border-amber-500/60 bg-amber-500/15 text-[11px] font-bold text-amber-300 hover:bg-amber-500/25 inline-flex items-center gap-1"
+                  >
+                    <QrCode className="w-3.5 h-3.5" />
+                    <span>Abrir módulo completo</span>
+                  </button>
+                )}
+              </div>
+
+              <form
+                onSubmit={handleSaveSelfService}
+                className="rounded-xl border border-[#27272E] bg-[#0A0A0A] p-4 space-y-3"
+              >
+                <div className="flex flex-wrap items-center justify-between gap-2 pb-2 border-b border-[#27272E]">
+                  <div className="min-w-0">
+                    <p className="text-xs font-bold text-white">Estado del portal para clientes</p>
+                    <p className="text-[11px] text-zinc-400">
+                      Permite pedir en línea (Recoger en local o Domicilio) solo por transferencia con comprobante.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setSelfDraft({ ...selfDraft, enabled: !selfDraft.enabled })}
+                    className={`min-h-[34px] px-3 rounded-lg text-xs font-bold border transition-colors ${
+                      selfDraft.enabled
+                        ? 'bg-emerald-950/60 text-emerald-300 border-emerald-700'
+                        : 'bg-[#1C1C22] text-zinc-300 border-[#27272E]'
+                    }`}
+                  >
+                    {selfDraft.enabled ? 'Activo' : 'Pausado'}
+                  </button>
+                </div>
+
+                {selfStatus && (
+                  <div
+                    className={`rounded-xl border px-3 py-2 text-xs font-medium ${
+                      selfStatus.type === 'ok'
+                        ? 'bg-emerald-950/60 border-emerald-700 text-emerald-200'
+                        : 'bg-red-950/60 border-red-700 text-red-200'
+                    }`}
+                  >
+                    {selfStatus.text}
+                  </div>
+                )}
+
+                <div className="flex flex-col sm:flex-row items-start sm:items-center gap-3 p-3 rounded-xl border border-[#27272E] bg-[#141418]">
+                  <div className="w-20 h-20 rounded-xl bg-white p-1.5 flex items-center justify-center shrink-0 overflow-hidden">
+                    {qrPreviewUrl ? (
+                      <img
+                        src={qrPreviewUrl}
+                        alt="Vista previa QR de pago"
+                        className="w-full h-full object-contain"
+                      />
+                    ) : (
+                      <QrCode className="w-10 h-10 text-zinc-700" />
+                    )}
+                  </div>
+                  <div className="flex-1 min-w-0 space-y-1.5">
+                    <p className="text-xs font-bold text-white">Imagen QR de transferencia</p>
+                    <p className="text-[11px] text-zinc-400">
+                      Sube el código QR oficial de tu cuenta (Nequi, Bancolombia o Bre-B). Si no subes imagen, se genera un QR con tu llave.
+                    </p>
+                    <div className="flex flex-wrap items-center gap-2 pt-0.5">
+                      <label className="min-h-[34px] px-3 rounded-lg bg-[#1C1C22] border border-[#27272E] text-xs font-semibold text-amber-300 hover:border-amber-500 inline-flex items-center gap-1.5 cursor-pointer">
+                        <Upload className="w-3.5 h-3.5" />
+                        <span>{qrPreviewUrl ? 'Cambiar QR' : 'Subir foto QR'}</span>
+                        <input
+                          type="file"
+                          accept="image/*"
+                          onChange={handleQrFileSelect}
+                          className="sr-only"
+                        />
+                      </label>
+                      {qrPreviewUrl && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setQrFile(null);
+                            setQrPreviewUrl('');
+                            setSelfDraft({ ...selfDraft, qrImageUrl: '' });
+                          }}
+                          className="min-h-[34px] px-2.5 rounded-lg border border-red-800 bg-red-950/40 text-red-300 text-xs font-semibold hover:bg-red-950"
+                        >
+                          Quitar
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                  <div>
+                    <label htmlFor="self-breb-key" className="block text-[11px] font-semibold text-zinc-300 mb-1">
+                      Llave Bre-B / Celular / Cuenta
+                    </label>
+                    <input
+                      id="self-breb-key"
+                      type="text"
+                      maxLength={100}
+                      value={selfDraft.brebKey}
+                      onChange={(e) => setSelfDraft({ ...selfDraft, brebKey: e.target.value })}
+                      placeholder="Ej. @ONDELUIGI o 300 000 0000"
+                      className="w-full min-h-[38px] rounded-lg border border-[#27272E] bg-[#141418] px-2.5 font-mono text-xs text-white focus:outline-none focus:ring-2 focus:ring-amber-500"
+                    />
+                  </div>
+                  <div>
+                    <label htmlFor="self-holder" className="block text-[11px] font-semibold text-zinc-300 mb-1">
+                      Titular de la cuenta
+                    </label>
+                    <input
+                      id="self-holder"
+                      type="text"
+                      maxLength={120}
+                      value={selfDraft.accountHolder}
+                      onChange={(e) => setSelfDraft({ ...selfDraft, accountHolder: e.target.value })}
+                      placeholder="Nombre del titular"
+                      className="w-full min-h-[38px] rounded-lg border border-[#27272E] bg-[#141418] px-2.5 text-xs text-white focus:outline-none focus:ring-2 focus:ring-amber-500"
+                    />
+                  </div>
+                  <div className="sm:col-span-2">
+                    <label htmlFor="self-bank" className="block text-[11px] font-semibold text-zinc-300 mb-1">
+                      Banco o billetera digital
+                    </label>
+                    <input
+                      id="self-bank"
+                      type="text"
+                      maxLength={120}
+                      value={selfDraft.bankName}
+                      onChange={(e) => setSelfDraft({ ...selfDraft, bankName: e.target.value })}
+                      placeholder="Bre-B / Nequi / Bancolombia"
+                      className="w-full min-h-[38px] rounded-lg border border-[#27272E] bg-[#141418] px-2.5 text-xs text-white focus:outline-none focus:ring-2 focus:ring-amber-500"
+                    />
+                  </div>
+                  <div className="sm:col-span-2">
+                    <label htmlFor="self-pay-inst" className="block text-[11px] font-semibold text-zinc-300 mb-1">
+                      Instrucciones de pago
+                    </label>
+                    <textarea
+                      id="self-pay-inst"
+                      rows={2}
+                      maxLength={400}
+                      value={selfDraft.paymentInstructions}
+                      onChange={(e) =>
+                        setSelfDraft({ ...selfDraft, paymentInstructions: e.target.value })
+                      }
+                      className="w-full rounded-lg border border-[#27272E] bg-[#141418] p-2.5 text-xs text-white focus:outline-none focus:ring-2 focus:ring-amber-500 resize-none"
+                    />
+                  </div>
+                  <div className="sm:col-span-2">
+                    <label htmlFor="self-deliv-inst" className="block text-[11px] font-semibold text-zinc-300 mb-1">
+                      Nota sobre entrega / domicilio
+                    </label>
+                    <textarea
+                      id="self-deliv-inst"
+                      rows={2}
+                      maxLength={400}
+                      value={selfDraft.deliveryInstructions}
+                      onChange={(e) =>
+                        setSelfDraft({ ...selfDraft, deliveryInstructions: e.target.value })
+                      }
+                      className="w-full rounded-lg border border-[#27272E] bg-[#141418] p-2.5 text-xs text-white focus:outline-none focus:ring-2 focus:ring-amber-500 resize-none"
+                    />
+                  </div>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2 pt-1">
+                  <button
+                    type="submit"
+                    disabled={savingSelf}
+                    className="min-h-[40px] px-4 rounded-xl bg-amber-500 text-black text-xs font-bold hover:bg-amber-400 disabled:opacity-50"
+                  >
+                    {savingSelf ? 'Guardando...' : 'Guardar Autoservicio'}
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={handleCopySelfServiceLink}
+                    className="min-h-[40px] px-3 rounded-xl border border-[#27272E] bg-[#1C1C22] text-xs font-semibold text-zinc-200 hover:border-amber-500 inline-flex items-center gap-1.5"
+                  >
+                    {copiedSelfLink ? (
+                      <Check className="w-3.5 h-3.5 text-emerald-400" />
+                    ) : (
+                      <Copy className="w-3.5 h-3.5 text-amber-400" />
+                    )}
+                    <span>{copiedSelfLink ? 'Enlace copiado' : 'Copiar enlace público'}</span>
+                  </button>
+
+                  <a
+                    href="?autoservicio=1"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="min-h-[40px] px-3 rounded-xl border border-amber-700/70 bg-amber-950/30 text-amber-300 text-xs font-bold hover:bg-amber-950/60 inline-flex items-center gap-1.5"
+                  >
+                    <span>Abrir vista cliente</span>
+                    <ExternalLink className="w-3.5 h-3.5" />
+                  </a>
+                </div>
               </form>
             </section>
           )}

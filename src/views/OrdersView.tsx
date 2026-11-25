@@ -9,9 +9,13 @@ import {
   CreditCard,
   Edit3,
   Image as ImageIcon,
+  MapPin,
+  Phone,
   Plus,
   Search,
+  Store,
   Trash2,
+  Truck,
   X,
   XCircle,
 } from 'lucide-react';
@@ -36,6 +40,11 @@ interface Props {
 }
 
 const STATUS_BADGE: Record<OrderStatus, { text: string; classes: string; icon: React.ReactNode }> = {
+  pendiente_validacion: {
+    text: 'Validando pago',
+    classes: 'bg-orange-950/70 text-orange-300 border-orange-700',
+    icon: <Clock className="w-3.5 h-3.5 text-orange-400" />,
+  },
   tomado: {
     text: 'Tomado',
     classes: 'bg-[#1C1C22] text-zinc-200 border-[#27272E]',
@@ -64,6 +73,7 @@ const STATUS_BADGE: Record<OrderStatus, { text: string; classes: string; icon: R
 };
 
 function getNextStatus(status: OrderStatus): OrderStatus | null {
+  if (status === 'pendiente_validacion') return 'preparacion';
   if (status === 'tomado') return 'preparacion';
   if (status === 'preparacion') return 'listo';
   if (status === 'listo') return 'entregado';
@@ -165,7 +175,21 @@ export const OrdersView: React.FC<Props> = ({
         const matchWaiter = o.waiterName.toLowerCase().includes(q);
         const matchCustDoc = (o.customerDocument || '').toLowerCase().includes(q);
         const matchCustName = (o.customerName || '').toLowerCase().includes(q);
-        if (!matchNum && !matchRef && !matchWaiter && !matchCustDoc && !matchCustName) return false;
+        const matchAddress = (o.deliveryAddress || '').toLowerCase().includes(q);
+        const matchNeighborhood = (o.deliveryNeighborhood || '').toLowerCase().includes(q);
+        const matchPhone = (o.deliveryPhone || '').toLowerCase().includes(q);
+        if (
+          !matchNum &&
+          !matchRef &&
+          !matchWaiter &&
+          !matchCustDoc &&
+          !matchCustName &&
+          !matchAddress &&
+          !matchNeighborhood &&
+          !matchPhone
+        ) {
+          return false;
+        }
       }
       return true;
     });
@@ -204,8 +228,8 @@ export const OrdersView: React.FC<Props> = ({
   };
 
   return (
-    <div className="space-y-5">
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+    <div className="space-y-4">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
         <div>
           <h1 className="font-poster text-3xl sm:text-4xl font-extrabold tracking-wide text-white leading-none">
             COMANDAS EN CURSO
@@ -229,7 +253,7 @@ export const OrdersView: React.FC<Props> = ({
       </div>
 
       {/* Filters */}
-      <div className="bg-[#141418] border border-[#27272E] rounded-2xl p-3.5 space-y-3">
+      <div className="bg-[#141418] border border-[#27272E] rounded-2xl p-3 space-y-2.5">
         <div className="flex flex-col md:flex-row gap-3">
           <div className="relative flex-1">
             <Search className="w-4 h-4 text-zinc-400 absolute left-3 top-1/2 -translate-y-1/2" />
@@ -280,6 +304,7 @@ export const OrdersView: React.FC<Props> = ({
             : ([
                 { id: 'activos', label: 'En curso' },
                 { id: 'todos', label: 'Todos' },
+                { id: 'pendiente_validacion', label: 'Por validar' },
                 { id: 'tomado', label: 'Tomado' },
                 { id: 'preparacion', label: 'En preparación' },
                 { id: 'listo', label: 'Listo' },
@@ -338,34 +363,69 @@ export const OrdersView: React.FC<Props> = ({
             const nextStatus = getNextStatus(order.status);
             const isBusy = busyOrderId === order.id;
             const isVoided = order.status === 'cancelado';
+            const isSelfService = order.source === 'autoservicio';
             const canAdvanceThisStatus =
-              nextStatus === 'preparacion' || nextStatus === 'listo'
-                ? permissions.canAdvanceKitchen
-                : nextStatus === 'entregado'
-                  ? permissions.canDeliverOrders
-                  : false;
+              order.status === 'pendiente_validacion'
+                ? permissions.canManagePayments || permissions.canAdvanceKitchen
+                : nextStatus === 'preparacion' || nextStatus === 'listo'
+                  ? permissions.canAdvanceKitchen
+                  : nextStatus === 'entregado'
+                    ? permissions.canDeliverOrders
+                    : false;
 
             return (
               <article
                 key={order.id}
                 className={`bg-[#141418] border rounded-2xl p-4 flex flex-col justify-between gap-4 ${
-                  isVoided ? 'border-red-900/70' : 'border-[#27272E]'
+                  isVoided
+                    ? 'border-red-900/70'
+                    : order.status === 'pendiente_validacion'
+                      ? 'border-orange-700/80'
+                      : 'border-[#27272E]'
                 }`}
               >
                 <div className="space-y-3">
                   {/* Card Top */}
                   <div className="flex items-start justify-between gap-2">
                     <div className="min-w-0">
-                      <div className="flex items-center gap-2 text-xs text-zinc-400 font-mono tabular-nums">
+                      <div className="flex flex-wrap items-center gap-1.5 text-xs text-zinc-400 font-mono tabular-nums">
                         <span className="font-bold text-amber-400">#{order.orderNumber}</span>
                         <span aria-hidden="true">·</span>
                         <span>{formatDateTimeShort(order.createdAtMs)}</span>
+                        {isSelfService && (
+                          <span className="px-1.5 py-0.5 rounded bg-amber-500/20 border border-amber-500/40 text-amber-300 font-sans text-[10px] font-extrabold uppercase">
+                            Autoservicio
+                          </span>
+                        )}
                       </div>
                       <h2 className="font-poster text-xl font-extrabold text-white mt-0.5 truncate uppercase">
                         {order.reference}
                       </h2>
-                      <p className="text-xs text-zinc-400 mt-0.5">
-                        Atiende: <span className="font-semibold text-zinc-200">{order.waiterName}</span>
+                      <p className="text-xs text-zinc-400 mt-0.5 flex flex-wrap items-center gap-1.5">
+                        <span>
+                          Atiende: <span className="font-semibold text-zinc-200">{order.waiterName}</span>
+                        </span>
+                        {isSelfService && (
+                          <span
+                            className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold uppercase border ${
+                              order.deliveryType === 'domicilio'
+                                ? 'bg-sky-950/60 border-sky-700 text-sky-300'
+                                : 'bg-emerald-950/60 border-emerald-700 text-emerald-300'
+                            }`}
+                          >
+                            {order.deliveryType === 'domicilio' ? (
+                              <>
+                                <Truck className="w-3 h-3" />
+                                <span>Domicilio</span>
+                              </>
+                            ) : (
+                              <>
+                                <Store className="w-3 h-3" />
+                                <span>Local</span>
+                              </>
+                            )}
+                          </span>
+                        )}
                       </p>
                       {permissions.canManagePayments &&
                         order.customerDocument &&
@@ -444,6 +504,41 @@ export const OrdersView: React.FC<Props> = ({
                       );
                     })}
                   </ul>
+
+                  {isSelfService && (
+                    <div className="rounded-xl bg-[#0A0A0A] border border-[#27272E] p-2.5 text-xs space-y-1">
+                      {order.deliveryType === 'domicilio' ? (
+                        <>
+                          <p className="font-bold text-sky-300 flex items-center gap-1.5">
+                            <MapPin className="w-3.5 h-3.5 shrink-0" />
+                            <span>
+                              {order.deliveryAddress}
+                              {order.deliveryNeighborhood ? ` · ${order.deliveryNeighborhood}` : ''}
+                            </span>
+                          </p>
+                          {order.deliveryPhone && (
+                            <p className="text-zinc-300 flex items-center gap-1.5 font-mono">
+                              <Phone className="w-3.5 h-3.5 text-zinc-400 shrink-0" />
+                              <span>{order.deliveryPhone}</span>
+                            </p>
+                          )}
+                          {order.deliveryNotes && (
+                            <p className="text-[11px] text-zinc-400">Ref: {order.deliveryNotes}</p>
+                          )}
+                        </>
+                      ) : (
+                        <div className="flex flex-wrap items-center justify-between gap-2 text-emerald-300">
+                          <span className="font-bold flex items-center gap-1.5">
+                            <Store className="w-3.5 h-3.5 shrink-0" />
+                            <span>Recoger en local · {order.customerName}</span>
+                          </span>
+                          {order.deliveryPhone && (
+                            <span className="font-mono text-zinc-300">{order.deliveryPhone}</span>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  )}
 
                   {order.notes && (
                     <p className="text-xs text-zinc-300 bg-[#0A0A0A] border border-[#27272E] rounded-lg px-2.5 py-1.5">

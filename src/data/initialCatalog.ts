@@ -1,11 +1,12 @@
-import type { Product, Sauce } from '../types/pos';
+import type { InventoryItem, Product, Sauce } from '../types/pos';
+import { buildUnifiedInventoryPlan } from '../utils/inventoryMath';
 
 export const ADMIN_BOOTSTRAP_EMAIL = 'perrodog1515@gmail.com';
 
 export function buildInitialCatalogSeed(
   ownerUid: string,
   ownerEmail = ADMIN_BOOTSTRAP_EMAIL
-): { sauces: Sauce[]; products: Product[] } {
+): { sauces: Sauce[]; products: Product[]; inventory: InventoryItem[] } {
   const now = Date.now();
   const min = 60 * 1000;
   const hour = 60 * min;
@@ -368,5 +369,36 @@ export function buildInitialCatalogSeed(
     },
   ];
 
-  return { sauces, products };
+  const plan = buildUnifiedInventoryPlan(products, []);
+  const patchMap = new Map(plan.productPatches.map((p) => [p.productId, p]));
+  const unifiedProducts = products.map((prod) => {
+    const patch = patchMap.get(prod.id);
+    if (!patch) return prod;
+    return {
+      ...prod,
+      baseRecipe: patch.baseRecipe,
+      removableOptions: patch.removableOptions,
+      recipeIngredients: patch.recipeIngredients,
+    };
+  });
+
+  const inventory: InventoryItem[] = plan.newItemsToCreate.map((item) => ({
+    id: item.id,
+    name: item.name,
+    nameKey: item.nameKey,
+    unit: item.unit,
+    currentStock: 0,
+    minStock: 0,
+    unitCost: 0,
+    lastPurchaseQuantity: 0,
+    lastPurchaseTotalCost: 0,
+    active: true,
+    ownerUid,
+    createdByUid: ownerUid,
+    allowedEmails,
+    createdAtMs: now - 14 * day,
+    updatedAtMs: now - 14 * day,
+  }));
+
+  return { sauces, products: unifiedProducts, inventory };
 }

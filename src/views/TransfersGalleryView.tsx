@@ -207,8 +207,8 @@ export const TransfersGalleryView: React.FC<Props> = ({
   }
 
   return (
-    <div className="space-y-5">
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+    <div className="space-y-4">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
         <div>
           <h1 className="font-poster text-3xl sm:text-4xl font-extrabold tracking-wide text-white leading-none">
             PAGOS Y TRANSFERENCIAS
@@ -261,7 +261,7 @@ export const TransfersGalleryView: React.FC<Props> = ({
       </div>
 
       {/* Filters */}
-      <div className="bg-[#141418] border border-[#27272E] rounded-2xl p-3.5 flex flex-col sm:flex-row gap-3">
+      <div className="bg-[#141418] border border-[#27272E] rounded-2xl p-3 flex flex-col sm:flex-row gap-2.5">
         <div className="relative flex-1">
           <Search className="w-4 h-4 text-zinc-400 absolute left-3 top-1/2 -translate-y-1/2" />
           <input
@@ -337,6 +337,8 @@ export const TransfersGalleryView: React.FC<Props> = ({
                 <img
                   src={tr.imageUrl}
                   alt={`Comprobante pedido #${tr.orderNumber}`}
+                  loading="lazy"
+                  decoding="async"
                   referrerPolicy="no-referrer"
                   className={`w-full h-full object-cover group-hover:scale-[1.03] transition-transform duration-200 ${
                     tr.annulled ? 'opacity-65 grayscale-[40%]' : ''

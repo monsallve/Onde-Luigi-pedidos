@@ -11,6 +11,7 @@
         "ownerEmail": { "type": "string", "minLength": 3, "maxLength": 160 },
         "authorizedEmails": { "type": "array" },
         "billingConfig": { "type": "object" },
+        "selfServiceConfig": { "type": "object" },
         "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" }
       },
@@ -90,6 +91,7 @@
         "imageUrl": { "type": "string", "maxLength": 250000 },
         "baseRecipe": { "type": "array" },
         "removableOptions": { "type": "array" },
+        "recipeIngredients": { "type": "array" },
         "addonOptions": { "type": "array" },
         "allowSauces": { "type": "boolean" },
         "minSauces": { "type": "number" },
@@ -113,7 +115,7 @@
         "reference": { "type": "string", "minLength": 1, "maxLength": 100 },
         "waiterId": { "type": "string", "minLength": 1, "maxLength": 128 },
         "waiterName": { "type": "string", "minLength": 1, "maxLength": 80 },
-        "status": { "type": "string", "enum": ["tomado", "preparacion", "listo", "entregado", "cancelado"] },
+        "status": { "type": "string", "enum": ["pendiente_validacion", "tomado", "preparacion", "listo", "entregado", "cancelado"] },
         "paymentStatus": { "type": "string", "enum": ["pendiente", "pagado"] },
         "paymentMethod": { "type": "string", "enum": ["", "efectivo", "transferencia", "tarjeta", "otro"] },
         "items": { "type": "array" },
@@ -122,11 +124,19 @@
         "notes": { "type": "string", "maxLength": 400 },
         "receiptCount": { "type": "number" },
         "latestReceiptUrl": { "type": "string", "maxLength": 250000 },
+        "receiptStoragePath": { "type": "string", "maxLength": 500 },
+        "source": { "type": "string", "enum": ["pos", "autoservicio"] },
+        "deliveryType": { "type": "string", "enum": ["local", "domicilio"] },
+        "deliveryAddress": { "type": "string", "maxLength": 220 },
+        "deliveryNeighborhood": { "type": "string", "maxLength": 100 },
+        "deliveryPhone": { "type": "string", "maxLength": 40 },
+        "deliveryNotes": { "type": "string", "maxLength": 240 },
         "customerId": { "type": "string", "maxLength": 128 },
         "customerDocument": { "type": "string", "maxLength": 40 },
         "customerName": { "type": "string", "maxLength": 120 },
         "customerPhone": { "type": "string", "maxLength": 40 },
         "customerEmail": { "type": "string", "maxLength": 160 },
+        "inventoryDeducted": { "type": "object" },
         "voidReason": { "type": "string", "maxLength": 240 },
         "voidedByName": { "type": "string", "maxLength": 80 },
         "voidedAtMs": { "type": "number" },
@@ -266,6 +276,206 @@
         "updatedAt": { "type": "string", "format": "date-time" }
       },
       "required": ["id", "documentNumber", "name", "phone", "email", "notes", "ownerUid", "createdByUid", "allowedEmails", "createdAt", "updatedAt"]
+    },
+    "InventoryItem": {
+      "title": "InventoryItem",
+      "description": "Trackable recipe ingredient stored in grams or units, allowing negative stock counters and auto-calculated unit cost.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "nameKey": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "unit": { "type": "string", "enum": ["g", "ud"] },
+        "currentStock": { "type": "number" },
+        "minStock": { "type": "number" },
+        "unitCost": { "type": "number" },
+        "lastPurchaseQuantity": { "type": "number" },
+        "lastPurchaseTotalCost": { "type": "number" },
+        "active": { "type": "boolean" },
+        "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "createdByUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "allowedEmails": { "type": "array" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "name", "nameKey", "unit", "currentStock", "minStock", "unitCost", "lastPurchaseQuantity", "lastPurchaseTotalCost", "active", "ownerUid", "createdByUid", "allowedEmails", "createdAt", "updatedAt"]
+    },
+    "InventoryMovement": {
+      "title": "InventoryMovement",
+      "description": "Immutable inventory ledger tracking purchases (with unit cost), recipe sales consumption, edits, voids, and manual adjustments.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "inventoryItemId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "ingredientName": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "unit": { "type": "string", "enum": ["g", "ud"] },
+        "type": { "type": "string", "enum": ["compra", "consumo_pedido", "edicion_pedido", "anulacion_pedido", "ajuste_manual", "fusion"] },
+        "quantityDelta": { "type": "number" },
+        "purchaseTotalCost": { "type": "number" },
+        "calculatedUnitCost": { "type": "number" },
+        "orderId": { "type": "string", "maxLength": 128 },
+        "orderNumber": { "type": "number" },
+        "notes": { "type": "string", "maxLength": 300 },
+        "actorName": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "actorUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "createdByUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "allowedEmails": { "type": "array" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "inventoryItemId", "ingredientName", "unit", "type", "quantityDelta", "purchaseTotalCost", "calculatedUnitCost", "orderId", "orderNumber", "notes", "actorName", "actorUid", "ownerUid", "createdByUid", "allowedEmails", "createdAt"]
+    },
+    "WorkspaceNotification": {
+      "title": "WorkspaceNotification",
+      "description": "Real-time workspace event feed for new orders, shift open/close, and voided sales/orders without requiring device push permissions.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "type": { "type": "string", "enum": ["nueva_comanda", "turno_abierto", "turno_cerrado", "venta_anulada"] },
+        "title": { "type": "string", "minLength": 1, "maxLength": 140 },
+        "message": { "type": "string", "minLength": 1, "maxLength": 360 },
+        "orderId": { "type": "string", "maxLength": 128 },
+        "orderNumber": { "type": "number" },
+        "shiftId": { "type": "string", "maxLength": 128 },
+        "actorName": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "actorUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "createdByUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "allowedEmails": { "type": "array" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "type", "title", "message", "orderId", "orderNumber", "shiftId", "actorName", "actorUid", "ownerUid", "createdByUid", "allowedEmails", "createdAt"]
+    },
+    "PurchaseInvoice": {
+      "title": "PurchaseInvoice",
+      "description": "Bulk supplier purchase invoice or business expense receipt covering inventoriable ingredients, non-inventoriable items, services, and investments.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "receiptCode": { "type": "string", "minLength": 1, "maxLength": 60 },
+        "supplierId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "supplierDocument": { "type": "string", "minLength": 1, "maxLength": 40 },
+        "supplierName": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "supplierPhone": { "type": "string", "maxLength": 40 },
+        "supplierEmail": { "type": "string", "maxLength": 160 },
+        "paymentMethod": { "type": "string", "maxLength": 40 },
+        "notes": { "type": "string", "maxLength": 300 },
+        "lines": { "type": "array" },
+        "inventoriableTotal": { "type": "number" },
+        "expensesTotal": { "type": "number" },
+        "grandTotal": { "type": "number" },
+        "actorName": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "actorUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "createdByUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "allowedEmails": { "type": "array" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "receiptCode", "supplierId", "supplierDocument", "supplierName", "supplierPhone", "supplierEmail", "paymentMethod", "notes", "lines", "inventoriableTotal", "expensesTotal", "grandTotal", "actorName", "actorUid", "ownerUid", "createdByUid", "allowedEmails", "createdAt", "updatedAt"]
+    },
+    "PublicStorefront": {
+      "title": "PublicStorefront",
+      "description": "Public non-PII storefront configuration with QR/Bre-B digital payment metadata.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "businessName": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "enabled": { "type": "boolean" },
+        "qrImageUrl": { "type": "string", "maxLength": 250000 },
+        "brebKey": { "type": "string", "maxLength": 100 },
+        "accountHolder": { "type": "string", "maxLength": 120 },
+        "bankName": { "type": "string", "maxLength": 120 },
+        "paymentInstructions": { "type": "string", "maxLength": 400 },
+        "deliveryInstructions": { "type": "string", "maxLength": 400 },
+        "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "businessName", "enabled", "qrImageUrl", "brebKey", "accountHolder", "bankName", "paymentInstructions", "deliveryInstructions", "ownerUid", "updatedAt"]
+    },
+    "PublicProduct": {
+      "title": "PublicProduct",
+      "description": "Public customer-safe product projection synced from POS catalog.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "category": { "type": "string", "minLength": 1, "maxLength": 60 },
+        "basePrice": { "type": "number" },
+        "imageUrl": { "type": "string", "maxLength": 250000 },
+        "baseRecipe": { "type": "array" },
+        "removableOptions": { "type": "array" },
+        "addonOptions": { "type": "array" },
+        "allowSauces": { "type": "boolean" },
+        "minSauces": { "type": "number" },
+        "maxSauces": { "type": "number" },
+        "active": { "type": "boolean" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "name", "category", "basePrice", "imageUrl", "baseRecipe", "removableOptions", "addonOptions", "allowSauces", "minSauces", "maxSauces", "active", "updatedAt"]
+    },
+    "PublicSauce": {
+      "title": "PublicSauce",
+      "description": "Public sauce option synced from POS catalog.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 60 },
+        "active": { "type": "boolean" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "name", "active", "updatedAt"]
+    },
+    "PublicQueueTicket": {
+      "title": "PublicQueueTicket",
+      "description": "Non-PII public order queue status projection used to calculate live orders ahead.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "orderNumber": { "type": "number" },
+        "status": { "type": "string", "enum": ["pendiente_validacion", "tomado", "preparacion", "listo", "entregado", "cancelado"] },
+        "deliveryType": { "type": "string", "enum": ["local", "domicilio"] },
+        "createdAtMs": { "type": "number" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "orderNumber", "status", "deliveryType", "createdAtMs", "createdAt", "updatedAt"]
+    },
+    "SelfServiceOrder": {
+      "title": "SelfServiceOrder",
+      "description": "Public customer self-service order requiring digital receipt attachment and staff validation.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "orderNumber": { "type": "number" },
+        "reference": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "source": { "type": "string", "enum": ["autoservicio"] },
+        "deliveryType": { "type": "string", "enum": ["local", "domicilio"] },
+        "deliveryAddress": { "type": "string", "maxLength": 220 },
+        "deliveryNeighborhood": { "type": "string", "maxLength": 100 },
+        "deliveryPhone": { "type": "string", "maxLength": 40 },
+        "deliveryNotes": { "type": "string", "maxLength": 240 },
+        "customerName": { "type": "string", "minLength": 2, "maxLength": 120 },
+        "status": { "type": "string", "enum": ["pendiente_validacion", "tomado", "preparacion", "listo", "entregado", "cancelado"] },
+        "paymentStatus": { "type": "string", "enum": ["pendiente", "pagado"] },
+        "paymentMethod": { "type": "string", "enum": ["transferencia"] },
+        "items": { "type": "array" },
+        "subtotal": { "type": "number" },
+        "total": { "type": "number" },
+        "notes": { "type": "string", "maxLength": 400 },
+        "receiptCount": { "type": "number" },
+        "latestReceiptUrl": { "type": "string", "minLength": 1, "maxLength": 250000 },
+        "receiptStoragePath": { "type": "string", "maxLength": 500 },
+        "voidReason": { "type": "string", "maxLength": 240 },
+        "voidedByName": { "type": "string", "maxLength": 80 },
+        "voidedAtMs": { "type": "number" },
+        "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "createdByUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "createdAtMs": { "type": "number" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "orderNumber", "reference", "source", "deliveryType", "deliveryAddress", "deliveryNeighborhood", "deliveryPhone", "deliveryNotes", "customerName", "status", "paymentStatus", "paymentMethod", "items", "subtotal", "total", "notes", "receiptCount", "latestReceiptUrl", "receiptStoragePath", "ownerUid", "createdByUid", "createdAtMs", "createdAt", "updatedAt"]
     }
   },
   "firestore": {
@@ -312,6 +522,42 @@
     "/workspaces/{workspaceId}/customers/{customerId}": {
       "schema": { "$ref": "#/entities/Customer" },
       "description": "Saved customer directory (NIT/Cedula) for optional receipts."
+    },
+    "/workspaces/{workspaceId}/inventory/{itemId}": {
+      "schema": { "$ref": "#/entities/InventoryItem" },
+      "description": "Trackable recipe ingredients in grams or units with auto-calculated costs and negative stock support."
+    },
+    "/workspaces/{workspaceId}/inventoryMovements/{movId}": {
+      "schema": { "$ref": "#/entities/InventoryMovement" },
+      "description": "Immutable inventory purchase, order consumption, restoration, and adjustment ledger."
+    },
+    "/workspaces/{workspaceId}/notifications/{notifId}": {
+      "schema": { "$ref": "#/entities/WorkspaceNotification" },
+      "description": "Real-time POS event notifications for orders, shift open/close, and voided sales."
+    },
+    "/workspaces/{workspaceId}/purchaseInvoices/{invoiceId}": {
+      "schema": { "$ref": "#/entities/PurchaseInvoice" },
+      "description": "Bulk supplier purchase receipts and non-inventoriable business expenses/services."
+    },
+    "/publicStorefronts/{workspaceId}": {
+      "schema": { "$ref": "#/entities/PublicStorefront" },
+      "description": "Public storefront payment QR and Bre-B configuration."
+    },
+    "/publicStorefronts/{workspaceId}/products/{productId}": {
+      "schema": { "$ref": "#/entities/PublicProduct" },
+      "description": "Public non-cost menu catalog synced from POS."
+    },
+    "/publicStorefronts/{workspaceId}/sauces/{sauceId}": {
+      "schema": { "$ref": "#/entities/PublicSauce" },
+      "description": "Public sauce catalog synced from POS."
+    },
+    "/publicStorefronts/{workspaceId}/queueTickets/{ticketId}": {
+      "schema": { "$ref": "#/entities/PublicQueueTicket" },
+      "description": "Non-PII live queue tickets for customer queue estimation."
+    },
+    "/publicStorefronts/{workspaceId}/selfOrders/{orderId}": {
+      "schema": { "$ref": "#/entities/SelfServiceOrder" },
+      "description": "Self-service customer orders with delivery info and transfer receipt."
     }
   }
 }

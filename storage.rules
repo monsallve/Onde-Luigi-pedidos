@@ -1,0 +1,100 @@
+rules_version = '2';
+
+service firebase.storage {
+  match /b/{bucket}/o {
+    // Default deny
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isStaffSignedIn() {
+      return request.auth != null &&
+        request.auth.token.email is string &&
+        request.auth.token.email.size() > 0;
+    }
+
+    function isVerifiedAdminEmail() {
+      return isStaffSignedIn() &&
+        request.auth.token.email_verified == true &&
+        request.auth.token.email == 'perrodog1515@gmail.com';
+    }
+
+    function isStaffAdminInFirestore(workspaceId, staffId) {
+      return firestore.exists(/databases/ai-studio-fecee9a9-7631-4685-a974-37cd28b7a202/documents/workspaces/$(workspaceId)/staff/$(staffId)) &&
+        firestore.get(/databases/ai-studio-fecee9a9-7631-4685-a974-37cd28b7a202/documents/workspaces/$(workspaceId)/staff/$(staffId)).data.active == true &&
+        firestore.get(/databases/ai-studio-fecee9a9-7631-4685-a974-37cd28b7a202/documents/workspaces/$(workspaceId)/staff/$(staffId)).data.role == 'admin';
+    }
+
+    function isWorkspaceAdminStorage(workspaceId) {
+      return isStaffSignedIn() && (
+        isVerifiedAdminEmail() ||
+        (
+          firestore.exists(/databases/ai-studio-fecee9a9-7631-4685-a974-37cd28b7a202/documents/workspaces/$(workspaceId)) &&
+          firestore.get(/databases/ai-studio-fecee9a9-7631-4685-a974-37cd28b7a202/documents/workspaces/$(workspaceId)).data.ownerUid == request.auth.uid
+        ) ||
+        (
+          firestore.exists(/databases/ai-studio-fecee9a9-7631-4685-a974-37cd28b7a202/documents/workspaces/$(workspaceId)/members/$(request.auth.uid)) &&
+          firestore.get(/databases/ai-studio-fecee9a9-7631-4685-a974-37cd28b7a202/documents/workspaces/$(workspaceId)/members/$(request.auth.uid)).data.active == true &&
+          firestore.get(/databases/ai-studio-fecee9a9-7631-4685-a974-37cd28b7a202/documents/workspaces/$(workspaceId)/members/$(request.auth.uid)).data.role == 'admin'
+        ) ||
+        isStaffAdminInFirestore(workspaceId, 'staff_' + request.auth.uid)
+      );
+    }
+
+    // Public self-service receipt upload:
+    // - Allows customer uploads up to 5 MB of valid image/* files only into a unique order folder
+    // - Prevents listing or overwriting existing customer receipts
+    match /selfOrders/{workspaceId}/{orderId}/{fileName} {
+      allow get: if isValidId(workspaceId) && isValidId(orderId) && isValidId(fileName.split('.')[0]);
+      allow list: if false;
+      allow create: if isValidId(workspaceId) &&
+        isValidId(orderId) &&
+        request.resource != null &&
+        request.resource.size > 0 &&
+        request.resource.size <= 5 * 1024 * 1024 &&
+        request.resource.contentType.matches('image/.*');
+      allow update: if false;
+      allow delete: if isStaffSignedIn();
+    }
+
+    // Publicly readable QR image for Self-Service; strictly Admin-only create/update/delete
+    match /workspaces/{workspaceId}/storefront/{fileName} {
+      allow read: if isValidId(workspaceId);
+      allow create, update: if isValidId(workspaceId) &&
+        isWorkspaceAdminStorage(workspaceId) &&
+        request.resource != null &&
+        request.resource.size > 0 &&
+        request.resource.size <= 10 * 1024 * 1024 &&
+        request.resource.contentType.matches('image/.*');
+      allow delete: if isValidId(workspaceId) && isWorkspaceAdminStorage(workspaceId);
+    }
+
+    // Product catalog images (publicly readable for Self-Service, Admin-only writes)
+    match /workspaces/{workspaceId}/products/{fileName} {
+      allow read: if isValidId(workspaceId);
+      allow create, update: if isValidId(workspaceId) &&
+        isWorkspaceAdminStorage(workspaceId) &&
+        request.resource != null &&
+        request.resource.size > 0 &&
+        request.resource.size <= 10 * 1024 * 1024 &&
+        request.resource.contentType.matches('image/.*');
+      allow delete: if isValidId(workspaceId) && isWorkspaceAdminStorage(workspaceId);
+    }
+
+    // Internal POS transfer receipts (staff uploads, admin deletes)
+    match /workspaces/{workspaceId}/transfers/{fileName} {
+      allow read: if isValidId(workspaceId) && isStaffSignedIn();
+      allow create, update: if isValidId(workspaceId) &&
+        isStaffSignedIn() &&
+        request.resource != null &&
+        request.resource.size > 0 &&
+        request.resource.size <= 10 * 1024 * 1024 &&
+        request.resource.contentType.matches('image/.*');
+      allow delete: if isValidId(workspaceId) && isWorkspaceAdminStorage(workspaceId);
+    }
+  }
+}

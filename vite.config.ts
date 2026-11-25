@@ -20,6 +20,7 @@ export default defineConfig(() => {
           'pwa-192x192.png',
           'pwa-512x512.png',
           'pwa-maskable-512x512.png',
+          'sw-notifications.js',
         ],
         manifest: {
           id: './',
@@ -56,6 +57,7 @@ export default defineConfig(() => {
           ],
         },
         workbox: {
+          importScripts: ['./sw-notifications.js'],
           skipWaiting: true,
           clientsClaim: true,
           cleanupOutdatedCaches: true,
@@ -103,7 +105,7 @@ export default defineConfig(() => {
           ],
         },
         devOptions: {
-          enabled: false,
+          enabled: true,
         },
       }),
       // Copies src/assets into dist/ so root-relative URLs like

@@ -174,3 +174,84 @@ export async function uploadProductImage(params: {
   };
 }
 
+export async function uploadSelfServiceReceiptImage(params: {
+  workspaceId: string;
+  orderId: string;
+  file: File;
+}): Promise<ReceiptUploadResult> {
+  const compressed = await compressImageFile(params.file, 1200, 0.78, '#FFFFFF');
+
+  if (storage) {
+    const storagePath = `selfOrders/${params.workspaceId}/${params.orderId}/receipt_${Date.now()}.jpg`;
+    try {
+      const storageRef = ref(storage, storagePath);
+      await uploadBytes(storageRef, compressed.blob, {
+        contentType: 'image/jpeg',
+      });
+      const downloadUrl = await getDownloadURL(storageRef);
+      return {
+        imageUrl: downloadUrl,
+        storagePath,
+        compressedBytes: compressed.compressedBytes,
+        originalBytes: compressed.originalBytes,
+        usedFallbackInline: false,
+      };
+    } catch {
+      // Fall back to compressed inline Data URL if Storage rules haven't been deployed yet
+    }
+  }
+
+  return {
+    imageUrl: compressed.dataUrl,
+    storagePath: `inline/selfOrders/${params.orderId}.jpg`,
+    compressedBytes: compressed.compressedBytes,
+    originalBytes: compressed.originalBytes,
+    usedFallbackInline: true,
+  };
+}
+
+export async function uploadStorefrontQrImage(params: {
+  workspaceId: string;
+  file: File;
+}): Promise<ReceiptUploadResult> {
+  const compressed = await compressImageFile(params.file, 900, 0.85, '#FFFFFF');
+
+  if (storage) {
+    const storagePath = `workspaces/${params.workspaceId}/storefront/qr_${Date.now()}.jpg`;
+    try {
+      const storageRef = ref(storage, storagePath);
+      await uploadBytes(storageRef, compressed.blob, {
+        contentType: 'image/jpeg',
+      });
+      const downloadUrl = await getDownloadURL(storageRef);
+      return {
+        imageUrl: downloadUrl,
+        storagePath,
+        compressedBytes: compressed.compressedBytes,
+        originalBytes: compressed.originalBytes,
+        usedFallbackInline: false,
+      };
+    } catch (err) {
+      const code =
+        typeof err === 'object' && err !== null && 'code' in err
+          ? String((err as { code?: unknown }).code || '')
+          : '';
+      if (code === 'storage/unauthorized' || code === 'storage/unauthenticated') {
+        throw new Error(
+          'Acceso denegado: solo un Administrador puede subir o reemplazar la imagen QR en Firebase Storage.'
+        );
+      }
+      // Fall back to compressed inline Data URL only if Storage bucket rules or billing aren't enabled yet
+    }
+  }
+
+  return {
+    imageUrl: compressed.dataUrl,
+    storagePath: 'inline/storefront/qr.jpg',
+    compressedBytes: compressed.compressedBytes,
+    originalBytes: compressed.originalBytes,
+    usedFallbackInline: true,
+  };
+}
+
+

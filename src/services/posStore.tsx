@@ -18,6 +18,7 @@ import {
   doc,
   getDoc,
   getDocs,
+  increment,
   onSnapshot,
   query,
   serverTimestamp,
@@ -42,6 +43,11 @@ import type {
   BusinessBillingConfig,
   ConnectionMode,
   Customer,
+  ExpenseLineKind,
+  InventoryItem,
+  InventoryMovement,
+  InventoryMovementType,
+  InventoryUnit,
   Movement,
   MovementType,
   Order,
@@ -50,12 +56,18 @@ import type {
   PaymentMethod,
   PaymentStatus,
   Product,
+  PurchaseInvoice,
+  PurchaseInvoiceLine,
+  RecipeIngredientSpec,
   Sauce,
+  SelfServicePaymentConfig,
   Shift,
   StaffMember,
   StaffRole,
   TrackedPaymentMethod,
   TransferReceipt,
+  WorkspaceNotification,
+  WorkspaceNotificationType,
 } from '../types/pos';
 import {
   buildCustomerDocId,
@@ -88,20 +100,55 @@ import {
   resolveEffectiveRole,
   type RolePermissions,
 } from '../utils/rolePermissions';
+import {
+  buildInventoryItemId,
+  buildUnifiedInventoryPlan,
+  calculatePurchaseUnitCost,
+  computeInventoryDeltas,
+  computeOrderInventoryConsumption,
+  hasDuplicateInventoryName,
+  normalizeIngredientKey,
+  roundStockQty,
+  splitProductRecipeFromSpecs,
+} from '../utils/inventoryMath';
 import { evaluateShiftClose } from '../utils/shiftMath';
-import { uploadProductImage, uploadTransferReceiptImage } from './storageService';
+import {
+  aggregateInventoriablePurchases,
+  buildNotificationCopy,
+  calculateInvoiceTotals,
+  normalizeInvoiceLine,
+  validatePurchaseInvoiceDraft,
+} from '../utils/purchaseExpenseMath';
+import {
+  DEFAULT_SELF_SERVICE_CONFIG,
+  normalizeSelfServiceConfig,
+} from '../utils/selfServiceMath';
+import {
+  type ReceiptUploadResult,
+  uploadProductImage,
+  uploadStorefrontQrImage,
+  uploadTransferReceiptImage,
+} from './storageService';
 import {
   mapCustomerDoc,
+  mapInventoryItemDoc,
+  mapInventoryMovementDoc,
   mapMovementDoc,
+  mapNotificationDoc,
   mapOrderDoc,
   mapProductDoc,
+  mapPurchaseInvoiceDoc,
   mapSauceDoc,
+  mapSelfOrderDoc,
   mapShiftDoc,
   mapStaffDoc,
   mapTransferDoc,
   resolveOrBootstrapCloudWorkspace,
   SHARED_WORKSPACE_ID,
   stripClientTimestamps,
+  syncPublicStorefrontCatalog,
+  toPublicProductPayload,
+  toPublicSaucePayload,
 } from './workspaceSync';
 
 const ACTIVE_WAITER_STORAGE_KEY = 'ondeluigi_active_waiter_v2';
@@ -113,6 +160,23 @@ export interface OrderCustomerInput {
   name?: string;
   phone?: string;
   email?: string;
+  notes?: string;
+}
+
+export interface RegisterBulkPurchaseInput {
+  receiptCode: string;
+  supplier: OrderCustomerInput;
+  paymentMethod: string;
+  notes?: string;
+  lines: Array<{
+    id?: string;
+    kind: ExpenseLineKind;
+    description: string;
+    inventoryItemId?: string;
+    unit?: InventoryUnit;
+    quantity: number;
+    totalCost: number;
+  }>;
 }
 
 export interface CreateOrderInput {
@@ -135,6 +199,7 @@ export interface SaveProductInput {
   imageFile?: File | null;
   baseRecipe: string[];
   removableOptions: string[];
+  recipeIngredients?: RecipeIngredientSpec[];
   addonOptions: AddonOption[];
   allowSauces: boolean;
   minSauces: number;
@@ -170,6 +235,12 @@ interface PosContextValue {
   openShift: Shift | null;
   customers: Customer[];
   billingConfig: BusinessBillingConfig;
+  selfServiceConfig: SelfServicePaymentConfig;
+  inventory: InventoryItem[];
+  inventoryMovements: InventoryMovement[];
+  notifications: WorkspaceNotification[];
+  notificationsLoaded: boolean;
+  purchaseInvoices: PurchaseInvoice[];
 
   activeWaiter: StaffMember | null;
   myLinkedStaff: StaffMember | null;
@@ -226,6 +297,8 @@ interface PosContextValue {
   updateAuthorizedEmails: (emails: string[]) => Promise<void>;
   updateAllowSelfRegistration: (allow: boolean) => Promise<void>;
   saveBillingConfig: (config: BusinessBillingConfig) => Promise<void>;
+  saveSelfServiceConfig: (config: SelfServicePaymentConfig) => Promise<void>;
+  uploadPaymentQrImage: (file: File) => Promise<ReceiptUploadResult>;
   upsertCustomer: (input: {
     id?: string;
     documentNumber: string;
@@ -244,6 +317,33 @@ interface PosContextValue {
     closingNote?: string;
   }) => Promise<void>;
   deleteShiftRecord: (shiftId: string) => Promise<void>;
+
+  saveInventoryItem: (input: {
+    id?: string;
+    name: string;
+    unit: InventoryUnit;
+    minStock?: number;
+    initialQuantity?: number;
+    initialTotalCost?: number;
+    active?: boolean;
+  }) => Promise<InventoryItem>;
+  registerInventoryPurchase: (params: {
+    inventoryItemId: string;
+    quantity: number;
+    totalCost: number;
+    notes?: string;
+  }) => Promise<void>;
+  adjustInventoryStock: (params: {
+    inventoryItemId: string;
+    newStock: number;
+    notes?: string;
+  }) => Promise<void>;
+  deleteInventoryItem: (inventoryItemId: string) => Promise<void>;
+  mergeInventoryItems: (sourceId: string, targetId: string) => Promise<void>;
+  unifyCatalogInventory: () => Promise<{ createdCount: number; updatedProductsCount: number }>;
+  registerBulkPurchaseInvoice: (input: RegisterBulkPurchaseInput) => Promise<PurchaseInvoice>;
+  deletePurchaseInvoice: (invoiceId: string) => Promise<void>;
+  deleteWorkspaceNotification: (notifId: string) => Promise<void>;
 }
 
 const PosContext = createContext<PosContextValue | null>(null);
@@ -301,12 +401,89 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [staff, setStaff] = useState<StaffMember[]>([]);
   const [sauces, setSauces] = useState<Sauce[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
-  const [orders, setOrders] = useState<Order[]>([]);
+  const [posOrders, setPosOrders] = useState<Order[]>([]);
+  const [selfServiceOrders, setSelfServiceOrders] = useState<Order[]>([]);
+  const [selfOrdersLoaded, setSelfOrdersLoaded] = useState(false);
   const [movements, setMovements] = useState<Movement[]>([]);
-  const [transfers, setTransfers] = useState<TransferReceipt[]>([]);
+  const [posTransfers, setPosTransfers] = useState<TransferReceipt[]>([]);
   const [shifts, setShifts] = useState<Shift[]>([]);
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [billingConfig, setBillingConfig] = useState<BusinessBillingConfig>(DEFAULT_BILLING_CONFIG);
+  const [selfServiceConfig, setSelfServiceConfig] = useState<SelfServicePaymentConfig>(
+    DEFAULT_SELF_SERVICE_CONFIG
+  );
+  const [publicStorefrontExists, setPublicStorefrontExists] = useState(false);
+  const [publicStorefrontChecked, setPublicStorefrontChecked] = useState(false);
+  const [inventory, setInventory] = useState<InventoryItem[]>([]);
+  const [inventoryMovements, setInventoryMovements] = useState<InventoryMovement[]>([]);
+  const [inventoryLoaded, setInventoryLoaded] = useState(false);
+  const [posNotifications, setPosNotifications] = useState<WorkspaceNotification[]>([]);
+  const [posNotificationsLoaded, setPosNotificationsLoaded] = useState(false);
+  const [purchaseInvoices, setPurchaseInvoices] = useState<PurchaseInvoice[]>([]);
+  const autoUnifyTriggeredRef = useRef(false);
+  const autoStorefrontSyncRef = useRef(false);
+
+  const orders = useMemo(() => {
+    const promotedIds = new Set(posOrders.map((o) => o.id));
+    const pendingSelf = selfServiceOrders.filter((s) => !promotedIds.has(s.id));
+    return [...posOrders, ...pendingSelf].sort((a, b) => (b.createdAtMs || 0) - (a.createdAtMs || 0));
+  }, [posOrders, selfServiceOrders]);
+
+  const transfers = useMemo(() => {
+    const realIds = new Set(posTransfers.map((t) => t.id));
+    const syntheticSelf: TransferReceipt[] = selfServiceOrders
+      .filter((s) => s.receiptCount > 0 && Boolean(s.latestReceiptUrl) && !realIds.has(`tr_self_${s.id}`))
+      .map((s) => ({
+        id: `tr_self_${s.id}`,
+        orderId: s.id,
+        orderNumber: s.orderNumber,
+        orderReference: s.reference,
+        amount: s.total,
+        imageUrl: s.latestReceiptUrl,
+        storagePath: s.receiptStoragePath || '',
+        waiterId: 'autoservicio',
+        waiterName: s.deliveryType === 'domicilio' ? 'Autoservicio · Domicilio' : 'Autoservicio · Local',
+        paymentStatus: s.paymentStatus,
+        notes: s.notes || (s.deliveryType === 'domicilio' ? `Domicilio: ${s.deliveryAddress}` : 'Recoger en local'),
+        ownerUid: s.ownerUid,
+        createdByUid: s.createdByUid || 'autoservicio_public',
+        allowedEmails: authorizedEmails,
+        createdAtMs: s.createdAtMs,
+      }));
+    return [...posTransfers, ...syntheticSelf].sort(
+      (a, b) => (b.createdAtMs || 0) - (a.createdAtMs || 0)
+    );
+  }, [posTransfers, selfServiceOrders, authorizedEmails]);
+
+  const notifications = useMemo(() => {
+    const existingNotifOrderIds = new Set(
+      posNotifications
+        .filter((n) => n.type === 'nueva_comanda' && Boolean(n.orderId))
+        .map((n) => n.orderId)
+    );
+    const syntheticSelfNotifs: WorkspaceNotification[] = selfServiceOrders
+      .filter((s) => !existingNotifOrderIds.has(s.id) && s.status !== 'cancelado')
+      .map((s) => ({
+        id: `notif_self_${s.id}`,
+        type: 'nueva_comanda' as const,
+        title: `Autoservicio #${s.orderNumber} · ${s.deliveryType === 'domicilio' ? 'Domicilio' : 'Local'}`,
+        message: `${s.customerName || 'Cliente'} envió pedido por $${Math.round(s.total).toLocaleString('es-CO')} con comprobante`,
+        orderId: s.id,
+        orderNumber: s.orderNumber,
+        shiftId: '',
+        actorName: s.customerName || 'Autoservicio',
+        actorUid: 'autoservicio_public',
+        ownerUid: s.ownerUid,
+        createdByUid: 'autoservicio_public',
+        allowedEmails: authorizedEmails,
+        createdAtMs: s.createdAtMs,
+      }));
+    return [...posNotifications, ...syntheticSelfNotifs].sort(
+      (a, b) => (b.createdAtMs || 0) - (a.createdAtMs || 0)
+    );
+  }, [posNotifications, selfServiceOrders, authorizedEmails]);
+
+  const notificationsLoaded = posNotificationsLoaded && selfOrdersLoaded;
 
   const openShift = useMemo(
     () => shifts.find((s) => s.status === 'abierto') || null,
@@ -502,6 +679,12 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     let cancelled = false;
     setLoadingData(true);
     setStaffLoaded(false);
+    setInventoryLoaded(false);
+    setPosNotificationsLoaded(false);
+    setSelfOrdersLoaded(false);
+    setPublicStorefrontChecked(false);
+    autoUnifyTriggeredRef.current = false;
+    autoStorefrontSyncRef.current = false;
     setCloudReadyForUid(null);
     setCloudError(null);
 
@@ -519,6 +702,7 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         setAllowSelfRegistration(wsInfo.allowSelfRegistration);
         setCloudMemberRole(wsInfo.memberRole);
         setBillingConfig(wsInfo.billingConfig);
+        setSelfServiceConfig(wsInfo.selfServiceConfig);
         setCloudReadyForUid(firebaseUser.uid);
 
         unsubs.push(
@@ -530,6 +714,7 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                 ownerUid: string;
                 authorizedEmails?: string[];
                 billingConfig?: Partial<BusinessBillingConfig>;
+                selfServiceConfig?: Partial<SelfServicePaymentConfig>;
               };
               setWorkspaceOwnerUid(d.ownerUid);
               if (Array.isArray(d.authorizedEmails)) {
@@ -538,8 +723,22 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
               if (d.billingConfig) {
                 setBillingConfig(normalizeBillingConfig(d.billingConfig));
               }
+              if (d.selfServiceConfig) {
+                setSelfServiceConfig(normalizeSelfServiceConfig(d.selfServiceConfig));
+              }
             },
             (err) => handleFirestoreError(err, OperationType.GET, `workspaces/${SHARED_WORKSPACE_ID}`)
+          ),
+          onSnapshot(
+            doc(db, 'publicStorefronts', SHARED_WORKSPACE_ID),
+            (snap) => {
+              if (cancelled) return;
+              setPublicStorefrontExists(snap.exists());
+              setPublicStorefrontChecked(true);
+            },
+            () => {
+              if (!cancelled) setPublicStorefrontChecked(true);
+            }
           ),
           onSnapshot(
             doc(db, 'workspaceDirectory', SHARED_WORKSPACE_ID),
@@ -589,6 +788,8 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                 if (sortDesc) items.sort((a, b) => (b.createdAtMs || 0) - (a.createdAtMs || 0));
                 setter(items);
                 if (subName === 'staff') setStaffLoaded(true);
+                if (subName === 'inventory') setInventoryLoaded(true);
+                if (subName === 'notifications') setPosNotificationsLoaded(true);
                 loadedCollections.add(subName);
                 if (REQUIRED_COLLECTIONS.every((c) => loadedCollections.has(c))) {
                   setLoadingData(false);
@@ -597,6 +798,7 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
               (err) => {
                 setCloudError(err instanceof Error ? err.message : `Error al cargar ${subName}`);
                 setStaffLoaded(true);
+                if (subName === 'notifications') setPosNotificationsLoaded(true);
                 setLoadingData(false);
                 handleFirestoreError(err, OperationType.LIST, path);
               }
@@ -607,11 +809,49 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         listenSubCollection<StaffMember>('staff', (d, id) => mapStaffDoc(d, id), setStaff, false);
         listenSubCollection<Sauce>('sauces', (d) => mapSauceDoc(d), setSauces, false);
         listenSubCollection<Product>('products', (d) => mapProductDoc(d), setProducts, false);
-        listenSubCollection<Order>('orders', (d) => mapOrderDoc(d), setOrders, true);
+        listenSubCollection<Order>('orders', (d) => mapOrderDoc(d), setPosOrders, true);
         listenSubCollection<Movement>('movements', (d) => mapMovementDoc(d), setMovements, true);
-        listenSubCollection<TransferReceipt>('transfers', (d) => mapTransferDoc(d), setTransfers, true);
+        listenSubCollection<TransferReceipt>('transfers', (d) => mapTransferDoc(d), setPosTransfers, true);
         listenSubCollection<Shift>('shifts', (d, id) => mapShiftDoc(d, id), setShifts, true);
         listenSubCollection<Customer>('customers', (d, id) => mapCustomerDoc(d, id), setCustomers, false);
+        listenSubCollection<InventoryItem>('inventory', (d, id) => mapInventoryItemDoc(d, id), setInventory, false);
+        listenSubCollection<InventoryMovement>(
+          'inventoryMovements',
+          (d, id) => mapInventoryMovementDoc(d, id),
+          setInventoryMovements,
+          true
+        );
+        listenSubCollection<WorkspaceNotification>(
+          'notifications',
+          (d, id) => mapNotificationDoc(d, id),
+          setPosNotifications,
+          true
+        );
+        listenSubCollection<PurchaseInvoice>(
+          'purchaseInvoices',
+          (d, id) => mapPurchaseInvoiceDoc(d, id),
+          setPurchaseInvoices,
+          true
+        );
+
+        unsubs.push(
+          onSnapshot(
+            query(
+              collection(db!, `publicStorefronts/${SHARED_WORKSPACE_ID}/selfOrders`),
+              where('ownerUid', '==', wsInfo.ownerUid)
+            ),
+            (snapshot) => {
+              if (cancelled) return;
+              const list = snapshot.docs.map((d) => mapSelfOrderDoc(d.data(), d.id));
+              list.sort((a, b) => (b.createdAtMs || 0) - (a.createdAtMs || 0));
+              setSelfServiceOrders(list);
+              setSelfOrdersLoaded(true);
+            },
+            () => {
+              if (!cancelled) setSelfOrdersLoaded(true);
+            }
+          )
+        );
       })
       .catch((err) => {
         setCloudError(err instanceof Error ? err.message : 'Error al conectar con Firestore');
@@ -708,12 +948,25 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setStaff([]);
     setSauces([]);
     setProducts([]);
-    setOrders([]);
+    setPosOrders([]);
+    setSelfServiceOrders([]);
+    setSelfOrdersLoaded(false);
     setMovements([]);
-    setTransfers([]);
+    setPosTransfers([]);
     setShifts([]);
     setCustomers([]);
+    setInventory([]);
+    setInventoryMovements([]);
+    setInventoryLoaded(false);
+    setPosNotifications([]);
+    setPosNotificationsLoaded(false);
+    setPurchaseInvoices([]);
+    setPublicStorefrontExists(false);
+    setPublicStorefrontChecked(false);
+    autoUnifyTriggeredRef.current = false;
+    autoStorefrontSyncRef.current = false;
     setBillingConfig(DEFAULT_BILLING_CONFIG);
+    setSelfServiceConfig(DEFAULT_SELF_SERVICE_CONFIG);
   }, [firebaseUser]);
 
   // Guard & shared record builders
@@ -763,6 +1016,134 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     [actorUid, workspaceOwnerUid, authorizedEmails]
   );
 
+  const buildInventoryMovementRecord = useCallback(
+    (params: {
+      inventoryItemId: string;
+      ingredientName: string;
+      unit: InventoryUnit;
+      type: InventoryMovementType;
+      quantityDelta: number;
+      purchaseTotalCost?: number;
+      calculatedUnitCost?: number;
+      orderId?: string;
+      orderNumber?: number;
+      notes?: string;
+    }): InventoryMovement => {
+      const safeActorName =
+        (activeWaiter?.name || firebaseUser?.displayName || actorEmail || 'Sistema')
+          .trim()
+          .slice(0, 80) || 'Sistema';
+      return {
+        id: createSafeId('imov'),
+        inventoryItemId: params.inventoryItemId,
+        ingredientName: params.ingredientName.trim().slice(0, 80) || 'Ingrediente',
+        unit: params.unit,
+        type: params.type,
+        quantityDelta: roundStockQty(params.quantityDelta),
+        purchaseTotalCost: Math.max(0, Math.round(params.purchaseTotalCost || 0)),
+        calculatedUnitCost: Math.max(0, params.calculatedUnitCost || 0),
+        orderId: (params.orderId || '').slice(0, 128),
+        orderNumber: Math.max(0, Math.round(params.orderNumber || 0)),
+        notes: (params.notes || '').trim().slice(0, 300),
+        actorName: safeActorName,
+        actorUid,
+        ownerUid: workspaceOwnerUid,
+        createdByUid: actorUid,
+        allowedEmails: authorizedEmails,
+        createdAtMs: Date.now(),
+      };
+    },
+    [activeWaiter?.name, firebaseUser?.displayName, actorEmail, actorUid, workspaceOwnerUid, authorizedEmails]
+  );
+
+  const appendOrderInventoryBatchOps = useCallback(
+    (
+      batch: ReturnType<typeof writeBatch>,
+      deltas: Record<string, number>,
+      type: 'consumo_pedido' | 'edicion_pedido' | 'anulacion_pedido',
+      orderId: string,
+      orderNumber: number,
+      notes: string
+    ) => {
+      const invMap = new Map(inventory.map((i) => [i.id, i]));
+      for (const [invId, rawDelta] of Object.entries(deltas)) {
+        const item = invMap.get(invId);
+        const delta = roundStockQty(rawDelta);
+        if (!item || delta === 0) continue;
+        batch.update(doc(db!, `workspaces/${SHARED_WORKSPACE_ID}/inventory/${invId}`), {
+          currentStock: increment(delta),
+          updatedAt: serverTimestamp(),
+        });
+        const invMov = buildInventoryMovementRecord({
+          inventoryItemId: invId,
+          ingredientName: item.name,
+          unit: item.unit,
+          type,
+          quantityDelta: delta,
+          orderId,
+          orderNumber,
+          notes,
+        });
+        batch.set(doc(db!, `workspaces/${SHARED_WORKSPACE_ID}/inventoryMovements/${invMov.id}`), {
+          ...stripClientTimestamps(invMov),
+          createdAt: serverTimestamp(),
+        });
+      }
+    },
+    [inventory, buildInventoryMovementRecord]
+  );
+
+  const appendWorkspaceNotification = useCallback(
+    (
+      batch: ReturnType<typeof writeBatch>,
+      params: {
+        type: WorkspaceNotificationType;
+        orderId?: string;
+        orderNumber?: number;
+        orderReference?: string;
+        shiftId?: string;
+        total?: number;
+        openingBaseAmount?: number;
+        paidOrdersCount?: number;
+        wasPaidOrder?: boolean;
+        reason?: string;
+      }
+    ) => {
+      const safeActorName =
+        (activeWaiter?.name || firebaseUser?.displayName || actorEmail || 'Equipo')
+          .trim()
+          .slice(0, 80) || 'Equipo';
+      const copy = buildNotificationCopy({
+        type: params.type,
+        actorName: safeActorName,
+        orderNumber: params.orderNumber,
+        orderReference: params.orderReference,
+        total: params.total,
+        openingBaseAmount: params.openingBaseAmount,
+        paidOrdersCount: params.paidOrdersCount,
+        wasPaidOrder: params.wasPaidOrder,
+        reason: params.reason,
+      });
+      const notifId = createSafeId('notif');
+      batch.set(doc(db!, `workspaces/${SHARED_WORKSPACE_ID}/notifications/${notifId}`), {
+        id: notifId,
+        type: params.type,
+        title: copy.title,
+        message: copy.message,
+        orderId: (params.orderId || '').slice(0, 128),
+        orderNumber: Math.max(0, Math.round(params.orderNumber || 0)),
+        shiftId: (params.shiftId || '').slice(0, 128),
+        actorName: safeActorName,
+        actorUid,
+        ownerUid: workspaceOwnerUid,
+        createdByUid: actorUid,
+        allowedEmails: authorizedEmails,
+        createdAt: serverTimestamp(),
+      });
+    },
+    [activeWaiter?.name, firebaseUser?.displayName, actorEmail, actorUid, workspaceOwnerUid, authorizedEmails]
+  );
+
   // Order & Transfer mutations
   const syncCustomCustomerRecord = useCallback(
     async (customer?: OrderCustomerInput): Promise<{
@@ -776,6 +1157,7 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       const customerName = normalizeCustomerName(customer?.name, customerDocument);
       const customerPhone = (customer?.phone || '').trim().slice(0, 40);
       const customerEmail = (customer?.email || '').trim().slice(0, 160);
+      const customerNotes = (customer?.notes || '').trim().slice(0, 300);
 
       if (isDefaultFinalConsumer(customerDocument)) {
         return {
@@ -799,7 +1181,7 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             name: customerName,
             phone: customerPhone || String(prev.phone || ''),
             email: customerEmail || String(prev.email || ''),
-            notes: String(prev.notes || ''),
+            notes: customerNotes || String(prev.notes || ''),
             allowedEmails: authorizedEmails,
             updatedAt: serverTimestamp(),
           });
@@ -810,7 +1192,7 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             name: customerName,
             phone: customerPhone,
             email: customerEmail,
-            notes: '',
+            notes: customerNotes,
             ownerUid: workspaceOwnerUid,
             createdByUid: actorUid,
             allowedEmails: authorizedEmails,
@@ -888,6 +1270,15 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         };
       }
 
+      const rawConsumed = computeOrderInventoryConsumption(input.items, products);
+      const existingInvIds = new Set(inventory.map((i) => i.id));
+      const inventoryDeducted: Record<string, number> = {};
+      for (const [invId, qty] of Object.entries(rawConsumed)) {
+        if (existingInvIds.has(invId) && qty > 0) {
+          inventoryDeducted[invId] = qty;
+        }
+      }
+
       const newOrder: Order = {
         id: orderId,
         orderNumber,
@@ -909,6 +1300,7 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         customerName: resolvedCustomer.customerName,
         customerPhone: resolvedCustomer.customerPhone,
         customerEmail: resolvedCustomer.customerEmail,
+        inventoryDeducted,
         ownerUid: workspaceOwnerUid,
         createdByUid: actorUid,
         allowedEmails: authorizedEmails,
@@ -965,6 +1357,21 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             createdAt: serverTimestamp(),
           });
         }
+        appendOrderInventoryBatchOps(
+          batch,
+          computeInventoryDeltas({}, inventoryDeducted),
+          'consumo_pedido',
+          orderId,
+          orderNumber,
+          `Pedido #${orderNumber} · ${resolvedReference}`
+        );
+        appendWorkspaceNotification(batch, {
+          type: 'nueva_comanda',
+          orderId,
+          orderNumber,
+          orderReference: resolvedReference,
+          total,
+        });
         await batch.commit();
       } catch (err) {
         handleFirestoreError(err, OperationType.CREATE, orderPath);
@@ -979,11 +1386,133 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       openShift,
       syncCustomCustomerRecord,
       orders,
+      products,
+      inventory,
       workspaceOwnerUid,
       actorUid,
       authorizedEmails,
       buildMovementRecord,
+      appendOrderInventoryBatchOps,
+      appendWorkspaceNotification,
     ]
+  );
+
+  const upsertOrderInBatch = useCallback(
+    (
+      batch: ReturnType<typeof writeBatch>,
+      target: Order,
+      patch: Record<string, unknown>,
+      waiter: StaffMember,
+      options?: { skipInitialSelfTransfer?: boolean }
+    ) => {
+      const orderRef = doc(db!, `workspaces/${SHARED_WORKSPACE_ID}/orders/${target.id}`);
+      const isAlreadyPosOrder = posOrders.some((o) => o.id === target.id);
+      if (isAlreadyPosOrder) {
+        batch.update(orderRef, patch);
+        return;
+      }
+
+      const promotedPayload = {
+        ...stripClientTimestamps(target),
+        waiterId: waiter.id,
+        waiterName: waiter.name,
+        ownerUid: workspaceOwnerUid,
+        createdByUid: actorUid,
+        allowedEmails: authorizedEmails,
+        ...patch,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      };
+      batch.set(orderRef, promotedPayload);
+
+      if (
+        !options?.skipInitialSelfTransfer &&
+        target.source === 'autoservicio' &&
+        target.latestReceiptUrl &&
+        !posTransfers.some((t) => t.id === `tr_self_${target.id}`)
+      ) {
+        const transferId = `tr_self_${target.id}`;
+        const transferPayStatus: PaymentStatus =
+          patch.paymentStatus === 'pagado' || target.paymentStatus === 'pagado'
+            ? 'pagado'
+            : 'pendiente';
+        batch.set(doc(db!, `workspaces/${SHARED_WORKSPACE_ID}/transfers/${transferId}`), {
+          id: transferId,
+          orderId: target.id,
+          orderNumber: target.orderNumber,
+          orderReference: String(patch.reference || target.reference).slice(0, 100),
+          amount: Number(patch.total ?? target.total) || 0,
+          imageUrl: target.latestReceiptUrl,
+          storagePath: target.receiptStoragePath || '',
+          waiterId: waiter.id,
+          waiterName:
+            target.deliveryType === 'domicilio' ? 'Autoservicio · Domicilio' : 'Autoservicio · Local',
+          paymentStatus: transferPayStatus,
+          notes: (
+            target.notes ||
+            (target.deliveryType === 'domicilio'
+              ? `Domicilio: ${target.deliveryAddress || ''}`
+              : 'Recoger en local')
+          ).slice(0, 300),
+          ownerUid: workspaceOwnerUid,
+          createdByUid: actorUid,
+          allowedEmails: authorizedEmails,
+          createdAt: serverTimestamp(),
+        });
+      }
+    },
+    [posOrders, posTransfers, workspaceOwnerUid, actorUid, authorizedEmails]
+  );
+
+  const appendSelfOrderMirrorOps = useCallback(
+    (
+      batch: ReturnType<typeof writeBatch>,
+      target: Order,
+      overrides: {
+        status?: OrderStatus;
+        paymentStatus?: PaymentStatus;
+        items?: OrderItem[];
+        subtotal?: number;
+        total?: number;
+        reference?: string;
+        notes?: string;
+        receiptCount?: number;
+        latestReceiptUrl?: string;
+        voidReason?: string;
+        voidedByName?: string;
+        voidedAtMs?: number;
+      }
+    ) => {
+      if (!selfServiceOrders.some((s) => s.id === target.id)) return;
+      const nextStatus = overrides.status ?? target.status;
+      const selfRef = doc(db!, `publicStorefronts/${SHARED_WORKSPACE_ID}/selfOrders/${target.id}`);
+      const queueRef = doc(db!, `publicStorefronts/${SHARED_WORKSPACE_ID}/queueTickets/${target.id}`);
+
+      const selfUpdate: Record<string, unknown> = {
+        status: nextStatus,
+        paymentStatus: overrides.paymentStatus ?? target.paymentStatus,
+        updatedAt: serverTimestamp(),
+      };
+      if (overrides.items !== undefined) selfUpdate.items = overrides.items;
+      if (overrides.subtotal !== undefined) selfUpdate.subtotal = overrides.subtotal;
+      if (overrides.total !== undefined) selfUpdate.total = overrides.total;
+      if (overrides.reference !== undefined) selfUpdate.reference = overrides.reference;
+      if (overrides.notes !== undefined) selfUpdate.notes = overrides.notes;
+      if (overrides.receiptCount !== undefined) selfUpdate.receiptCount = overrides.receiptCount;
+      if (overrides.latestReceiptUrl !== undefined) {
+        selfUpdate.latestReceiptUrl = overrides.latestReceiptUrl;
+      }
+      if (overrides.voidReason !== undefined) selfUpdate.voidReason = overrides.voidReason;
+      if (overrides.voidedByName !== undefined) selfUpdate.voidedByName = overrides.voidedByName;
+      if (overrides.voidedAtMs !== undefined) selfUpdate.voidedAtMs = overrides.voidedAtMs;
+
+      batch.update(selfRef, selfUpdate);
+      batch.update(queueRef, {
+        status: nextStatus,
+        updatedAt: serverTimestamp(),
+      });
+    },
+    [selfServiceOrders]
   );
 
   const updateOrderItems = useCallback(
@@ -1000,6 +1529,25 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       const { subtotal, total } = calculateOrderTotals(nextItems);
       const cleanRef = nextReference.trim().slice(0, 100) || target.reference;
       const cleanNotes = nextNotes.trim().slice(0, 400);
+      const unDeductedSelfOrder =
+        target.source === 'autoservicio' &&
+        target.status === 'pendiente_validacion' &&
+        !target.inventoryDeducted;
+      const prevDeducted = unDeductedSelfOrder
+        ? {}
+        : target.inventoryDeducted ?? computeOrderInventoryConsumption(target.items, products);
+      const rawNextDeducted = computeOrderInventoryConsumption(nextItems, products);
+      const existingInvIds = new Set(inventory.map((i) => i.id));
+      const nextDeducted: Record<string, number> = {};
+      if (!unDeductedSelfOrder) {
+        for (const [invId, qty] of Object.entries(rawNextDeducted)) {
+          if (existingInvIds.has(invId) && qty > 0) {
+            nextDeducted[invId] = qty;
+          }
+        }
+      }
+      const invDeltas = computeInventoryDeltas(prevDeducted, nextDeducted);
+
       const mov = buildMovementRecord({
         order: { id: target.id, orderNumber: target.orderNumber, reference: cleanRef },
         type: 'edicion_items',
@@ -1011,41 +1559,100 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       const orderPath = `workspaces/${SHARED_WORKSPACE_ID}/orders/${orderId}`;
       try {
         const batch = writeBatch(db!);
-        batch.update(doc(db!, orderPath), {
+        upsertOrderInBatch(
+          batch,
+          target,
+          {
+            items: nextItems,
+            subtotal,
+            total,
+            reference: cleanRef,
+            notes: cleanNotes,
+            inventoryDeducted: nextDeducted,
+            waiterId: waiter.id,
+            waiterName: waiter.name,
+            updatedAt: serverTimestamp(),
+          },
+          waiter
+        );
+        appendSelfOrderMirrorOps(batch, target, {
           items: nextItems,
           subtotal,
           total,
           reference: cleanRef,
           notes: cleanNotes,
-          waiterId: waiter.id,
-          waiterName: waiter.name,
-          updatedAt: serverTimestamp(),
         });
         batch.set(doc(db!, `workspaces/${SHARED_WORKSPACE_ID}/movements/${mov.id}`), {
           ...stripClientTimestamps(mov),
           createdAt: serverTimestamp(),
         });
+        appendOrderInventoryBatchOps(
+          batch,
+          invDeltas,
+          'edicion_pedido',
+          target.id,
+          target.orderNumber,
+          `Edición pedido #${target.orderNumber}`
+        );
         await batch.commit();
       } catch (err) {
         handleFirestoreError(err, OperationType.UPDATE, orderPath);
       }
     },
-    [permissions.canEditOrders, requireCloud, requireWaiter, orders, buildMovementRecord]
+    [
+      permissions.canEditOrders,
+      requireCloud,
+      requireWaiter,
+      orders,
+      products,
+      inventory,
+      buildMovementRecord,
+      appendOrderInventoryBatchOps,
+      upsertOrderInBatch,
+      appendSelfOrderMirrorOps,
+    ]
   );
 
   const updateOrderStatus = useCallback(
     async (orderId: string, nextStatus: OrderStatus) => {
+      const target = orders.find((o) => o.id === orderId);
+      if (nextStatus === 'tomado') {
+        if (!permissions.canManagePayments && !permissions.canAdvanceKitchen) {
+          throw new Error('Tu rol actual no tiene permiso para validar pedidos de autoservicio.');
+        }
+      }
       if ((nextStatus === 'preparacion' || nextStatus === 'listo') && !permissions.canAdvanceKitchen) {
-        throw new Error('Tu rol actual no tiene permiso para avanzar preparación en cocina.');
+        if (!(target?.status === 'pendiente_validacion' && permissions.canManagePayments)) {
+          throw new Error('Tu rol actual no tiene permiso para avanzar preparación en cocina.');
+        }
       }
       if (nextStatus === 'entregado' && !permissions.canDeliverOrders) {
         throw new Error('Tu rol actual no tiene permiso para marcar pedidos como entregados.');
       }
       requireCloud();
       const waiter = requireWaiter();
-      const target = orders.find((o) => o.id === orderId);
       if (!target) throw new Error('Pedido no encontrado.');
       if (target.status === nextStatus) return;
+
+      const shouldDeductNow =
+        target.source === 'autoservicio' &&
+        target.status === 'pendiente_validacion' &&
+        nextStatus !== 'cancelado' &&
+        !target.inventoryDeducted;
+
+      let nextDeducted: Record<string, number> | undefined;
+      let invDeltas: Record<string, number> = {};
+      if (shouldDeductNow) {
+        const rawConsumed = computeOrderInventoryConsumption(target.items, products);
+        const existingInvIds = new Set(inventory.map((i) => i.id));
+        nextDeducted = {};
+        for (const [invId, qty] of Object.entries(rawConsumed)) {
+          if (existingInvIds.has(invId) && qty > 0) {
+            nextDeducted[invId] = qty;
+          }
+        }
+        invDeltas = computeInventoryDeltas({}, nextDeducted);
+      }
 
       const mov = buildMovementRecord({
         order: target,
@@ -1058,22 +1665,52 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       const orderPath = `workspaces/${SHARED_WORKSPACE_ID}/orders/${orderId}`;
       try {
         const batch = writeBatch(db!);
-        batch.update(doc(db!, orderPath), {
-          status: nextStatus,
-          waiterId: waiter.id,
-          waiterName: waiter.name,
-          updatedAt: serverTimestamp(),
-        });
+        upsertOrderInBatch(
+          batch,
+          target,
+          {
+            status: nextStatus,
+            ...(nextDeducted !== undefined ? { inventoryDeducted: nextDeducted } : {}),
+            waiterId: waiter.id,
+            waiterName: waiter.name,
+            updatedAt: serverTimestamp(),
+          },
+          waiter
+        );
+        appendSelfOrderMirrorOps(batch, target, { status: nextStatus });
         batch.set(doc(db!, `workspaces/${SHARED_WORKSPACE_ID}/movements/${mov.id}`), {
           ...stripClientTimestamps(mov),
           createdAt: serverTimestamp(),
         });
+        if (shouldDeductNow) {
+          appendOrderInventoryBatchOps(
+            batch,
+            invDeltas,
+            'consumo_pedido',
+            target.id,
+            target.orderNumber,
+            `Autoservicio #${target.orderNumber} · ${target.reference}`
+          );
+        }
         await batch.commit();
       } catch (err) {
         handleFirestoreError(err, OperationType.UPDATE, orderPath);
       }
     },
-    [permissions.canAdvanceKitchen, permissions.canDeliverOrders, requireCloud, requireWaiter, orders, buildMovementRecord]
+    [
+      permissions.canManagePayments,
+      permissions.canAdvanceKitchen,
+      permissions.canDeliverOrders,
+      requireCloud,
+      requireWaiter,
+      orders,
+      products,
+      inventory,
+      buildMovementRecord,
+      upsertOrderInBatch,
+      appendSelfOrderMirrorOps,
+      appendOrderInventoryBatchOps,
+    ]
   );
 
   const voidOrder = useCallback(
@@ -1089,6 +1726,15 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
       const now = Date.now();
       const cleanReason = reason.trim().slice(0, 240);
+      const wasUndeductedSelf =
+        target.source === 'autoservicio' &&
+        target.status === 'pendiente_validacion' &&
+        !target.inventoryDeducted;
+      const prevDeducted = wasUndeductedSelf
+        ? {}
+        : target.inventoryDeducted ?? computeOrderInventoryConsumption(target.items, products);
+      const restoreDeltas = computeInventoryDeltas(prevDeducted, {});
+
       const mov = buildMovementRecord({
         order: target,
         type: 'estado_pedido',
@@ -1101,25 +1747,65 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       const orderPath = `workspaces/${SHARED_WORKSPACE_ID}/orders/${orderId}`;
       try {
         const batch = writeBatch(db!);
-        batch.update(doc(db!, orderPath), {
+        upsertOrderInBatch(
+          batch,
+          target,
+          {
+            status: 'cancelado',
+            inventoryDeducted: {},
+            voidReason: cleanReason,
+            voidedByName: waiter.name.slice(0, 80),
+            voidedAtMs: now,
+            waiterId: waiter.id,
+            waiterName: waiter.name,
+            updatedAt: serverTimestamp(),
+          },
+          waiter,
+          { skipInitialSelfTransfer: wasUndeductedSelf }
+        );
+        appendSelfOrderMirrorOps(batch, target, {
           status: 'cancelado',
           voidReason: cleanReason,
           voidedByName: waiter.name.slice(0, 80),
           voidedAtMs: now,
-          waiterId: waiter.id,
-          waiterName: waiter.name,
-          updatedAt: serverTimestamp(),
         });
         batch.set(doc(db!, `workspaces/${SHARED_WORKSPACE_ID}/movements/${mov.id}`), {
           ...stripClientTimestamps(mov),
           createdAt: serverTimestamp(),
+        });
+        appendOrderInventoryBatchOps(
+          batch,
+          restoreDeltas,
+          'anulacion_pedido',
+          target.id,
+          target.orderNumber,
+          `Anulación pedido #${target.orderNumber}${cleanReason ? ` · ${cleanReason}` : ''}`
+        );
+        appendWorkspaceNotification(batch, {
+          type: 'venta_anulada',
+          orderId: target.id,
+          orderNumber: target.orderNumber,
+          orderReference: target.reference,
+          wasPaidOrder: target.paymentStatus === 'pagado',
+          reason: cleanReason,
         });
         await batch.commit();
       } catch (err) {
         handleFirestoreError(err, OperationType.UPDATE, orderPath);
       }
     },
-    [permissions.canVoidOrders, requireCloud, requireWaiter, orders, buildMovementRecord]
+    [
+      permissions.canVoidOrders,
+      requireCloud,
+      requireWaiter,
+      orders,
+      products,
+      buildMovementRecord,
+      appendOrderInventoryBatchOps,
+      appendWorkspaceNotification,
+      upsertOrderInBatch,
+      appendSelfOrderMirrorOps,
+    ]
   );
 
   const deleteOrderRecord = useCallback(
@@ -1130,13 +1816,39 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       if (!target) return;
 
       const orderPath = `workspaces/${SHARED_WORKSPACE_ID}/orders/${orderId}`;
+      const inPosOrders = posOrders.some((o) => o.id === orderId);
+      const inSelfOrders = selfServiceOrders.some((s) => s.id === orderId);
+      const wasUndeductedSelf =
+        target.source === 'autoservicio' &&
+        target.status === 'pendiente_validacion' &&
+        !target.inventoryDeducted;
+
       try {
         const batch = writeBatch(db!);
-        batch.delete(doc(db!, orderPath));
+        if (target.status !== 'cancelado' && !wasUndeductedSelf) {
+          const prevDeducted =
+            target.inventoryDeducted ?? computeOrderInventoryConsumption(target.items, products);
+          const restoreDeltas = computeInventoryDeltas(prevDeducted, {});
+          appendOrderInventoryBatchOps(
+            batch,
+            restoreDeltas,
+            'anulacion_pedido',
+            target.id,
+            target.orderNumber,
+            `Eliminación de pedido #${target.orderNumber}`
+          );
+        }
+        if (inPosOrders) {
+          batch.delete(doc(db!, orderPath));
+        }
+        if (inSelfOrders) {
+          batch.delete(doc(db!, `publicStorefronts/${SHARED_WORKSPACE_ID}/selfOrders/${orderId}`));
+          batch.delete(doc(db!, `publicStorefronts/${SHARED_WORKSPACE_ID}/queueTickets/${orderId}`));
+        }
         for (const mov of movements.filter((m) => m.orderId === orderId)) {
           batch.delete(doc(db!, `workspaces/${SHARED_WORKSPACE_ID}/movements/${mov.id}`));
         }
-        for (const tr of transfers.filter((t) => t.orderId === orderId)) {
+        for (const tr of posTransfers.filter((t) => t.orderId === orderId)) {
           batch.delete(doc(db!, `workspaces/${SHARED_WORKSPACE_ID}/transfers/${tr.id}`));
         }
         await batch.commit();
@@ -1144,7 +1856,17 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         handleFirestoreError(err, OperationType.DELETE, orderPath);
       }
     },
-    [requireAdmin, requireCloud, orders, movements, transfers]
+    [
+      requireAdmin,
+      requireCloud,
+      orders,
+      posOrders,
+      selfServiceOrders,
+      products,
+      movements,
+      posTransfers,
+      appendOrderInventoryBatchOps,
+    ]
   );
 
   const updateOrderPayment = useCallback(
@@ -1209,6 +1931,26 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         };
       }
 
+      const shouldAutoConfirmSelf =
+        target.source === 'autoservicio' &&
+        target.status === 'pendiente_validacion' &&
+        paymentStatus === 'pagado';
+      const nextStatus: OrderStatus = shouldAutoConfirmSelf ? 'tomado' : target.status;
+
+      let nextDeducted: Record<string, number> | undefined;
+      let invDeltas: Record<string, number> = {};
+      if (shouldAutoConfirmSelf && !target.inventoryDeducted) {
+        const rawConsumed = computeOrderInventoryConsumption(target.items, products);
+        const existingInvIds = new Set(inventory.map((i) => i.id));
+        nextDeducted = {};
+        for (const [invId, qty] of Object.entries(rawConsumed)) {
+          if (existingInvIds.has(invId) && qty > 0) {
+            nextDeducted[invId] = qty;
+          }
+        }
+        invDeltas = computeInventoryDeltas({}, nextDeducted);
+      }
+
       const payMov = buildMovementRecord({
         order: target,
         type: newReceipt ? 'comprobante' : 'estado_pago',
@@ -1222,26 +1964,42 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         createdAtMs: now,
       });
 
+      const nextReceiptCount = target.receiptCount + (newReceipt ? 1 : 0);
+      const nextReceiptUrl = newReceipt ? newReceipt.imageUrl : target.latestReceiptUrl;
+
       const orderPath = `workspaces/${SHARED_WORKSPACE_ID}/orders/${orderId}`;
       try {
         const batch = writeBatch(db!);
-        batch.update(doc(db!, orderPath), {
+        upsertOrderInBatch(
+          batch,
+          target,
+          {
+            status: nextStatus,
+            paymentStatus,
+            paymentMethod,
+            receiptCount: nextReceiptCount,
+            latestReceiptUrl: nextReceiptUrl,
+            ...(nextDeducted !== undefined ? { inventoryDeducted: nextDeducted } : {}),
+            ...(resolvedCustomer
+              ? {
+                  customerId: resolvedCustomer.customerId,
+                  customerDocument: resolvedCustomer.customerDocument,
+                  customerName: resolvedCustomer.customerName,
+                  customerPhone: resolvedCustomer.customerPhone,
+                  customerEmail: resolvedCustomer.customerEmail,
+                }
+              : {}),
+            waiterId: waiter.id,
+            waiterName: waiter.name,
+            updatedAt: serverTimestamp(),
+          },
+          waiter
+        );
+        appendSelfOrderMirrorOps(batch, target, {
+          status: nextStatus,
           paymentStatus,
-          paymentMethod,
-          receiptCount: target.receiptCount + (newReceipt ? 1 : 0),
-          latestReceiptUrl: newReceipt ? newReceipt.imageUrl : target.latestReceiptUrl,
-          ...(resolvedCustomer
-            ? {
-                customerId: resolvedCustomer.customerId,
-                customerDocument: resolvedCustomer.customerDocument,
-                customerName: resolvedCustomer.customerName,
-                customerPhone: resolvedCustomer.customerPhone,
-                customerEmail: resolvedCustomer.customerEmail,
-              }
-            : {}),
-          waiterId: waiter.id,
-          waiterName: waiter.name,
-          updatedAt: serverTimestamp(),
+          receiptCount: nextReceiptCount,
+          latestReceiptUrl: nextReceiptUrl,
         });
         batch.set(doc(db!, `workspaces/${SHARED_WORKSPACE_ID}/movements/${payMov.id}`), {
           ...stripClientTimestamps(payMov),
@@ -1253,10 +2011,20 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             createdAt: serverTimestamp(),
           });
         }
-        for (const tr of transfers.filter((t) => t.orderId === orderId)) {
+        for (const tr of posTransfers.filter((t) => t.orderId === orderId)) {
           batch.update(doc(db!, `workspaces/${SHARED_WORKSPACE_ID}/transfers/${tr.id}`), {
             paymentStatus,
           });
+        }
+        if (shouldAutoConfirmSelf) {
+          appendOrderInventoryBatchOps(
+            batch,
+            invDeltas,
+            'consumo_pedido',
+            target.id,
+            target.orderNumber,
+            `Autoservicio confirmado #${target.orderNumber} · ${target.reference}`
+          );
         }
         await batch.commit();
       } catch (err) {
@@ -1272,11 +2040,16 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       orders,
       openShift,
       syncCustomCustomerRecord,
-      transfers,
+      products,
+      inventory,
+      posTransfers,
       workspaceOwnerUid,
       actorUid,
       authorizedEmails,
       buildMovementRecord,
+      upsertOrderInBatch,
+      appendSelfOrderMirrorOps,
+      appendOrderInventoryBatchOps,
     ]
   );
 
@@ -1329,6 +2102,24 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         createdAtMs: now,
       };
 
+      const shouldAutoConfirmSelf =
+        target.source === 'autoservicio' && target.status === 'pendiente_validacion';
+      const nextStatus: OrderStatus = shouldAutoConfirmSelf ? 'tomado' : target.status;
+
+      let nextDeducted: Record<string, number> | undefined;
+      let invDeltas: Record<string, number> = {};
+      if (shouldAutoConfirmSelf && !target.inventoryDeducted) {
+        const rawConsumed = computeOrderInventoryConsumption(target.items, products);
+        const existingInvIds = new Set(inventory.map((i) => i.id));
+        nextDeducted = {};
+        for (const [invId, qty] of Object.entries(rawConsumed)) {
+          if (existingInvIds.has(invId) && qty > 0) {
+            nextDeducted[invId] = qty;
+          }
+        }
+        invDeltas = computeInventoryDeltas({}, nextDeducted);
+      }
+
       const mov = buildMovementRecord({
         order: target,
         type: 'comprobante',
@@ -1338,17 +2129,32 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         createdAtMs: now,
       });
 
+      const nextReceiptCount = target.receiptCount + 1;
+
       const orderPath = `workspaces/${SHARED_WORKSPACE_ID}/orders/${orderId}`;
       try {
         const batch = writeBatch(db!);
-        batch.update(doc(db!, orderPath), {
+        upsertOrderInBatch(
+          batch,
+          target,
+          {
+            status: nextStatus,
+            paymentStatus: 'pagado',
+            paymentMethod: 'transferencia',
+            receiptCount: nextReceiptCount,
+            latestReceiptUrl: uploadRes.imageUrl,
+            ...(nextDeducted !== undefined ? { inventoryDeducted: nextDeducted } : {}),
+            waiterId: waiter.id,
+            waiterName: waiter.name,
+            updatedAt: serverTimestamp(),
+          },
+          waiter
+        );
+        appendSelfOrderMirrorOps(batch, target, {
+          status: nextStatus,
           paymentStatus: 'pagado',
-          paymentMethod: 'transferencia',
-          receiptCount: target.receiptCount + 1,
+          receiptCount: nextReceiptCount,
           latestReceiptUrl: uploadRes.imageUrl,
-          waiterId: waiter.id,
-          waiterName: waiter.name,
-          updatedAt: serverTimestamp(),
         });
         batch.set(doc(db!, `workspaces/${SHARED_WORKSPACE_ID}/transfers/${transferId}`), {
           ...stripClientTimestamps(newTransfer),
@@ -1358,6 +2164,16 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           ...stripClientTimestamps(mov),
           createdAt: serverTimestamp(),
         });
+        if (shouldAutoConfirmSelf) {
+          appendOrderInventoryBatchOps(
+            batch,
+            invDeltas,
+            'consumo_pedido',
+            target.id,
+            target.orderNumber,
+            `Autoservicio confirmado #${target.orderNumber} · ${target.reference}`
+          );
+        }
         await batch.commit();
       } catch (err) {
         handleFirestoreError(err, OperationType.UPDATE, orderPath);
@@ -1371,10 +2187,15 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       requireWaiter,
       openShift,
       orders,
+      products,
+      inventory,
       workspaceOwnerUid,
       actorUid,
       authorizedEmails,
       buildMovementRecord,
+      upsertOrderInBatch,
+      appendSelfOrderMirrorOps,
+      appendOrderInventoryBatchOps,
     ]
   );
 
@@ -1394,6 +2215,7 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       const remainingActive = transfers.filter(
         (t) => t.orderId === target.orderId && t.id !== transferId && !t.annulled
       );
+      const isPersistedTransfer = posTransfers.some((t) => t.id === transferId);
       const mov = parentOrder
         ? buildMovementRecord({
             order: parentOrder,
@@ -1410,19 +2232,43 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       const path = `workspaces/${SHARED_WORKSPACE_ID}/transfers/${transferId}`;
       try {
         const batch = writeBatch(db!);
-        batch.update(doc(db!, path), {
-          annulled: true,
-          annulledByName: waiter.name.slice(0, 80),
-          annulledReason: cleanReason,
-          annulledAtMs: now,
-        });
         if (parentOrder) {
-          batch.update(doc(db!, `workspaces/${SHARED_WORKSPACE_ID}/orders/${parentOrder.id}`), {
+          upsertOrderInBatch(
+            batch,
+            parentOrder,
+            {
+              receiptCount: remainingActive.length,
+              latestReceiptUrl: remainingActive[0]?.imageUrl || '',
+              waiterId: waiter.id,
+              waiterName: waiter.name,
+              updatedAt: serverTimestamp(),
+            },
+            waiter,
+            { skipInitialSelfTransfer: !isPersistedTransfer }
+          );
+          appendSelfOrderMirrorOps(batch, parentOrder, {
             receiptCount: remainingActive.length,
             latestReceiptUrl: remainingActive[0]?.imageUrl || '',
-            waiterId: waiter.id,
-            waiterName: waiter.name,
-            updatedAt: serverTimestamp(),
+          });
+        }
+        if (isPersistedTransfer) {
+          batch.update(doc(db!, path), {
+            annulled: true,
+            annulledByName: waiter.name.slice(0, 80),
+            annulledReason: cleanReason,
+            annulledAtMs: now,
+          });
+        } else {
+          batch.set(doc(db!, path), {
+            ...stripClientTimestamps(target),
+            ownerUid: workspaceOwnerUid,
+            createdByUid: actorUid,
+            allowedEmails: authorizedEmails,
+            annulled: true,
+            annulledByName: waiter.name.slice(0, 80),
+            annulledReason: cleanReason,
+            annulledAtMs: now,
+            createdAt: serverTimestamp(),
           });
         }
         if (mov) {
@@ -1436,7 +2282,20 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         handleFirestoreError(err, OperationType.UPDATE, path);
       }
     },
-    [permissions.canVoidReceipts, requireCloud, requireWaiter, transfers, orders, buildMovementRecord]
+    [
+      permissions.canVoidReceipts,
+      requireCloud,
+      requireWaiter,
+      transfers,
+      posTransfers,
+      orders,
+      workspaceOwnerUid,
+      actorUid,
+      authorizedEmails,
+      buildMovementRecord,
+      upsertOrderInBatch,
+      appendSelfOrderMirrorOps,
+    ]
   );
 
   const deleteTransferReceipt = useCallback(
@@ -1450,18 +2309,27 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       const remainingActive = transfers.filter(
         (t) => t.orderId === target.orderId && t.id !== transferId && !t.annulled
       );
+      const isPersistedTransfer = posTransfers.some((t) => t.id === transferId);
       const path = `workspaces/${SHARED_WORKSPACE_ID}/transfers/${transferId}`;
       try {
         const batch = writeBatch(db!);
-        batch.delete(doc(db!, path));
+        if (isPersistedTransfer) {
+          batch.delete(doc(db!, path));
+        }
         for (const mov of movements.filter((m) => m.details && m.details.transferId === transferId)) {
           batch.delete(doc(db!, `workspaces/${SHARED_WORKSPACE_ID}/movements/${mov.id}`));
         }
         if (parentOrder) {
-          batch.update(doc(db!, `workspaces/${SHARED_WORKSPACE_ID}/orders/${parentOrder.id}`), {
+          if (posOrders.some((o) => o.id === parentOrder.id)) {
+            batch.update(doc(db!, `workspaces/${SHARED_WORKSPACE_ID}/orders/${parentOrder.id}`), {
+              receiptCount: remainingActive.length,
+              latestReceiptUrl: remainingActive[0]?.imageUrl || '',
+              updatedAt: serverTimestamp(),
+            });
+          }
+          appendSelfOrderMirrorOps(batch, parentOrder, {
             receiptCount: remainingActive.length,
             latestReceiptUrl: remainingActive[0]?.imageUrl || '',
-            updatedAt: serverTimestamp(),
           });
         }
         await batch.commit();
@@ -1469,7 +2337,16 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         handleFirestoreError(err, OperationType.DELETE, path);
       }
     },
-    [requireAdmin, requireCloud, transfers, orders, movements]
+    [
+      requireAdmin,
+      requireCloud,
+      transfers,
+      posTransfers,
+      orders,
+      posOrders,
+      movements,
+      appendSelfOrderMirrorOps,
+    ]
   );
 
   // Admin Menu mutations
@@ -1479,12 +2356,24 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       requireCloud();
       const path = `workspaces/${SHARED_WORKSPACE_ID}/${subCol}/${id}`;
       try {
-        await updateDoc(doc(db!, path), { active, updatedAt: serverTimestamp() });
+        const batch = writeBatch(db!);
+        batch.update(doc(db!, path), { active, updatedAt: serverTimestamp() });
+        if (publicStorefrontExists) {
+          const pubRef = doc(db!, `publicStorefronts/${SHARED_WORKSPACE_ID}/${subCol}/${id}`);
+          if (subCol === 'products') {
+            const prod = products.find((p) => p.id === id);
+            if (prod) batch.set(pubRef, toPublicProductPayload({ ...prod, active }));
+          } else {
+            const sauce = sauces.find((s) => s.id === id);
+            if (sauce) batch.set(pubRef, toPublicSaucePayload({ ...sauce, active }));
+          }
+        }
+        await batch.commit();
       } catch (err) {
         handleFirestoreError(err, OperationType.UPDATE, path);
       }
     },
-    [requireAdmin, requireCloud]
+    [requireAdmin, requireCloud, publicStorefrontExists, products, sauces]
   );
 
   const deleteSubDoc = useCallback(
@@ -1493,12 +2382,17 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       requireCloud();
       const path = `workspaces/${SHARED_WORKSPACE_ID}/${subCol}/${id}`;
       try {
-        await deleteDoc(doc(db!, path));
+        const batch = writeBatch(db!);
+        batch.delete(doc(db!, path));
+        if (publicStorefrontExists) {
+          batch.delete(doc(db!, `publicStorefronts/${SHARED_WORKSPACE_ID}/${subCol}/${id}`));
+        }
+        await batch.commit();
       } catch (err) {
         handleFirestoreError(err, OperationType.DELETE, path);
       }
     },
-    [requireAdmin, requireCloud]
+    [requireAdmin, requireCloud, publicStorefrontExists]
   );
 
   const saveProduct = useCallback(
@@ -1531,14 +2425,41 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         resolvedImageUrl = normalizeProductImageUrl(uploaded.imageUrl, existing?.imageUrl);
       }
 
+      const resolvedSpecs = Array.isArray(input.recipeIngredients)
+        ? splitProductRecipeFromSpecs(input.recipeIngredients)
+        : null;
+
+      const cleanAddons: AddonOption[] = input.addonOptions.slice(0, 30).map((ex) => ({
+        id: ex.id,
+        name: ex.name.trim().slice(0, 80),
+        price: Math.max(0, Math.round(ex.price || 0)),
+        allowMultiple: ex.allowMultiple !== false,
+        ...(ex.inventoryItemId
+          ? {
+              inventoryItemId: ex.inventoryItemId,
+              inventoryQuantity:
+                Number.isFinite(ex.inventoryQuantity) && (ex.inventoryQuantity as number) > 0
+                  ? roundStockQty(ex.inventoryQuantity as number)
+                  : 0,
+            }
+          : {}),
+      }));
+
       const payload = {
         name: cleanName,
         category: input.category.trim().replace(/\s+/g, ' ').slice(0, 60) || 'General',
         basePrice: Math.round(input.basePrice),
         imageUrl: resolvedImageUrl,
-        baseRecipe: input.baseRecipe.map((s) => s.trim()).filter(Boolean).slice(0, 30),
-        removableOptions: input.removableOptions.map((s) => s.trim()).filter(Boolean).slice(0, 30),
-        addonOptions: input.addonOptions.slice(0, 30),
+        baseRecipe: resolvedSpecs
+          ? resolvedSpecs.baseRecipe
+          : input.baseRecipe.map((s) => s.trim()).filter(Boolean).slice(0, 30),
+        removableOptions: resolvedSpecs
+          ? resolvedSpecs.removableOptions
+          : input.removableOptions.map((s) => s.trim()).filter(Boolean).slice(0, 30),
+        recipeIngredients: resolvedSpecs
+          ? resolvedSpecs.recipeIngredients
+          : existing?.recipeIngredients || [],
+        addonOptions: cleanAddons,
         allowSauces: input.allowSauces,
         minSauces: minS,
         maxSauces: maxS,
@@ -1549,10 +2470,11 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
       const path = `workspaces/${SHARED_WORKSPACE_ID}/products/${prodId}`;
       try {
+        const batch = writeBatch(db!);
         if (existing) {
-          await updateDoc(doc(db!, path), payload);
+          batch.update(doc(db!, path), payload);
         } else {
-          await setDoc(doc(db!, path), {
+          batch.set(doc(db!, path), {
             id: prodId,
             ...payload,
             ownerUid: workspaceOwnerUid,
@@ -1560,11 +2482,39 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             createdAt: serverTimestamp(),
           });
         }
+        if (publicStorefrontExists) {
+          batch.set(
+            doc(db!, `publicStorefronts/${SHARED_WORKSPACE_ID}/products/${prodId}`),
+            toPublicProductPayload({
+              id: prodId,
+              name: payload.name,
+              category: payload.category,
+              basePrice: payload.basePrice,
+              imageUrl: payload.imageUrl,
+              baseRecipe: payload.baseRecipe,
+              removableOptions: payload.removableOptions,
+              addonOptions: cleanAddons,
+              allowSauces: payload.allowSauces,
+              minSauces: payload.minSauces,
+              maxSauces: payload.maxSauces,
+              active: payload.active,
+            })
+          );
+        }
+        await batch.commit();
       } catch (err) {
         handleFirestoreError(err, existing ? OperationType.UPDATE : OperationType.CREATE, path);
       }
     },
-    [requireAdmin, requireCloud, products, workspaceOwnerUid, actorUid, authorizedEmails]
+    [
+      requireAdmin,
+      requireCloud,
+      products,
+      workspaceOwnerUid,
+      actorUid,
+      authorizedEmails,
+      publicStorefrontExists,
+    ]
   );
 
   const toggleProductActive = useCallback(
@@ -1586,15 +2536,16 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       const existing = sauces.find((s) => s.id === sauceId);
       const path = `workspaces/${SHARED_WORKSPACE_ID}/sauces/${sauceId}`;
       try {
+        const batch = writeBatch(db!);
         if (existing) {
-          await updateDoc(doc(db!, path), {
+          batch.update(doc(db!, path), {
             name: cleanName,
             active,
             allowedEmails: authorizedEmails,
             updatedAt: serverTimestamp(),
           });
         } else {
-          await setDoc(doc(db!, path), {
+          batch.set(doc(db!, path), {
             id: sauceId,
             name: cleanName,
             active,
@@ -1605,11 +2556,26 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             updatedAt: serverTimestamp(),
           });
         }
+        if (publicStorefrontExists) {
+          batch.set(
+            doc(db!, `publicStorefronts/${SHARED_WORKSPACE_ID}/sauces/${sauceId}`),
+            toPublicSaucePayload({ id: sauceId, name: cleanName, active })
+          );
+        }
+        await batch.commit();
       } catch (err) {
         handleFirestoreError(err, existing ? OperationType.UPDATE : OperationType.CREATE, path);
       }
     },
-    [requireAdmin, requireCloud, sauces, workspaceOwnerUid, actorUid, authorizedEmails]
+    [
+      requireAdmin,
+      requireCloud,
+      sauces,
+      workspaceOwnerUid,
+      actorUid,
+      authorizedEmails,
+      publicStorefrontExists,
+    ]
   );
 
   const toggleSauceActive = useCallback(
@@ -1830,12 +2796,38 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
       const wsPath = `workspaces/${SHARED_WORKSPACE_ID}`;
       try {
-        const batch = writeBatch(db!);
-        batch.update(doc(db!, wsPath), {
+        const batches: Array<ReturnType<typeof writeBatch>> = [];
+        let currentBatch = writeBatch(db!);
+        let opCount = 0;
+
+        const enqueueUpdate = (
+          ref: ReturnType<typeof doc>,
+          data: Record<string, unknown>
+        ) => {
+          if (opCount >= 380) {
+            batches.push(currentBatch);
+            currentBatch = writeBatch(db!);
+            opCount = 0;
+          }
+          currentBatch.update(ref, data);
+          opCount += 1;
+        };
+
+        enqueueUpdate(doc(db!, wsPath), {
           authorizedEmails: cleanList,
           updatedAt: serverTimestamp(),
         });
-        for (const colName of ['staff', 'sauces', 'products', 'orders', 'shifts', 'customers'] as const) {
+
+        for (const colName of [
+          'staff',
+          'sauces',
+          'products',
+          'orders',
+          'shifts',
+          'customers',
+          'inventory',
+          'purchaseInvoices',
+        ] as const) {
           const snap = await getDocs(
             query(
               collection(db!, `workspaces/${SHARED_WORKSPACE_ID}/${colName}`),
@@ -1843,13 +2835,17 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             )
           );
           snap.docs.forEach((d) => {
-            batch.update(d.ref, {
+            enqueueUpdate(d.ref, {
               allowedEmails: cleanList,
               updatedAt: serverTimestamp(),
             });
           });
         }
-        await batch.commit();
+
+        if (opCount > 0) batches.push(currentBatch);
+        for (const b of batches) {
+          await b.commit();
+        }
       } catch (err) {
         handleFirestoreError(err, OperationType.UPDATE, wsPath);
       }
@@ -1890,16 +2886,96 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       const normalized = normalizeBillingConfig(config);
       const wsPath = `workspaces/${SHARED_WORKSPACE_ID}`;
       try {
-        await updateDoc(doc(db!, wsPath), {
+        const batch = writeBatch(db!);
+        batch.update(doc(db!, wsPath), {
           billingConfig: normalized,
           updatedAt: serverTimestamp(),
         });
+        if (publicStorefrontExists) {
+          batch.update(doc(db!, `publicStorefronts/${SHARED_WORKSPACE_ID}`), {
+            businessName: normalized.businessName.trim().slice(0, 120) || "O'NDE LUIGI",
+            updatedAt: serverTimestamp(),
+          });
+        }
+        await batch.commit();
         setBillingConfig(normalized);
       } catch (err) {
         handleFirestoreError(err, OperationType.UPDATE, wsPath);
       }
     },
+    [requireAdmin, requireCloud, publicStorefrontExists]
+  );
+
+  const uploadPaymentQrImage = useCallback(
+    async (file: File): Promise<ReceiptUploadResult> => {
+      requireAdmin();
+      requireCloud();
+      return uploadStorefrontQrImage({
+        workspaceId: SHARED_WORKSPACE_ID,
+        file,
+      });
+    },
     [requireAdmin, requireCloud]
+  );
+
+  const saveSelfServiceConfig = useCallback(
+    async (config: SelfServicePaymentConfig) => {
+      requireAdmin();
+      requireCloud();
+      if (!config.brebKey.trim()) {
+        throw new Error('Ingresa la llave de Bre-B / cuenta antes de guardar.');
+      }
+      if (!config.accountHolder.trim()) {
+        throw new Error('Ingresa el nombre del titular de la cuenta.');
+      }
+      if (!config.bankName.trim()) {
+        throw new Error('Ingresa el banco o billetera digital.');
+      }
+      const normalized = normalizeSelfServiceConfig(config);
+      const wsPath = `workspaces/${SHARED_WORKSPACE_ID}`;
+      try {
+        if (publicStorefrontExists) {
+          const batch = writeBatch(db!);
+          batch.update(doc(db!, wsPath), {
+            selfServiceConfig: normalized,
+            updatedAt: serverTimestamp(),
+          });
+          batch.set(doc(db!, `publicStorefronts/${SHARED_WORKSPACE_ID}`), {
+            id: SHARED_WORKSPACE_ID,
+            businessName: billingConfig.businessName.trim().slice(0, 120) || "O'NDE LUIGI",
+            ...normalized,
+            ownerUid: workspaceOwnerUid,
+            updatedAt: serverTimestamp(),
+          });
+          await batch.commit();
+        } else {
+          await updateDoc(doc(db!, wsPath), {
+            selfServiceConfig: normalized,
+            updatedAt: serverTimestamp(),
+          });
+          await syncPublicStorefrontCatalog({
+            ownerUid: workspaceOwnerUid,
+            businessName: billingConfig.businessName,
+            selfServiceConfig: normalized,
+            products,
+            sauces,
+          });
+          setPublicStorefrontExists(true);
+        }
+        setSelfServiceConfig(normalized);
+      } catch (err) {
+        handleFirestoreError(err, OperationType.UPDATE, wsPath);
+      }
+    },
+    [
+      requireAdmin,
+      requireCloud,
+      publicStorefrontExists,
+      billingConfig.businessName,
+      workspaceOwnerUid,
+      products,
+      sauces,
+    ]
   );
 
   const upsertCustomer = useCallback(
@@ -2043,7 +3119,8 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
       const path = `workspaces/${SHARED_WORKSPACE_ID}/shifts/${shiftId}`;
       try {
-        await setDoc(doc(db!, path), {
+        const batch = writeBatch(db!);
+        batch.set(doc(db!, path), {
           id: newShift.id,
           status: newShift.status,
           openingBaseAmount: newShift.openingBaseAmount,
@@ -2071,13 +3148,28 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           createdAt: serverTimestamp(),
           updatedAt: serverTimestamp(),
         });
+        appendWorkspaceNotification(batch, {
+          type: 'turno_abierto',
+          shiftId: newShift.id,
+          openingBaseAmount: safeBase,
+        });
+        await batch.commit();
       } catch (err) {
         handleFirestoreError(err, OperationType.CREATE, path);
       }
 
       return newShift;
     },
-    [permissions.canManageShifts, requireCloud, requireWaiter, shifts, actorUid, workspaceOwnerUid, authorizedEmails]
+    [
+      permissions.canManageShifts,
+      requireCloud,
+      requireWaiter,
+      shifts,
+      actorUid,
+      workspaceOwnerUid,
+      authorizedEmails,
+      appendWorkspaceNotification,
+    ]
   );
 
   const closeCashShift = useCallback(
@@ -2118,7 +3210,8 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
       const path = `workspaces/${SHARED_WORKSPACE_ID}/shifts/${shiftId}`;
       try {
-        await updateDoc(doc(db!, path), {
+        const batch = writeBatch(db!);
+        batch.update(doc(db!, path), {
           status: 'cerrado',
           closedByStaffId: waiter.id,
           closedByName: waiter.name.slice(0, 80),
@@ -2136,11 +3229,27 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           pendingOrdersCount: evaluation.pendingOrdersCount,
           updatedAt: serverTimestamp(),
         });
+        appendWorkspaceNotification(batch, {
+          type: 'turno_cerrado',
+          shiftId: target.id,
+          paidOrdersCount: evaluation.paidOrdersCount,
+          total: evaluation.expectedTotal,
+        });
+        await batch.commit();
       } catch (err) {
         handleFirestoreError(err, OperationType.UPDATE, path);
       }
     },
-    [permissions.canManageShifts, requireCloud, requireWaiter, shifts, orders, movements, actorUid]
+    [
+      permissions.canManageShifts,
+      requireCloud,
+      requireWaiter,
+      shifts,
+      orders,
+      movements,
+      actorUid,
+      appendWorkspaceNotification,
+    ]
   );
 
   const deleteShiftRecord = useCallback(
@@ -2148,6 +3257,784 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       requireAdmin();
       requireCloud();
       const path = `workspaces/${SHARED_WORKSPACE_ID}/shifts/${shiftId}`;
+      try {
+        await deleteDoc(doc(db!, path));
+      } catch (err) {
+        handleFirestoreError(err, OperationType.DELETE, path);
+      }
+    },
+    [requireAdmin, requireCloud]
+  );
+
+  // Admin Inventory mutations
+  const saveInventoryItem = useCallback(
+    async (input: {
+      id?: string;
+      name: string;
+      unit: InventoryUnit;
+      minStock?: number;
+      initialQuantity?: number;
+      initialTotalCost?: number;
+      active?: boolean;
+    }): Promise<InventoryItem> => {
+      requireAdmin();
+      requireCloud();
+      const cleanName = input.name.trim().replace(/\s+/g, ' ').slice(0, 80);
+      if (!cleanName) throw new Error('El nombre del ingrediente es obligatorio.');
+      const nameKey = normalizeIngredientKey(cleanName);
+      if (!nameKey) throw new Error('El nombre del ingrediente es obligatorio.');
+      if (hasDuplicateInventoryName(cleanName, inventory, input.id)) {
+        throw new Error(
+          `Ya existe un ingrediente llamado "${cleanName}" en el inventario. Usa o edita el existente.`
+        );
+      }
+
+      const unit: InventoryUnit = input.unit === 'ud' ? 'ud' : 'g';
+      const minStock =
+        Number.isFinite(input.minStock) && (input.minStock as number) >= 0
+          ? roundStockQty(input.minStock as number)
+          : 0;
+      const active = input.active !== undefined ? input.active : true;
+      const existing = input.id ? inventory.find((i) => i.id === input.id) : undefined;
+      const now = Date.now();
+
+      if (existing) {
+        const invPath = `workspaces/${SHARED_WORKSPACE_ID}/inventory/${existing.id}`;
+        try {
+          const batch = writeBatch(db!);
+          batch.update(doc(db!, invPath), {
+            name: cleanName,
+            nameKey,
+            unit,
+            minStock,
+            active,
+            allowedEmails: authorizedEmails,
+            updatedAt: serverTimestamp(),
+          });
+
+          if (existing.name !== cleanName || existing.unit !== unit) {
+            for (const prod of products) {
+              const specs = prod.recipeIngredients || [];
+              if (!specs.some((s) => s.inventoryItemId === existing.id)) continue;
+              const updatedSpecs = specs.map((s) =>
+                s.inventoryItemId === existing.id ? { ...s, name: cleanName, unit } : s
+              );
+              const split = splitProductRecipeFromSpecs(updatedSpecs);
+              batch.update(doc(db!, `workspaces/${SHARED_WORKSPACE_ID}/products/${prod.id}`), {
+                baseRecipe: split.baseRecipe,
+                removableOptions: split.removableOptions,
+                recipeIngredients: split.recipeIngredients,
+                updatedAt: serverTimestamp(),
+              });
+              if (publicStorefrontExists) {
+                batch.set(
+                  doc(db!, `publicStorefronts/${SHARED_WORKSPACE_ID}/products/${prod.id}`),
+                  toPublicProductPayload({
+                    ...prod,
+                    baseRecipe: split.baseRecipe,
+                    removableOptions: split.removableOptions,
+                  })
+                );
+              }
+            }
+          }
+          await batch.commit();
+        } catch (err) {
+          handleFirestoreError(err, OperationType.UPDATE, invPath);
+        }
+
+        return {
+          ...existing,
+          name: cleanName,
+          nameKey,
+          unit,
+          minStock,
+          active,
+          updatedAtMs: now,
+        };
+      }
+
+      let itemId = buildInventoryItemId(cleanName);
+      if (inventory.some((i) => i.id === itemId)) {
+        itemId = createSafeId('inv');
+      }
+      const initQty =
+        Number.isFinite(input.initialQuantity) && (input.initialQuantity as number) > 0
+          ? roundStockQty(input.initialQuantity as number)
+          : 0;
+      const initCost =
+        Number.isFinite(input.initialTotalCost) && (input.initialTotalCost as number) >= 0
+          ? Math.round(input.initialTotalCost as number)
+          : 0;
+      const calcUnitCost = initQty > 0 ? calculatePurchaseUnitCost(initQty, initCost) : 0;
+
+      const created: InventoryItem = {
+        id: itemId,
+        name: cleanName,
+        nameKey,
+        unit,
+        currentStock: initQty,
+        minStock,
+        unitCost: calcUnitCost,
+        lastPurchaseQuantity: initQty,
+        lastPurchaseTotalCost: initCost,
+        active,
+        ownerUid: workspaceOwnerUid,
+        createdByUid: actorUid,
+        allowedEmails: authorizedEmails,
+        createdAtMs: now,
+        updatedAtMs: now,
+      };
+
+      const invPath = `workspaces/${SHARED_WORKSPACE_ID}/inventory/${itemId}`;
+      try {
+        const batch = writeBatch(db!);
+        batch.set(doc(db!, invPath), {
+          ...stripClientTimestamps(created),
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
+        if (initQty > 0) {
+          const initMov = buildInventoryMovementRecord({
+            inventoryItemId: itemId,
+            ingredientName: cleanName,
+            unit,
+            type: 'compra',
+            quantityDelta: initQty,
+            purchaseTotalCost: initCost,
+            calculatedUnitCost: calcUnitCost,
+            notes: `Compra inicial (${initQty} ${unit})`,
+          });
+          batch.set(doc(db!, `workspaces/${SHARED_WORKSPACE_ID}/inventoryMovements/${initMov.id}`), {
+            ...stripClientTimestamps(initMov),
+            createdAt: serverTimestamp(),
+          });
+        }
+        await batch.commit();
+      } catch (err) {
+        handleFirestoreError(err, OperationType.CREATE, invPath);
+      }
+
+      return created;
+    },
+    [
+      requireAdmin,
+      requireCloud,
+      inventory,
+      products,
+      authorizedEmails,
+      workspaceOwnerUid,
+      actorUid,
+      buildInventoryMovementRecord,
+      publicStorefrontExists,
+    ]
+  );
+
+  const registerInventoryPurchase = useCallback(
+    async ({
+      inventoryItemId,
+      quantity,
+      totalCost,
+      notes = '',
+    }: {
+      inventoryItemId: string;
+      quantity: number;
+      totalCost: number;
+      notes?: string;
+    }) => {
+      requireAdmin();
+      requireCloud();
+      const target = inventory.find((i) => i.id === inventoryItemId);
+      if (!target) throw new Error('Ingrediente de inventario no encontrado.');
+      const qty = roundStockQty(quantity);
+      if (!Number.isFinite(qty) || qty <= 0) {
+        throw new Error(`Ingresa una cantidad comprada mayor a 0 (${target.unit}).`);
+      }
+      if (!Number.isFinite(totalCost) || totalCost < 0) {
+        throw new Error('Ingresa un costo total válido.');
+      }
+
+      const safeCost = Math.round(totalCost);
+      const calculatedUnitCost = calculatePurchaseUnitCost(qty, safeCost);
+      const mov = buildInventoryMovementRecord({
+        inventoryItemId: target.id,
+        ingredientName: target.name,
+        unit: target.unit,
+        type: 'compra',
+        quantityDelta: qty,
+        purchaseTotalCost: safeCost,
+        calculatedUnitCost,
+        notes:
+          notes.trim().slice(0, 300) ||
+          `Compra de ${qty} ${target.unit} por $${safeCost.toLocaleString('es-CO')}`,
+      });
+
+      const invPath = `workspaces/${SHARED_WORKSPACE_ID}/inventory/${target.id}`;
+      try {
+        const batch = writeBatch(db!);
+        batch.update(doc(db!, invPath), {
+          currentStock: increment(qty),
+          unitCost: calculatedUnitCost,
+          lastPurchaseQuantity: qty,
+          lastPurchaseTotalCost: safeCost,
+          allowedEmails: authorizedEmails,
+          updatedAt: serverTimestamp(),
+        });
+        batch.set(doc(db!, `workspaces/${SHARED_WORKSPACE_ID}/inventoryMovements/${mov.id}`), {
+          ...stripClientTimestamps(mov),
+          createdAt: serverTimestamp(),
+        });
+        await batch.commit();
+      } catch (err) {
+        handleFirestoreError(err, OperationType.UPDATE, invPath);
+      }
+    },
+    [requireAdmin, requireCloud, inventory, authorizedEmails, buildInventoryMovementRecord]
+  );
+
+  const adjustInventoryStock = useCallback(
+    async ({
+      inventoryItemId,
+      newStock,
+      notes = '',
+    }: {
+      inventoryItemId: string;
+      newStock: number;
+      notes?: string;
+    }) => {
+      requireAdmin();
+      requireCloud();
+      const target = inventory.find((i) => i.id === inventoryItemId);
+      if (!target) throw new Error('Ingrediente de inventario no encontrado.');
+      if (!Number.isFinite(newStock) || newStock < -100000000 || newStock > 100000000) {
+        throw new Error('Ingresa una cantidad válida para el inventario.');
+      }
+
+      const targetStock = roundStockQty(newStock);
+      const delta = roundStockQty(targetStock - target.currentStock);
+      const mov = buildInventoryMovementRecord({
+        inventoryItemId: target.id,
+        ingredientName: target.name,
+        unit: target.unit,
+        type: 'ajuste_manual',
+        quantityDelta: delta,
+        notes:
+          notes.trim().slice(0, 300) ||
+          `Ajuste manual de ${target.currentStock} a ${targetStock} ${target.unit}`,
+      });
+
+      const invPath = `workspaces/${SHARED_WORKSPACE_ID}/inventory/${target.id}`;
+      try {
+        const batch = writeBatch(db!);
+        batch.update(doc(db!, invPath), {
+          currentStock: targetStock,
+          allowedEmails: authorizedEmails,
+          updatedAt: serverTimestamp(),
+        });
+        batch.set(doc(db!, `workspaces/${SHARED_WORKSPACE_ID}/inventoryMovements/${mov.id}`), {
+          ...stripClientTimestamps(mov),
+          createdAt: serverTimestamp(),
+        });
+        await batch.commit();
+      } catch (err) {
+        handleFirestoreError(err, OperationType.UPDATE, invPath);
+      }
+    },
+    [requireAdmin, requireCloud, inventory, authorizedEmails, buildInventoryMovementRecord]
+  );
+
+  const deleteInventoryItem = useCallback(
+    async (inventoryItemId: string) => {
+      requireAdmin();
+      requireCloud();
+      const target = inventory.find((i) => i.id === inventoryItemId);
+      if (!target) return;
+
+      const invPath = `workspaces/${SHARED_WORKSPACE_ID}/inventory/${inventoryItemId}`;
+      try {
+        const batch = writeBatch(db!);
+        batch.delete(doc(db!, invPath));
+        for (const prod of products) {
+          const specs = prod.recipeIngredients || [];
+          const hasSpec = specs.some((s) => s.inventoryItemId === inventoryItemId);
+          const hasAddon = (prod.addonOptions || []).some(
+            (a) => a.inventoryItemId === inventoryItemId
+          );
+          if (!hasSpec && !hasAddon) continue;
+
+          const nextSpecs = specs.filter((s) => s.inventoryItemId !== inventoryItemId);
+          const split = splitProductRecipeFromSpecs(nextSpecs);
+          const nextAddons = (prod.addonOptions || []).map((a) => {
+            if (a.inventoryItemId !== inventoryItemId) return a;
+            const { inventoryItemId: _i, inventoryQuantity: _q, ...rest } = a;
+            return rest;
+          });
+          batch.update(doc(db!, `workspaces/${SHARED_WORKSPACE_ID}/products/${prod.id}`), {
+            baseRecipe: split.baseRecipe,
+            removableOptions: split.removableOptions,
+            recipeIngredients: split.recipeIngredients,
+            addonOptions: nextAddons,
+            updatedAt: serverTimestamp(),
+          });
+          if (publicStorefrontExists) {
+            batch.set(
+              doc(db!, `publicStorefronts/${SHARED_WORKSPACE_ID}/products/${prod.id}`),
+              toPublicProductPayload({
+                ...prod,
+                baseRecipe: split.baseRecipe,
+                removableOptions: split.removableOptions,
+                addonOptions: nextAddons,
+              })
+            );
+          }
+        }
+        await batch.commit();
+      } catch (err) {
+        handleFirestoreError(err, OperationType.DELETE, invPath);
+      }
+    },
+    [requireAdmin, requireCloud, inventory, products, publicStorefrontExists]
+  );
+
+  const mergeInventoryItems = useCallback(
+    async (sourceId: string, targetId: string) => {
+      requireAdmin();
+      requireCloud();
+      if (sourceId === targetId) {
+        throw new Error('Selecciona un ingrediente destino distinto para fusionar.');
+      }
+      const source = inventory.find((i) => i.id === sourceId);
+      const target = inventory.find((i) => i.id === targetId);
+      if (!source || !target) {
+        throw new Error('No se encontraron ambos ingredientes para fusionar.');
+      }
+
+      const mov = buildInventoryMovementRecord({
+        inventoryItemId: target.id,
+        ingredientName: target.name,
+        unit: target.unit,
+        type: 'fusion',
+        quantityDelta: roundStockQty(source.currentStock),
+        notes: `Fusión desde "${source.name}" (${source.currentStock} ${source.unit})`,
+      });
+
+      const sourcePath = `workspaces/${SHARED_WORKSPACE_ID}/inventory/${source.id}`;
+      try {
+        const batch = writeBatch(db!);
+        if (source.currentStock !== 0) {
+          batch.update(doc(db!, `workspaces/${SHARED_WORKSPACE_ID}/inventory/${target.id}`), {
+            currentStock: increment(roundStockQty(source.currentStock)),
+            updatedAt: serverTimestamp(),
+          });
+        }
+        batch.set(doc(db!, `workspaces/${SHARED_WORKSPACE_ID}/inventoryMovements/${mov.id}`), {
+          ...stripClientTimestamps(mov),
+          createdAt: serverTimestamp(),
+        });
+        batch.delete(doc(db!, sourcePath));
+
+        for (const prod of products) {
+          const specs = prod.recipeIngredients || [];
+          const hasSpec = specs.some((s) => s.inventoryItemId === source.id);
+          const hasAddon = (prod.addonOptions || []).some((a) => a.inventoryItemId === source.id);
+          if (!hasSpec && !hasAddon) continue;
+
+          const mergedMap = new Map<string, RecipeIngredientSpec>();
+          for (const spec of specs) {
+            const inventoriable = spec.inventoriable !== false && Boolean(spec.inventoryItemId);
+            if (!inventoriable) {
+              const nonInvKey = `noninv:${normalizeIngredientKey(spec.name)}`;
+              const existingNonInv = mergedMap.get(nonInvKey);
+              if (existingNonInv) {
+                existingNonInv.removable = existingNonInv.removable || spec.removable;
+              } else {
+                mergedMap.set(nonInvKey, {
+                  inventoryItemId: '',
+                  name: spec.name,
+                  quantity: 0,
+                  unit: spec.unit === 'ud' ? 'ud' : 'g',
+                  removable: spec.removable,
+                  inventoriable: false,
+                });
+              }
+              continue;
+            }
+            const mappedId = spec.inventoryItemId === source.id ? target.id : spec.inventoryItemId;
+            const mappedName = spec.inventoryItemId === source.id ? target.name : spec.name;
+            const mappedUnit = spec.inventoryItemId === source.id ? target.unit : spec.unit;
+            const invKey = `inv:${mappedId}`;
+            const existingSpec = mergedMap.get(invKey);
+            if (existingSpec) {
+              existingSpec.quantity = roundStockQty(existingSpec.quantity + (spec.quantity || 0));
+              existingSpec.removable = existingSpec.removable || spec.removable;
+            } else {
+              mergedMap.set(invKey, {
+                inventoryItemId: mappedId,
+                name: mappedName,
+                quantity: spec.quantity || 0,
+                unit: mappedUnit,
+                removable: spec.removable,
+              });
+            }
+          }
+          const split = splitProductRecipeFromSpecs(Array.from(mergedMap.values()));
+          const nextAddons = (prod.addonOptions || []).map((a) =>
+            a.inventoryItemId === source.id ? { ...a, inventoryItemId: target.id } : a
+          );
+          batch.update(doc(db!, `workspaces/${SHARED_WORKSPACE_ID}/products/${prod.id}`), {
+            baseRecipe: split.baseRecipe,
+            removableOptions: split.removableOptions,
+            recipeIngredients: split.recipeIngredients,
+            addonOptions: nextAddons,
+            updatedAt: serverTimestamp(),
+          });
+          if (publicStorefrontExists) {
+            batch.set(
+              doc(db!, `publicStorefronts/${SHARED_WORKSPACE_ID}/products/${prod.id}`),
+              toPublicProductPayload({
+                ...prod,
+                baseRecipe: split.baseRecipe,
+                removableOptions: split.removableOptions,
+                addonOptions: nextAddons,
+              })
+            );
+          }
+        }
+        await batch.commit();
+      } catch (err) {
+        handleFirestoreError(err, OperationType.UPDATE, sourcePath);
+      }
+    },
+    [requireAdmin, requireCloud, inventory, products, buildInventoryMovementRecord, publicStorefrontExists]
+  );
+
+  const unifyCatalogInventory = useCallback(async (): Promise<{
+    createdCount: number;
+    updatedProductsCount: number;
+  }> => {
+    requireAdmin();
+    requireCloud();
+    const plan = buildUnifiedInventoryPlan(products, inventory);
+    if (plan.newItemsToCreate.length === 0 && plan.productPatches.length === 0) {
+      return { createdCount: 0, updatedProductsCount: 0 };
+    }
+
+    type Op = () => void;
+    const batches: Array<ReturnType<typeof writeBatch>> = [];
+    let currentBatch = writeBatch(db!);
+    let opCount = 0;
+
+    const enqueue = (apply: (b: ReturnType<typeof writeBatch>) => void) => {
+      if (opCount >= 400) {
+        batches.push(currentBatch);
+        currentBatch = writeBatch(db!);
+        opCount = 0;
+      }
+      apply(currentBatch);
+      opCount += 1;
+    };
+
+    for (const item of plan.newItemsToCreate) {
+      const invDoc = {
+        id: item.id,
+        name: item.name,
+        nameKey: item.nameKey,
+        unit: item.unit,
+        currentStock: 0,
+        minStock: 0,
+        unitCost: 0,
+        lastPurchaseQuantity: 0,
+        lastPurchaseTotalCost: 0,
+        active: true,
+        ownerUid: workspaceOwnerUid,
+        createdByUid: actorUid,
+        allowedEmails: authorizedEmails,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      };
+      enqueue((b) =>
+        b.set(doc(db!, `workspaces/${SHARED_WORKSPACE_ID}/inventory/${item.id}`), invDoc)
+      );
+    }
+
+    for (const patch of plan.productPatches) {
+      enqueue((b) =>
+        b.update(doc(db!, `workspaces/${SHARED_WORKSPACE_ID}/products/${patch.productId}`), {
+          baseRecipe: patch.baseRecipe,
+          removableOptions: patch.removableOptions,
+          recipeIngredients: patch.recipeIngredients,
+          updatedAt: serverTimestamp(),
+        })
+      );
+      if (publicStorefrontExists) {
+        const prod = products.find((p) => p.id === patch.productId);
+        if (prod) {
+          enqueue((b) =>
+            b.set(
+              doc(db!, `publicStorefronts/${SHARED_WORKSPACE_ID}/products/${patch.productId}`),
+              toPublicProductPayload({
+                ...prod,
+                baseRecipe: patch.baseRecipe,
+                removableOptions: patch.removableOptions,
+              })
+            )
+          );
+        }
+      }
+    }
+
+    if (opCount > 0) batches.push(currentBatch);
+    const runAll: Op = () => undefined;
+    void runAll;
+
+    try {
+      for (const b of batches) {
+        await b.commit();
+      }
+    } catch (err) {
+      handleFirestoreError(err, OperationType.UPDATE, `workspaces/${SHARED_WORKSPACE_ID}/inventory`);
+    }
+
+    return {
+      createdCount: plan.newItemsToCreate.length,
+      updatedProductsCount: plan.productPatches.length,
+    };
+  }, [
+    requireAdmin,
+    requireCloud,
+    products,
+    inventory,
+    workspaceOwnerUid,
+    actorUid,
+    authorizedEmails,
+    publicStorefrontExists,
+  ]);
+
+  // Auto-unify existing pre-inventory workspaces once on admin load
+  useEffect(() => {
+    if (
+      sessionMode === 'cloud' &&
+      isAdmin &&
+      cloudReadyForUid === firebaseUser?.uid &&
+      inventoryLoaded &&
+      !loadingData &&
+      !autoUnifyTriggeredRef.current &&
+      inventory.length === 0 &&
+      products.length > 0 &&
+      products.every((p) => !p.recipeIngredients || p.recipeIngredients.length === 0)
+    ) {
+      autoUnifyTriggeredRef.current = true;
+      void unifyCatalogInventory().catch(() => undefined);
+    }
+  }, [
+    sessionMode,
+    isAdmin,
+    cloudReadyForUid,
+    firebaseUser?.uid,
+    inventoryLoaded,
+    loadingData,
+    inventory.length,
+    products,
+    unifyCatalogInventory,
+  ]);
+
+  // Auto-publish public storefront catalog once for existing workspaces that predate Autoservicio
+  useEffect(() => {
+    if (
+      sessionMode === 'cloud' &&
+      isAdmin &&
+      cloudReadyForUid === firebaseUser?.uid &&
+      publicStorefrontChecked &&
+      !publicStorefrontExists &&
+      !loadingData &&
+      !autoStorefrontSyncRef.current &&
+      Boolean(workspaceOwnerUid)
+    ) {
+      autoStorefrontSyncRef.current = true;
+      void syncPublicStorefrontCatalog({
+        ownerUid: workspaceOwnerUid,
+        businessName: billingConfig.businessName,
+        selfServiceConfig,
+        products,
+        sauces,
+      }).catch(() => undefined);
+    }
+  }, [
+    sessionMode,
+    isAdmin,
+    cloudReadyForUid,
+    firebaseUser?.uid,
+    publicStorefrontChecked,
+    publicStorefrontExists,
+    loadingData,
+    workspaceOwnerUid,
+    billingConfig.businessName,
+    selfServiceConfig,
+    products,
+    sauces,
+  ]);
+
+  const registerBulkPurchaseInvoice = useCallback(
+    async (input: RegisterBulkPurchaseInput): Promise<PurchaseInvoice> => {
+      requireAdmin();
+      requireCloud();
+
+      const normalizedLines: PurchaseInvoiceLine[] = input.lines.map((l, idx) =>
+        normalizeInvoiceLine({
+          ...l,
+          id: l.id || createSafeId(`pl_${idx}`),
+        })
+      );
+
+      const validation = validatePurchaseInvoiceDraft({
+        receiptCode: input.receiptCode,
+        lines: normalizedLines,
+      });
+      if (!validation.valid) {
+        throw new Error(validation.error || 'Verifica los datos de la colilla.');
+      }
+
+      const resolvedSupplier = await syncCustomCustomerRecord(input.supplier);
+      const totals = calculateInvoiceTotals(normalizedLines);
+      const aggregated = aggregateInventoriablePurchases(normalizedLines);
+      const invMap = new Map(inventory.map((i) => [i.id, i]));
+
+      // Ensure any freshly-created ingredient not yet reflected in local snapshot is verified
+      for (const agg of aggregated) {
+        if (!invMap.has(agg.inventoryItemId)) {
+          const snap = await getDoc(
+            doc(db!, `workspaces/${SHARED_WORKSPACE_ID}/inventory/${agg.inventoryItemId}`)
+          );
+          if (!snap.exists()) {
+            throw new Error(
+              'Uno de los ingredientes seleccionados ya no existe en el inventario.'
+            );
+          }
+          invMap.set(agg.inventoryItemId, mapInventoryItemDoc(snap.data(), snap.id));
+        }
+      }
+
+      const now = Date.now();
+      const invoiceId = createSafeId('pinv');
+      const safeActorName =
+        (activeWaiter?.name || firebaseUser?.displayName || actorEmail || 'Administrador')
+          .trim()
+          .slice(0, 80) || 'Administrador';
+
+      const invoice: PurchaseInvoice = {
+        id: invoiceId,
+        receiptCode: validation.normalizedCode,
+        supplierId: resolvedSupplier.customerId,
+        supplierDocument: resolvedSupplier.customerDocument,
+        supplierName: resolvedSupplier.customerName,
+        supplierPhone: resolvedSupplier.customerPhone,
+        supplierEmail: resolvedSupplier.customerEmail,
+        paymentMethod: (input.paymentMethod || 'efectivo').trim().slice(0, 40),
+        notes: (input.notes || '').trim().slice(0, 300),
+        lines: normalizedLines,
+        inventoriableTotal: totals.inventoriableTotal,
+        expensesTotal: totals.expensesTotal,
+        grandTotal: totals.grandTotal,
+        actorName: safeActorName,
+        actorUid,
+        ownerUid: workspaceOwnerUid,
+        createdByUid: actorUid,
+        allowedEmails: authorizedEmails,
+        createdAtMs: now,
+        updatedAtMs: now,
+      };
+
+      const invoicePath = `workspaces/${SHARED_WORKSPACE_ID}/purchaseInvoices/${invoiceId}`;
+      try {
+        const batch = writeBatch(db!);
+        batch.set(doc(db!, invoicePath), {
+          ...stripClientTimestamps(invoice),
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
+
+        for (const agg of aggregated) {
+          const item = invMap.get(agg.inventoryItemId);
+          if (!item) continue;
+          batch.update(doc(db!, `workspaces/${SHARED_WORKSPACE_ID}/inventory/${item.id}`), {
+            currentStock: increment(agg.addedQuantity),
+            unitCost: agg.weightedUnitCost,
+            lastPurchaseQuantity: agg.addedQuantity,
+            lastPurchaseTotalCost: agg.totalCost,
+            allowedEmails: authorizedEmails,
+            updatedAt: serverTimestamp(),
+          });
+        }
+
+        for (const line of normalizedLines) {
+          if (line.kind !== 'inventariable' || !line.inventoryItemId || line.quantity <= 0) {
+            continue;
+          }
+          const item = invMap.get(line.inventoryItemId);
+          if (!item) continue;
+          const mov = buildInventoryMovementRecord({
+            inventoryItemId: item.id,
+            ingredientName: item.name,
+            unit: item.unit,
+            type: 'compra',
+            quantityDelta: line.quantity,
+            purchaseTotalCost: line.totalCost,
+            calculatedUnitCost: line.calculatedUnitCost,
+            notes: `Colilla ${validation.normalizedCode} · ${resolvedSupplier.customerName}`.slice(
+              0,
+              300
+            ),
+          });
+          batch.set(
+            doc(db!, `workspaces/${SHARED_WORKSPACE_ID}/inventoryMovements/${mov.id}`),
+            {
+              ...stripClientTimestamps(mov),
+              createdAt: serverTimestamp(),
+            }
+          );
+        }
+
+        await batch.commit();
+      } catch (err) {
+        handleFirestoreError(err, OperationType.CREATE, invoicePath);
+      }
+
+      return invoice;
+    },
+    [
+      requireAdmin,
+      requireCloud,
+      syncCustomCustomerRecord,
+      inventory,
+      activeWaiter?.name,
+      firebaseUser?.displayName,
+      actorEmail,
+      actorUid,
+      workspaceOwnerUid,
+      authorizedEmails,
+      buildInventoryMovementRecord,
+    ]
+  );
+
+  const deletePurchaseInvoice = useCallback(
+    async (invoiceId: string) => {
+      requireAdmin();
+      requireCloud();
+      const path = `workspaces/${SHARED_WORKSPACE_ID}/purchaseInvoices/${invoiceId}`;
+      try {
+        await deleteDoc(doc(db!, path));
+      } catch (err) {
+        handleFirestoreError(err, OperationType.DELETE, path);
+      }
+    },
+    [requireAdmin, requireCloud]
+  );
+
+  const deleteWorkspaceNotification = useCallback(
+    async (notifId: string) => {
+      requireAdmin();
+      requireCloud();
+      const path = `workspaces/${SHARED_WORKSPACE_ID}/notifications/${notifId}`;
       try {
         await deleteDoc(doc(db!, path));
       } catch (err) {
@@ -2185,6 +4072,12 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     openShift,
     customers,
     billingConfig,
+    selfServiceConfig,
+    inventory,
+    inventoryMovements,
+    notifications,
+    notificationsLoaded,
+    purchaseInvoices,
 
     activeWaiter,
     myLinkedStaff,
@@ -2223,11 +4116,22 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     updateAuthorizedEmails,
     updateAllowSelfRegistration,
     saveBillingConfig,
+    saveSelfServiceConfig,
+    uploadPaymentQrImage,
     upsertCustomer,
     deleteCustomerRecord,
     openCashShift,
     closeCashShift,
     deleteShiftRecord,
+    saveInventoryItem,
+    registerInventoryPurchase,
+    adjustInventoryStock,
+    deleteInventoryItem,
+    mergeInventoryItems,
+    unifyCatalogInventory,
+    registerBulkPurchaseInvoice,
+    deletePurchaseInvoice,
+    deleteWorkspaceNotification,
   };
 
   return <PosContext.Provider value={value}>{children}</PosContext.Provider>;
