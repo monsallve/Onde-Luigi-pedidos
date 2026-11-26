@@ -1,6 +1,6 @@
 /* Isolated Service Worker exclusively for O'NDE LUIGI POS PWA (/pos/ scope) */
 
-const CACHE_VERSION = 'v2';
+const CACHE_VERSION = 'v3';
 const SHELL_CACHE = `ondeluigi-pos-shell-${CACHE_VERSION}`;
 const ASSET_CACHE = `ondeluigi-pos-assets-${CACHE_VERSION}`;
 const FONT_CACHE = `ondeluigi-pos-fonts-${CACHE_VERSION}`;

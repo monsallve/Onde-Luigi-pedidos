@@ -1,6 +1,6 @@
 /* Isolated Service Worker exclusively for O'NDE LUIGI Autoservicio PWA (/autoservicio/ scope) */
 
-const CACHE_VERSION = 'v3';
+const CACHE_VERSION = 'v4';
 const SHELL_CACHE = `ondeluigi-autoservicio-shell-${CACHE_VERSION}`;
 const ASSET_CACHE = `ondeluigi-autoservicio-assets-${CACHE_VERSION}`;
 const FONT_CACHE = `ondeluigi-autoservicio-fonts-${CACHE_VERSION}`;
