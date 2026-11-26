@@ -23,7 +23,6 @@ import { EmailVerificationModal } from './components/EmailVerificationModal';
 import { NotificationCenter } from './components/NotificationCenter';
 import { OrderComposerModal } from './components/OrderComposerModal';
 import { PaymentSheetModal } from './components/PaymentSheetModal';
-import { PWAInstallButton } from './components/PWAInstallBanner';
 import { SettingsModal } from './components/SettingsModal';
 import { ShiftModal } from './components/ShiftModal';
 import { WaiterSelectorModal } from './components/WaiterSelectorModal';
@@ -57,9 +56,6 @@ const PaymentSettingsAdminView = lazy(() =>
   import('./views/PaymentSettingsAdminView').then((m) => ({
     default: m.PaymentSettingsAdminView,
   }))
-);
-const SelfServiceView = lazy(() =>
-  import('./views/SelfServiceView').then((m) => ({ default: m.SelfServiceView }))
 );
 
 const MOBILE_PRIMARY_TAB_IDS = new Set<AppTab>([
@@ -702,7 +698,6 @@ const PosShell: React.FC = () => {
                 onNavigateTab={navigateToTab}
                 onOpenShiftModal={() => setShiftModalOpen(true)}
               />
-              <PWAInstallButton compact />
               <button
                 type="button"
                 onClick={() => setSettingsOpen(true)}
@@ -1099,84 +1094,7 @@ const PosShell: React.FC = () => {
   );
 };
 
-interface SelfServiceRouteState {
-  isSelfService: boolean;
-  orderId?: string;
-}
-
-function resolveSelfServiceRoute(): SelfServiceRouteState {
-  if (typeof window === 'undefined') {
-    return { isSelfService: false };
-  }
-  const searchParams = new URLSearchParams(window.location.search);
-  const pathname = window.location.pathname.toLowerCase();
-  const hash = window.location.hash || '';
-  const hashLower = hash.toLowerCase();
-  const hashQueryIndex = hash.indexOf('?');
-  const hashParams =
-    hashQueryIndex >= 0
-      ? new URLSearchParams(hash.slice(hashQueryIndex + 1))
-      : new URLSearchParams();
-
-  const isSelfService =
-    searchParams.get('autoservicio') === '1' ||
-    hashParams.get('autoservicio') === '1' ||
-    pathname === '/autoservicio' ||
-    pathname.endsWith('/autoservicio') ||
-    hashLower.startsWith('#/autoservicio');
-
-  const rawOrderId =
-    searchParams.get('pedido')?.trim() || hashParams.get('pedido')?.trim() || '';
-
-  return {
-    isSelfService,
-    orderId: rawOrderId || undefined,
-  };
-}
-
 export default function App() {
-  const [selfServiceRoute, setSelfServiceRoute] = useState<SelfServiceRouteState>(
-    () => resolveSelfServiceRoute()
-  );
-
-  useEffect(() => {
-    const syncRoute = () => {
-      setSelfServiceRoute(resolveSelfServiceRoute());
-    };
-    window.addEventListener('popstate', syncRoute);
-    window.addEventListener('hashchange', syncRoute);
-    return () => {
-      window.removeEventListener('popstate', syncRoute);
-      window.removeEventListener('hashchange', syncRoute);
-    };
-  }, []);
-
-  if (selfServiceRoute.isSelfService) {
-    return (
-      <ErrorBoundary>
-        <Suspense
-          fallback={
-            <div
-              className="min-h-screen bg-[#0A0A0A] text-white flex flex-col items-center justify-center p-6 gap-4"
-              role="status"
-              aria-live="polite"
-            >
-              <div
-                className="w-10 h-10 rounded-full border-4 border-[#27272E] border-t-amber-500 animate-spin"
-                aria-hidden="true"
-              />
-              <p className="text-xs font-semibold text-zinc-400">
-                Cargando carta de autoservicio...
-              </p>
-            </div>
-          }
-        >
-          <SelfServiceView initialOrderId={selfServiceRoute.orderId} />
-        </Suspense>
-      </ErrorBoundary>
-    );
-  }
-
   return (
     <ErrorBoundary>
       <PosProvider>

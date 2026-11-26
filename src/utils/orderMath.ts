@@ -282,7 +282,16 @@ export function resolveAssetUrl(pathOrUrl: string): string {
     return pathOrUrl;
   }
   const metaEnv = (import.meta as { env?: { BASE_URL?: string } }).env;
-  const base = metaEnv?.BASE_URL || '/';
+  let base = metaEnv?.BASE_URL || '/';
+  if (
+    base === './' &&
+    typeof window !== 'undefined' &&
+    /\/autoservicio(\/|\/index\.html)?$/i.test(window.location.pathname)
+  ) {
+    base = window.location.pathname.endsWith('/') || /\/index\.html$/i.test(window.location.pathname)
+      ? '../'
+      : './';
+  }
   const normalizedBase = base.endsWith('/') ? base : `${base}/`;
   const cleanPath = pathOrUrl.replace(/^\/+/, '');
   return `${normalizedBase}${cleanPath}`;

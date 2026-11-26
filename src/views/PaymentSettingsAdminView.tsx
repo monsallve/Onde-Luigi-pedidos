@@ -16,6 +16,7 @@ import {
 import { SelfServiceQrCard } from '../components/SelfServiceQrCard';
 import { usePosStore } from '../services/posStore';
 import type { SelfServicePaymentConfig } from '../types/pos';
+import { buildPublicAutoservicioLink } from '../utils/autoservicioRouteGuard';
 import { ROLE_LABELS } from '../utils/rolePermissions';
 
 export const PaymentSettingsAdminView: React.FC = () => {
@@ -51,8 +52,8 @@ export const PaymentSettingsAdminView: React.FC = () => {
 
   const publicUrl =
     typeof window !== 'undefined'
-      ? `${window.location.origin}${window.location.pathname}?autoservicio=1`
-      : '?autoservicio=1';
+      ? buildPublicAutoservicioLink(window.location.href)
+      : './autoservicio/';
 
   const previewConfig = useMemo<SelfServicePaymentConfig>(
     () => ({
@@ -240,7 +241,7 @@ export const PaymentSettingsAdminView: React.FC = () => {
           </button>
 
           <a
-            href="?autoservicio=1"
+            href={publicUrl}
             target="_blank"
             rel="noopener noreferrer"
             className="min-h-[38px] px-3 rounded-xl border border-amber-700/70 bg-amber-950/30 text-amber-300 text-xs font-bold hover:bg-amber-950/60 inline-flex items-center gap-1.5"

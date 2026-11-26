@@ -57,6 +57,7 @@ import {
   validateSelfServiceCheckout,
 } from '../utils/selfServiceMath';
 import { SelfServiceCustomizeModal } from '../components/SelfServiceCustomizeModal';
+import { SelfServiceInstallButton } from '../components/SelfServiceInstallButton';
 import { SelfServiceQrCard } from '../components/SelfServiceQrCard';
 
 interface Props {
@@ -132,13 +133,13 @@ function updateUrlOrderParam(orderId: string): void {
   if (typeof window === 'undefined') return;
   try {
     const url = new URL(window.location.href);
-    url.searchParams.set('autoservicio', '1');
+    url.searchParams.delete('autoservicio');
     if (orderId) {
       url.searchParams.set('pedido', orderId);
     } else {
       url.searchParams.delete('pedido');
     }
-    window.history.replaceState({}, '', url.pathname + url.search + url.hash);
+    window.history.replaceState(window.history.state, '', url.pathname + url.search + url.hash);
   } catch {
     // ignore URL errors
   }
@@ -1118,6 +1119,8 @@ export const SelfServiceView: React.FC<Props> = ({ initialOrderId }) => {
           </div>
 
           <div className="flex items-center gap-2 shrink-0">
+            <SelfServiceInstallButton />
+
             {activeOrderId && (
               <button
                 type="button"

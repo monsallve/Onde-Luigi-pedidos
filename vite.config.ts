@@ -2,8 +2,91 @@ import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
 import fs from 'fs';
 import path from 'path';
+import type { Plugin } from 'vite';
 import { defineConfig } from 'vite';
-import { VitePWA } from 'vite-plugin-pwa';
+
+function extractAutoservicioHtmlAssets(html: string): string[] {
+  const assets = new Set<string>();
+  const attrRegex = /\b(?:src|href)=["']([^"']*\/assets\/[^"'?#]+)["']/gi;
+  let match: RegExpExecArray | null = attrRegex.exec(html);
+  while (match) {
+    const rawRef = match[1];
+    if (rawRef) {
+      assets.add(rawRef);
+    }
+    match = attrRegex.exec(html);
+  }
+  return Array.from(assets);
+}
+
+function isolatedAutoservicioPwaPlugin(): Plugin {
+  const attachAutoservicioRouting = (
+    middlewares: {
+      use: (
+        fn: (
+          req: { url?: string },
+          res: { statusCode: number; setHeader: (k: string, v: string) => void; end: () => void },
+          next: () => void
+        ) => void
+      ) => void;
+    }
+  ) => {
+    middlewares.use((req, res, next) => {
+      const rawUrl = req.url || '/';
+      const qIndex = rawUrl.indexOf('?');
+      const pathname = qIndex >= 0 ? rawUrl.slice(0, qIndex) : rawUrl;
+      const search = qIndex >= 0 ? rawUrl.slice(qIndex) : '';
+
+      if (/\/autoservicio$/i.test(pathname)) {
+        res.statusCode = 302;
+        res.setHeader('Location', `${pathname}/${search}`);
+        res.end();
+        return;
+      }
+
+      if (/\/autoservicio\/$/i.test(pathname)) {
+        req.url = `/autoservicio/index.html${search}`;
+      }
+
+      next();
+    });
+  };
+
+  return {
+    name: 'isolated-autoservicio-pwa',
+    configureServer(server) {
+      attachAutoservicioRouting(server.middlewares);
+    },
+    configurePreviewServer(server) {
+      attachAutoservicioRouting(server.middlewares);
+    },
+    closeBundle(error?: Error): void {
+      if (error) {
+        return;
+      }
+      const distDir = path.resolve(__dirname, 'dist');
+      const autoservicioHtmlPath = path.resolve(distDir, 'autoservicio/index.html');
+      const autoservicioSwPath = path.resolve(distDir, 'autoservicio/sw.js');
+
+      if (!fs.existsSync(autoservicioHtmlPath) || !fs.existsSync(autoservicioSwPath)) {
+        return;
+      }
+
+      const html = fs.readFileSync(autoservicioHtmlPath, 'utf8');
+      const precacheAssets = extractAutoservicioHtmlAssets(html);
+      const swContent = fs.readFileSync(autoservicioSwPath, 'utf8');
+      const placeholder = '/* @__AUTOSERVICIO_PRECACHE__ */ []';
+
+      if (swContent.includes(placeholder)) {
+        const updatedSw = swContent.replace(
+          placeholder,
+          JSON.stringify(precacheAssets)
+        );
+        fs.writeFileSync(autoservicioSwPath, updatedSw, 'utf8');
+      }
+    },
+  };
+}
 
 export default defineConfig(() => {
   return {
@@ -11,103 +94,7 @@ export default defineConfig(() => {
     plugins: [
       react(),
       tailwindcss(),
-      VitePWA({
-        registerType: 'autoUpdate',
-        includeAssets: [
-          'onde-luigi-logo.png',
-          'onde-luigi-banner.jpg',
-          'apple-touch-icon.png',
-          'pwa-192x192.png',
-          'pwa-512x512.png',
-          'pwa-maskable-512x512.png',
-          'sw-notifications.js',
-        ],
-        manifest: {
-          id: './',
-          name: "O'NDE LUIGI — Pedidos y Ventas",
-          short_name: "O'NDE LUIGI",
-          description:
-            "PWA interna O'NDE LUIGI para toma rápida de pedidos, personalización de recetas y salsas, comprobantes y control de ventas.",
-          theme_color: '#0A0A0A',
-          background_color: '#0A0A0A',
-          display: 'standalone',
-          orientation: 'portrait-primary',
-          start_url: './',
-          scope: './',
-          lang: 'es',
-          icons: [
-            {
-              src: './pwa-192x192.png',
-              sizes: '192x192',
-              type: 'image/png',
-              purpose: 'any',
-            },
-            {
-              src: './pwa-512x512.png',
-              sizes: '512x512',
-              type: 'image/png',
-              purpose: 'any',
-            },
-            {
-              src: './pwa-maskable-512x512.png',
-              sizes: '512x512',
-              type: 'image/png',
-              purpose: 'maskable',
-            },
-          ],
-        },
-        workbox: {
-          importScripts: ['./sw-notifications.js'],
-          skipWaiting: true,
-          clientsClaim: true,
-          cleanupOutdatedCaches: true,
-          navigateFallback: null,
-          maximumFileSizeToCacheInBytes: 5 * 1024 * 1024,
-          globPatterns: ['**/*.{js,css,ico,png,svg,jpg,woff,woff2}'],
-          globIgnores: ['**/assets/aistudio/**'],
-          runtimeCaching: [
-            {
-              urlPattern: ({ request }) => request.mode === 'navigate',
-              handler: 'NetworkFirst',
-              options: {
-                cacheName: 'pages-cache',
-                networkTimeoutSeconds: 4,
-              },
-            },
-            {
-              urlPattern: /^https:\/\/fonts\.googleapis\.com\/.*/i,
-              handler: 'CacheFirst',
-              options: {
-                cacheName: 'google-fonts-cache',
-                expiration: {
-                  maxEntries: 10,
-                  maxAgeSeconds: 60 * 60 * 24 * 365,
-                },
-                cacheableResponse: {
-                  statuses: [0, 200],
-                },
-              },
-            },
-            {
-              urlPattern: /^https:\/\/fonts\.gstatic\.com\/.*/i,
-              handler: 'CacheFirst',
-              options: {
-                cacheName: 'gstatic-fonts-cache',
-                expiration: {
-                  maxEntries: 10,
-                  maxAgeSeconds: 60 * 60 * 24 * 365,
-                },
-                cacheableResponse: {
-                  statuses: [0, 200],
-                },
-              },
-            },
-          ],
-        },
-        devOptions: {
-          enabled: true,
-        },
-      }),
+      isolatedAutoservicioPwaPlugin(),
       // Copies src/assets into dist/ so root-relative URLs like
       // "/src/assets/images/..." (e.g. generate_image output) still resolve
       // in production builds. Do not remove.
@@ -127,6 +114,14 @@ export default defineConfig(() => {
         },
       },
     ],
+    build: {
+      rollupOptions: {
+        input: {
+          main: path.resolve(__dirname, 'index.html'),
+          autoservicio: path.resolve(__dirname, 'autoservicio/index.html'),
+        },
+      },
+    },
     resolve: {
       alias: {
         '@': path.resolve(__dirname, '.'),

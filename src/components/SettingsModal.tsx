@@ -21,10 +21,10 @@ import {
 import { usePosStore } from '../services/posStore';
 import { ADMIN_BOOTSTRAP_EMAIL } from '../data/initialCatalog';
 import type { BusinessBillingConfig, SelfServicePaymentConfig, StaffRole } from '../types/pos';
+import { buildPublicAutoservicioLink } from '../utils/autoservicioRouteGuard';
 import { resolveAssetUrl } from '../utils/orderMath';
 import { ROLE_DESCRIPTIONS, ROLE_LABELS } from '../utils/rolePermissions';
 import { buildBrandVerificationEmailHtml } from '../utils/verificationEmailTemplate';
-import { PWAInstallButton } from './PWAInstallBanner';
 
 interface Props {
   open: boolean;
@@ -126,8 +126,8 @@ export const SettingsModal: React.FC<Props> = ({
 
   const selfServicePublicUrl =
     typeof window !== 'undefined'
-      ? `${window.location.origin}${window.location.pathname}?autoservicio=1`
-      : '?autoservicio=1';
+      ? buildPublicAutoservicioLink(window.location.href)
+      : './autoservicio/';
 
   const handleQrFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -760,7 +760,7 @@ export const SettingsModal: React.FC<Props> = ({
                   </button>
 
                   <a
-                    href="?autoservicio=1"
+                    href={selfServicePublicUrl}
                     target="_blank"
                     rel="noopener noreferrer"
                     className="min-h-[40px] px-3 rounded-xl border border-amber-700/70 bg-amber-950/30 text-amber-300 text-xs font-bold hover:bg-amber-950/60 inline-flex items-center gap-1.5"
@@ -1068,8 +1068,6 @@ export const SettingsModal: React.FC<Props> = ({
           </section>
 
           <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-[#27272E]">
-            <PWAInstallButton />
-
             <button
               type="button"
               onClick={async () => {
