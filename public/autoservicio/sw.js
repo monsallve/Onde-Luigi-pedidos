@@ -1,6 +1,6 @@
-/* Isolated Service Worker exclusively for O'NDE LUIGI Autoservicio PWA */
+/* Isolated Service Worker exclusively for O'NDE LUIGI Autoservicio PWA (/autoservicio/ scope) */
 
-const CACHE_VERSION = 'v1';
+const CACHE_VERSION = 'v2';
 const SHELL_CACHE = `ondeluigi-autoservicio-shell-${CACHE_VERSION}`;
 const ASSET_CACHE = `ondeluigi-autoservicio-assets-${CACHE_VERSION}`;
 const FONT_CACHE = `ondeluigi-autoservicio-fonts-${CACHE_VERSION}`;
@@ -11,13 +11,13 @@ const BUILD_PRECACHE_ASSETS = /* @__AUTOSERVICIO_PRECACHE__ */ [];
 const CORE_SHELL_PATHS = [
   './',
   './index.html',
-  './manifest.webmanifest',
+  '../manifest-autoservicio.webmanifest',
   './pwa-192x192.png',
   './pwa-512x512.png',
   './pwa-maskable-512x512.png',
   './apple-touch-icon.png',
   './icon.svg',
-  './onde-luigi-logo.png',
+  '../onde-luigi-logo.png',
 ];
 
 function isBypassedFirebaseOrApiHost(hostname) {
@@ -160,11 +160,13 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  // Never cache POS root files or POS notification SW
+  // Never cache POS files or POS service worker
   if (
     url.pathname === '/' ||
+    /\/pos(\/|$)/i.test(url.pathname) ||
     url.pathname.endsWith('/sw-notifications.js') ||
-    url.pathname.endsWith('/sw.js') && !url.pathname.startsWith(scopePath)
+    url.pathname.endsWith('/sw-pos.js') ||
+    url.pathname.endsWith('/manifest-pos.webmanifest')
   ) {
     return;
   }
@@ -175,9 +177,10 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  // Stale-while-revalidate for /autoservicio/ assets and /menu/ product photos
+  // Stale-while-revalidate for /autoservicio/ assets, manifest, and /menu/ product photos
   if (
     url.pathname.startsWith(scopePath) ||
+    url.pathname.endsWith('/manifest-autoservicio.webmanifest') ||
     /\/menu\/.+\.(png|jpg|jpeg|webp|svg)$/i.test(url.pathname)
   ) {
     event.respondWith(staleWhileRevalidate(request, ASSET_CACHE));

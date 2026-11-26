@@ -286,7 +286,7 @@ export function resolveAssetUrl(pathOrUrl: string): string {
   if (
     base === './' &&
     typeof window !== 'undefined' &&
-    /\/autoservicio(\/|\/index\.html)?$/i.test(window.location.pathname)
+    /\/(?:autoservicio|pos)(\/|\/index\.html)?$/i.test(window.location.pathname)
   ) {
     base = window.location.pathname.endsWith('/') || /\/index\.html$/i.test(window.location.pathname)
       ? '../'

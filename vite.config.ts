@@ -5,7 +5,7 @@ import path from 'path';
 import type { Plugin } from 'vite';
 import { defineConfig } from 'vite';
 
-function extractAutoservicioHtmlAssets(html: string): string[] {
+function extractHtmlBundleAssets(html: string): string[] {
   const assets = new Set<string>();
   const attrRegex = /\b(?:src|href)=["']([^"']*\/assets\/[^"'?#]+)["']/gi;
   let match: RegExpExecArray | null = attrRegex.exec(html);
@@ -19,8 +19,28 @@ function extractAutoservicioHtmlAssets(html: string): string[] {
   return Array.from(assets);
 }
 
-function isolatedAutoservicioPwaPlugin(): Plugin {
-  const attachAutoservicioRouting = (
+function injectSwPrecache(
+  distDir: string,
+  htmlRelPath: string,
+  swRelPath: string,
+  placeholder: string
+): void {
+  const htmlPath = path.resolve(distDir, htmlRelPath);
+  const swPath = path.resolve(distDir, swRelPath);
+  if (!fs.existsSync(htmlPath) || !fs.existsSync(swPath)) {
+    return;
+  }
+  const html = fs.readFileSync(htmlPath, 'utf8');
+  const precacheAssets = extractHtmlBundleAssets(html);
+  const swContent = fs.readFileSync(swPath, 'utf8');
+  if (swContent.includes(placeholder)) {
+    const updatedSw = swContent.replace(placeholder, JSON.stringify(precacheAssets));
+    fs.writeFileSync(swPath, updatedSw, 'utf8');
+  }
+}
+
+function dualIsolatedPwaPlugin(): Plugin {
+  const attachDualPwaRouting = (
     middlewares: {
       use: (
         fn: (
@@ -37,6 +57,10 @@ function isolatedAutoservicioPwaPlugin(): Plugin {
       const pathname = qIndex >= 0 ? rawUrl.slice(0, qIndex) : rawUrl;
       const search = qIndex >= 0 ? rawUrl.slice(qIndex) : '';
 
+      if (/\.webmanifest$/i.test(pathname)) {
+        res.setHeader('Content-Type', 'application/manifest+json; charset=utf-8');
+      }
+
       if (/\/autoservicio$/i.test(pathname)) {
         res.statusCode = 302;
         res.setHeader('Location', `${pathname}/${search}`);
@@ -48,42 +72,56 @@ function isolatedAutoservicioPwaPlugin(): Plugin {
         req.url = `/autoservicio/index.html${search}`;
       }
 
+      if (/\/pos$/i.test(pathname)) {
+        res.statusCode = 302;
+        res.setHeader('Location', `${pathname}/${search}`);
+        res.end();
+        return;
+      }
+
+      if (/\/pos\/$/i.test(pathname)) {
+        req.url = `/pos/index.html${search}`;
+      }
+
+      if (/\/admin\/pagos\/?$/i.test(pathname)) {
+        const base = pathname.replace(/\/admin\/pagos\/?$/i, '');
+        const params = new URLSearchParams(search);
+        params.set('tab', 'datos_pago');
+        res.statusCode = 302;
+        res.setHeader('Location', `${base}/pos/?${params.toString()}`);
+        res.end();
+        return;
+      }
+
       next();
     });
   };
 
   return {
-    name: 'isolated-autoservicio-pwa',
+    name: 'dual-isolated-pwa-plugin',
     configureServer(server) {
-      attachAutoservicioRouting(server.middlewares);
+      attachDualPwaRouting(server.middlewares);
     },
     configurePreviewServer(server) {
-      attachAutoservicioRouting(server.middlewares);
+      attachDualPwaRouting(server.middlewares);
     },
     closeBundle(error?: Error): void {
       if (error) {
         return;
       }
       const distDir = path.resolve(__dirname, 'dist');
-      const autoservicioHtmlPath = path.resolve(distDir, 'autoservicio/index.html');
-      const autoservicioSwPath = path.resolve(distDir, 'autoservicio/sw.js');
-
-      if (!fs.existsSync(autoservicioHtmlPath) || !fs.existsSync(autoservicioSwPath)) {
-        return;
-      }
-
-      const html = fs.readFileSync(autoservicioHtmlPath, 'utf8');
-      const precacheAssets = extractAutoservicioHtmlAssets(html);
-      const swContent = fs.readFileSync(autoservicioSwPath, 'utf8');
-      const placeholder = '/* @__AUTOSERVICIO_PRECACHE__ */ []';
-
-      if (swContent.includes(placeholder)) {
-        const updatedSw = swContent.replace(
-          placeholder,
-          JSON.stringify(precacheAssets)
-        );
-        fs.writeFileSync(autoservicioSwPath, updatedSw, 'utf8');
-      }
+      injectSwPrecache(
+        distDir,
+        'pos/index.html',
+        'pos/sw-pos.js',
+        '/* @__POS_PRECACHE__ */ []'
+      );
+      injectSwPrecache(
+        distDir,
+        'autoservicio/index.html',
+        'autoservicio/sw.js',
+        '/* @__AUTOSERVICIO_PRECACHE__ */ []'
+      );
     },
   };
 }
@@ -94,7 +132,7 @@ export default defineConfig(() => {
     plugins: [
       react(),
       tailwindcss(),
-      isolatedAutoservicioPwaPlugin(),
+      dualIsolatedPwaPlugin(),
       // Copies src/assets into dist/ so root-relative URLs like
       // "/src/assets/images/..." (e.g. generate_image output) still resolve
       // in production builds. Do not remove.
@@ -118,6 +156,7 @@ export default defineConfig(() => {
       rollupOptions: {
         input: {
           main: path.resolve(__dirname, 'index.html'),
+          pos: path.resolve(__dirname, 'pos/index.html'),
           autoservicio: path.resolve(__dirname, 'autoservicio/index.html'),
         },
       },

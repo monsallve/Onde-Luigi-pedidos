@@ -25,6 +25,7 @@ import { buildPublicAutoservicioLink } from '../utils/autoservicioRouteGuard';
 import { resolveAssetUrl } from '../utils/orderMath';
 import { ROLE_DESCRIPTIONS, ROLE_LABELS } from '../utils/rolePermissions';
 import { buildBrandVerificationEmailHtml } from '../utils/verificationEmailTemplate';
+import { PWAInstallButton } from './PWAInstallBanner';
 
 interface Props {
   open: boolean;
@@ -289,18 +290,21 @@ export const SettingsModal: React.FC<Props> = ({
       aria-labelledby="settings-modal-title"
     >
       <div className="w-full sm:max-w-lg bg-[#141418] text-white rounded-t-3xl sm:rounded-2xl border border-[#27272E] shadow-2xl overflow-hidden max-h-[90vh] flex flex-col">
-        <div className="px-5 py-4 border-b border-[#27272E] flex items-center justify-between bg-[#101014]">
-          <h2 id="settings-modal-title" className="font-poster text-xl font-extrabold text-white tracking-wide">
+        <div className="px-5 py-4 border-b border-[#27272E] flex items-center justify-between gap-2 bg-[#101014]">
+          <h2 id="settings-modal-title" className="font-poster text-xl font-extrabold text-white tracking-wide truncate">
             AJUSTES, PERMISOS Y EQUIPO
           </h2>
-          <button
-            type="button"
-            onClick={onClose}
-            aria-label="Cerrar ajustes"
-            className="min-h-[44px] min-w-[44px] flex items-center justify-center rounded-xl text-zinc-400 hover:bg-[#1C1C22] hover:text-white"
-          >
-            <X className="w-5 h-5" />
-          </button>
+          <div className="flex items-center gap-2 shrink-0">
+            <PWAInstallButton compact alwaysShowGuideOption />
+            <button
+              type="button"
+              onClick={onClose}
+              aria-label="Cerrar ajustes"
+              className="min-h-[44px] min-w-[44px] flex items-center justify-center rounded-xl text-zinc-400 hover:bg-[#1C1C22] hover:text-white"
+            >
+              <X className="w-5 h-5" />
+            </button>
+          </div>
         </div>
 
         <div className="p-5 overflow-y-auto space-y-6">

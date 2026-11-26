@@ -6,6 +6,8 @@ import {
   extractSafeOrderIdFromUrl,
   isDisallowedPosOrAdminNavigation,
   isInsideAutoservicioPath,
+  isInsidePosPath,
+  resolvePosBasePath,
   shouldPosRedirectToAutoservicio,
 } from './autoservicioRouteGuard.ts';
 
@@ -15,8 +17,23 @@ test('identifies isolated autoservicio paths across root and subpath deployments
   assert.equal(isInsideAutoservicioPath('/autoservicio/index.html'), true);
   assert.equal(isInsideAutoservicioPath('/Onde-Luigi-pedidos/autoservicio/'), true);
   assert.equal(isInsideAutoservicioPath('/'), false);
+  assert.equal(isInsideAutoservicioPath('/pos/'), false);
   assert.equal(isInsideAutoservicioPath('/admin/pagos'), false);
   assert.equal(isInsideAutoservicioPath('/comandas'), false);
+});
+
+test('identifies and resolves isolated /pos/ paths without overlapping /autoservicio/', () => {
+  assert.equal(isInsidePosPath('/pos/'), true);
+  assert.equal(isInsidePosPath('/pos'), true);
+  assert.equal(isInsidePosPath('/pos/index.html'), true);
+  assert.equal(isInsidePosPath('/Onde-Luigi-pedidos/pos/'), true);
+  assert.equal(isInsidePosPath('/'), false);
+  assert.equal(isInsidePosPath('/autoservicio/'), false);
+
+  assert.equal(resolvePosBasePath('/'), '/pos/');
+  assert.equal(resolvePosBasePath('/admin/pagos'), '/pos/');
+  assert.equal(resolvePosBasePath('/Onde-Luigi-pedidos/'), '/Onde-Luigi-pedidos/pos/');
+  assert.equal(resolvePosBasePath('/Onde-Luigi-pedidos/pos/index.html'), '/Onde-Luigi-pedidos/pos/');
 });
 
 test('redirects legacy ?autoservicio=1 and #/autoservicio links from POS root to isolated PWA', () => {
@@ -26,7 +43,7 @@ test('redirects legacy ?autoservicio=1 and #/autoservicio links from POS root to
   );
   assert.equal(
     shouldPosRedirectToAutoservicio({
-      pathname: '/',
+      pathname: '/pos/',
       search: '?autoservicio=1&pedido=self_123_ab',
       hash: '',
     }),
@@ -37,7 +54,7 @@ test('redirects legacy ?autoservicio=1 and #/autoservicio links from POS root to
     true
   );
   assert.equal(
-    shouldPosRedirectToAutoservicio({ pathname: '/', search: '', hash: '' }),
+    shouldPosRedirectToAutoservicio({ pathname: '/pos/', search: '', hash: '' }),
     false
   );
   assert.equal(
@@ -61,6 +78,10 @@ test('flags any POS, admin, or internal tab navigation attempts inside Autoservi
   );
   assert.equal(
     isDisallowedPosOrAdminNavigation({ pathname: '/', search: '', hash: '' }),
+    true
+  );
+  assert.equal(
+    isDisallowedPosOrAdminNavigation({ pathname: '/pos/', search: '', hash: '' }),
     true
   );
   assert.equal(
@@ -118,9 +139,13 @@ test('sanitizes isolated Autoservicio URL preserving valid pedido tracking id an
   );
 });
 
-test('builds clean shareable public Autoservicio PWA links from POS routes', () => {
+test('builds clean shareable public Autoservicio PWA links from POS /pos/ and subpath routes', () => {
   assert.equal(
-    buildPublicAutoservicioLink('https://pos.ondeluigi.com/'),
+    buildPublicAutoservicioLink('https://pos.ondeluigi.com/pos/'),
+    'https://pos.ondeluigi.com/autoservicio/'
+  );
+  assert.equal(
+    buildPublicAutoservicioLink('https://pos.ondeluigi.com/pos/?tab=datos_pago'),
     'https://pos.ondeluigi.com/autoservicio/'
   );
   assert.equal(
@@ -128,7 +153,7 @@ test('builds clean shareable public Autoservicio PWA links from POS routes', () 
     'https://pos.ondeluigi.com/autoservicio/'
   );
   assert.equal(
-    buildPublicAutoservicioLink('https://monsallve.github.io/Onde-Luigi-pedidos/', 'self_1_abc'),
+    buildPublicAutoservicioLink('https://monsallve.github.io/Onde-Luigi-pedidos/pos/', 'self_1_abc'),
     'https://monsallve.github.io/Onde-Luigi-pedidos/autoservicio/?pedido=self_1_abc'
   );
 });

@@ -3,12 +3,22 @@
   <head>
     <meta charset="UTF-8" />
     <script>
-      // Enforce canonical trailing slash on /autoservicio/ so relative manifest, SW, and scope resolve strictly inside /autoservicio/
+      // Enforce canonical trailing slash on /autoservicio/ and inject dedicated /manifest-autoservicio.webmanifest dynamically
       (function () {
         var p = window.location.pathname;
         if (/\/autoservicio$/i.test(p)) {
           window.location.replace(p + '/' + window.location.search + window.location.hash);
+          return;
         }
+        var isPos = /\/pos(\/|\/index\.html)?$/i.test(p);
+        var manifestHref = isPos
+          ? '/manifest-pos.webmanifest'
+          : '/manifest-autoservicio.webmanifest';
+        var link = document.createElement('link');
+        link.id = 'app-pwa-manifest';
+        link.rel = 'manifest';
+        link.href = manifestHref;
+        document.head.appendChild(link);
       })();
     </script>
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
@@ -27,8 +37,7 @@
     <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-    <meta name="apple-mobile-web-app-title" content="O'nde Luigi" />
-    <link rel="manifest" href="./manifest.webmanifest" />
+    <meta name="apple-mobile-web-app-title" content="Luigi Pide" />
     <link rel="apple-touch-icon" href="./apple-touch-icon.png" />
     <link rel="icon" type="image/png" href="./pwa-192x192.png" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />

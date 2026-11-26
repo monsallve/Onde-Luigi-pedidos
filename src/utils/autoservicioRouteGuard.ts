@@ -15,6 +15,33 @@ export function isInsideAutoservicioPath(pathname: string): boolean {
 }
 
 /**
+ * Checks whether the given pathname points strictly to the isolated POS PWA boundary.
+ */
+export function isInsidePosPath(pathname: string): boolean {
+  const clean = (pathname || '').trim().toLowerCase();
+  return /\/pos(\/|\/index\.html)?$/i.test(clean);
+}
+
+/**
+ * Resolves the canonical isolated `/pos/` base path, preserving any host subpath.
+ */
+export function resolvePosBasePath(pathname: string): string {
+  const clean = pathname || '/';
+  const match = clean.match(/^(.*\/pos)(?:\/index\.html|\/)?$/i);
+  if (match && match[1]) {
+    return `${match[1]}/`;
+  }
+  let dir = clean.endsWith('/') ? clean : clean.slice(0, clean.lastIndexOf('/') + 1);
+  if (/\/admin\/?$/i.test(dir)) {
+    dir = dir.replace(/\/admin\/?$/i, '/');
+  }
+  if (/\/autoservicio\/?$/i.test(dir)) {
+    dir = dir.replace(/\/autoservicio\/?$/i, '/');
+  }
+  return `${dir}pos/`;
+}
+
+/**
  * Detects whether a request arriving at the POS root should immediately redirect
  * into the isolated `/autoservicio/` PWA boundary before loading POS code.
  */
@@ -127,6 +154,10 @@ export function buildPublicAutoservicioLink(currentHref: string, orderId?: strin
   let basePath = parsed.pathname || '/';
   if (/\/admin\/pagos\/?$/i.test(basePath)) {
     basePath = basePath.replace(/\/admin\/pagos\/?$/i, '/');
+  } else if (/\/pos(?:\/index\.html|\/)?$/i.test(basePath)) {
+    basePath = basePath.replace(/\/pos(?:\/index\.html|\/)?$/i, '/');
+  } else if (/\/autoservicio(?:\/index\.html|\/)?$/i.test(basePath)) {
+    basePath = basePath.replace(/\/autoservicio(?:\/index\.html|\/)?$/i, '/');
   } else if (!basePath.endsWith('/')) {
     basePath = basePath.slice(0, basePath.lastIndexOf('/') + 1);
   }

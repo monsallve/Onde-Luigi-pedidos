@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Download, MoreVertical, Share, Smartphone, X } from 'lucide-react';
+import { isInsideAutoservicioPath } from '../utils/autoservicioRouteGuard';
 
 interface BeforeInstallPromptEvent extends Event {
   prompt: () => Promise<void>;
@@ -22,6 +23,11 @@ function useSelfServicePwaInstall() {
     const ua = window.navigator.userAgent.toLowerCase();
     setIsIOS(/iphone|ipad|ipod/.test(ua));
     setIsAndroid(/android/.test(ua));
+
+    // Only capture beforeinstallprompt inside the isolated /autoservicio/ scope
+    if (!isInsideAutoservicioPath(window.location.pathname)) {
+      return;
+    }
 
     const onBeforeInstall = (e: Event) => {
       e.preventDefault();
@@ -105,8 +111,8 @@ export const SelfServiceInstallButton: React.FC = () => {
         ) : (
           <Smartphone className="w-3.5 h-3.5 text-amber-400 shrink-0" />
         )}
-        <span className="hidden sm:inline">Instalar app</span>
-        <span className="sm:hidden">App</span>
+        <span className="hidden sm:inline">Instalar Autoservicio</span>
+        <span className="sm:hidden">Instalar</span>
       </button>
 
       {guideOpen &&

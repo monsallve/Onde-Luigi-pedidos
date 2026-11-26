@@ -14,23 +14,72 @@
       content="Sistema interno O'NDE LUIGI para toma ágil de pedidos, personalización de recetas y salsas, comprobantes de transferencia y control de ventas."
     />
     <meta property="og:type" content="website" />
-    <meta name="twitter:card" content="summary_large_image" />
     <meta name="theme-color" content="#0A0A0A" />
-    <meta name="mobile-web-app-capable" content="yes" />
-    <meta name="apple-mobile-web-app-capable" content="yes" />
-    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-    <meta name="apple-mobile-web-app-title" content="O'NDE LUIGI" />
-    <link rel="apple-touch-icon" href="./apple-touch-icon.png" />
     <link rel="icon" type="image/png" href="./onde-luigi-logo.png" />
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link
-      href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@700;800&family=DM+Sans:ital,opsz,wght@0,9..40,400..700;1,9..40,400..700&family=JetBrains+Mono:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@500;600;700;800&display=swap"
-      rel="stylesheet"
-    />
+    <script>
+      // Root "/" is strictly a router gateway (no manifest and no root-scoped Service Worker)
+      // so /pos/ and /autoservicio/ install as 100% independent PWAs with non-overlapping scopes.
+      (function () {
+        var pathname = window.location.pathname || '/';
+        var search = window.location.search || '';
+        var hash = window.location.hash || '';
+        var params = new URLSearchParams(search);
+        var hashLower = hash.toLowerCase();
+        var baseDir = pathname.endsWith('/')
+          ? pathname
+          : pathname.slice(0, pathname.lastIndexOf('/') + 1);
+        if (/\/admin\/?$/i.test(baseDir)) {
+          baseDir = baseDir.replace(/\/admin\/?$/i, '/');
+        }
+        if (/\/pos\/?$/i.test(baseDir)) {
+          baseDir = baseDir.replace(/\/pos\/?$/i, '/');
+        }
+        if (/\/autoservicio\/?$/i.test(baseDir)) {
+          baseDir = baseDir.replace(/\/autoservicio\/?$/i, '/');
+        }
+
+        if (
+          params.get('autoservicio') === '1' ||
+          hashLower.indexOf('#/autoservicio') === 0 ||
+          /\/autoservicio(\/|$)/i.test(pathname)
+        ) {
+          var pedido = (params.get('pedido') || '').trim();
+          var safePedido = /^[a-zA-Z0-9_-]{1,128}$/.test(pedido)
+            ? '?pedido=' + encodeURIComponent(pedido)
+            : '';
+          window.location.replace(baseDir + 'autoservicio/' + safePedido);
+          return;
+        }
+
+        if (/\/admin\/pagos\/?$/i.test(pathname) || hashLower.indexOf('#/admin/pagos') === 0) {
+          params.set('tab', 'datos_pago');
+          var nextQuery = params.toString();
+          window.location.replace(baseDir + 'pos/' + (nextQuery ? '?' + nextQuery : ''));
+          return;
+        }
+
+        window.location.replace(baseDir + 'pos/' + search + hash);
+      })();
+    </script>
   </head>
-  <body class="bg-[#0A0A0A] text-white antialiased selection:bg-amber-500/30 selection:text-amber-200">
-    <div id="root"></div>
-    <script type="module" src="/src/main.tsx"></script>
+  <body class="bg-[#0A0A0A] text-white antialiased min-h-screen flex items-center justify-center p-6">
+    <main class="text-center space-y-4 max-w-sm">
+      <p class="text-lg font-extrabold tracking-wide">O&apos;NDE LUIGI</p>
+      <p class="text-xs text-zinc-400">Redirigiendo a la aplicación correspondiente...</p>
+      <div class="flex items-center justify-center gap-3 pt-1">
+        <a
+          href="./pos/"
+          class="px-4 py-2 rounded-xl bg-amber-500 text-black text-xs font-bold"
+        >
+          Abrir POS
+        </a>
+        <a
+          href="./autoservicio/"
+          class="px-4 py-2 rounded-xl border border-zinc-700 bg-zinc-900 text-zinc-200 text-xs font-semibold"
+        >
+          Abrir Autoservicio
+        </a>
+      </div>
+    </main>
   </body>
 </html>

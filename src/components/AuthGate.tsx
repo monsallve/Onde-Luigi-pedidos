@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { ArrowLeft, KeyRound, Lock, Mail, ShieldCheck, UserPlus } from 'lucide-react';
 import { usePosStore } from '../services/posStore';
 import { resolveAssetUrl } from '../utils/orderMath';
+import { PWAInstallButton } from './PWAInstallBanner';
 
 type AuthMode = 'login' | 'register' | 'reset';
 
@@ -156,6 +157,8 @@ export const AuthGate: React.FC = () => {
             </span>
           </div>
         </div>
+
+        <PWAInstallButton compact />
       </header>
 
       <main className="max-w-5xl w-full mx-auto my-auto py-8 grid grid-cols-1 lg:grid-cols-12 gap-8 items-center">

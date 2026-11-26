@@ -3,8 +3,11 @@ import './index.css';
 import {
   buildPublicAutoservicioLink,
   extractSafeOrderIdFromUrl,
+  isInsidePosPath,
+  resolvePosBasePath,
   shouldPosRedirectToAutoservicio,
 } from './utils/autoservicioRouteGuard';
+import { syncDynamicManifestLink } from './utils/pwaManifest';
 
 window.addEventListener('vite:preloadError', () => {
   window.location.reload();
@@ -24,7 +27,17 @@ if (shouldRedirectToSelfService) {
     hash: window.location.hash,
   });
   window.location.replace(buildPublicAutoservicioLink(window.location.href, orderId));
+} else if (
+  typeof window !== 'undefined' &&
+  !isInsidePosPath(window.location.pathname)
+) {
+  const targetPosPath = resolvePosBasePath(window.location.pathname);
+  window.location.replace(`${targetPosPath}${window.location.search}${window.location.hash}`);
 } else {
+  if (typeof document !== 'undefined' && typeof window !== 'undefined') {
+    syncDynamicManifestLink(document, window.location.pathname);
+  }
+
   if (typeof window !== 'undefined' && 'serviceWorker' in navigator) {
     navigator.serviceWorker
       .getRegistrations()
@@ -42,15 +55,18 @@ if (shouldRedirectToSelfService) {
           }
           const isAutoservicioSw =
             /\/autoservicio\/sw\.js$/i.test(scriptPath) || /\/autoservicio\/?$/i.test(scopePath);
-          const isNotificationsSw = /\/sw-notifications\.js$/i.test(scriptPath);
-          if (!isAutoservicioSw && !isNotificationsSw) {
+          const isPosSw =
+            /\/pos\/sw-pos\.js$/i.test(scriptPath) && /\/pos\/$/i.test(scopePath);
+
+          // Unregister legacy root "/" SWs or sw-notifications.js so root scope never swallows /autoservicio/
+          if (!isAutoservicioSw && !isPosSw) {
             void reg.unregister();
           }
         }
       })
       .catch(() => {});
 
-    navigator.serviceWorker.register('./sw-notifications.js', { scope: './' }).catch(() => {});
+    navigator.serviceWorker.register('./sw-pos.js', { scope: './' }).catch(() => {});
   }
 
   void import('./App.tsx').then(({ default: App }) => {

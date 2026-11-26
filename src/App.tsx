@@ -33,9 +33,11 @@ import { WaiterSelectorModal } from './components/WaiterSelectorModal';
 import { WhatsAppReceiptViewer } from './components/WhatsAppReceiptViewer';
 import { PosProvider, usePosStore } from './services/posStore';
 import type { AppTab, Order } from './types/pos';
+import { resolvePosBasePath } from './utils/autoservicioRouteGuard';
 import { shouldPromptPermanentRegistration } from './utils/identityState';
 import { isOrderInCourse, resolveAssetUrl } from './utils/orderMath';
 import { ROLE_LABELS } from './utils/rolePermissions';
+import { PWAInstallButton } from './components/PWAInstallBanner';
 import { PosOrderWorkspaceView } from './views/PosOrderWorkspaceView';
 
 const OrdersView = lazy(() =>
@@ -109,7 +111,9 @@ function clearProtectedTabFromUrl(): void {
   try {
     const url = new URL(window.location.href);
     url.searchParams.delete('tab');
-    const cleanPath = url.pathname.toLowerCase().endsWith('/admin/pagos') ? '/' : url.pathname;
+    const cleanPath = url.pathname.toLowerCase().endsWith('/admin/pagos')
+      ? resolvePosBasePath(url.pathname)
+      : url.pathname;
     const cleanHash = url.hash.toLowerCase().startsWith('#/admin/pagos') ? '' : url.hash;
     window.history.replaceState(
       window.history.state,
@@ -699,6 +703,7 @@ const PosShell: React.FC = () => {
             </div>
 
             <div className="flex items-center gap-2 justify-self-end">
+              <PWAInstallButton />
               <NotificationBellButton />
               <button
                 type="button"

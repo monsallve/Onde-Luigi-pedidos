@@ -152,8 +152,8 @@ export function buildSystemNotificationOptions(
 ): SystemNotificationPayloadOptions {
   return {
     body: notif.message,
-    icon: resolveAssetUrl('/pwa-192x192.png'),
-    badge: resolveAssetUrl('/pwa-192x192.png'),
+    icon: resolveAssetUrl('/pos/pwa-192x192.png'),
+    badge: resolveAssetUrl('/pos/pwa-192x192.png'),
     tag: notif.id,
     renotify: true,
     silent: false,
