@@ -1,6 +1,13 @@
 import React, { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Download, MoreVertical, Share, Smartphone, X } from 'lucide-react';
+import {
+  Download,
+  ExternalLink,
+  MoreVertical,
+  Share,
+  Smartphone,
+  X,
+} from 'lucide-react';
 import { isInsideAutoservicioPath } from '../utils/autoservicioRouteGuard';
 
 interface BeforeInstallPromptEvent extends Event {
@@ -8,17 +15,37 @@ interface BeforeInstallPromptEvent extends Event {
   userChoice: Promise<{ outcome: 'accepted' | 'dismissed'; platform: string }>;
 }
 
+declare global {
+  interface Window {
+    __ondeluigiDeferredInstallPrompt?: BeforeInstallPromptEvent | null;
+  }
+}
+
 function useSelfServicePwaInstall() {
-  const [deferredPrompt, setDeferredPrompt] = useState<BeforeInstallPromptEvent | null>(null);
+  const [deferredPrompt, setDeferredPrompt] = useState<BeforeInstallPromptEvent | null>(() => {
+    if (typeof window === 'undefined' || !isInsideAutoservicioPath(window.location.pathname)) {
+      return null;
+    }
+    return window.__ondeluigiDeferredInstallPrompt || null;
+  });
   const [isInstalled, setIsInstalled] = useState(false);
   const [isIOS, setIsIOS] = useState(false);
   const [isAndroid, setIsAndroid] = useState(false);
+  const [isInIframe, setIsInIframe] = useState(false);
 
   useEffect(() => {
+    if (typeof window === 'undefined') return;
+
     const isStandalone =
       window.matchMedia('(display-mode: standalone)').matches ||
       (window.navigator as unknown as { standalone?: boolean }).standalone === true;
     setIsInstalled(isStandalone);
+
+    try {
+      setIsInIframe(window.self !== window.top);
+    } catch {
+      setIsInIframe(true);
+    }
 
     const ua = window.navigator.userAgent.toLowerCase();
     setIsIOS(/iphone|ipad|ipod/.test(ua));
@@ -29,31 +56,48 @@ function useSelfServicePwaInstall() {
       return;
     }
 
+    if (window.__ondeluigiDeferredInstallPrompt) {
+      setDeferredPrompt(window.__ondeluigiDeferredInstallPrompt);
+    }
+
+    const onCaptured = () => {
+      if (window.__ondeluigiDeferredInstallPrompt) {
+        setDeferredPrompt(window.__ondeluigiDeferredInstallPrompt);
+      }
+    };
+
     const onBeforeInstall = (e: Event) => {
       e.preventDefault();
-      setDeferredPrompt(e as BeforeInstallPromptEvent);
+      const promptEvent = e as BeforeInstallPromptEvent;
+      window.__ondeluigiDeferredInstallPrompt = promptEvent;
+      setDeferredPrompt(promptEvent);
     };
 
     const onInstalled = () => {
       setIsInstalled(true);
+      window.__ondeluigiDeferredInstallPrompt = null;
       setDeferredPrompt(null);
     };
 
+    window.addEventListener('ondeluigi:beforeinstallprompt-captured', onCaptured);
     window.addEventListener('beforeinstallprompt', onBeforeInstall);
     window.addEventListener('appinstalled', onInstalled);
 
     return () => {
+      window.removeEventListener('ondeluigi:beforeinstallprompt-captured', onCaptured);
       window.removeEventListener('beforeinstallprompt', onBeforeInstall);
       window.removeEventListener('appinstalled', onInstalled);
     };
   }, []);
 
   const install = async () => {
-    if (!deferredPrompt) return false;
-    await deferredPrompt.prompt();
-    const { outcome } = await deferredPrompt.userChoice;
+    const promptToUse = deferredPrompt || window.__ondeluigiDeferredInstallPrompt || null;
+    if (!promptToUse) return false;
+    await promptToUse.prompt();
+    const { outcome } = await promptToUse.userChoice;
     if (outcome === 'accepted') {
       setIsInstalled(true);
+      window.__ondeluigiDeferredInstallPrompt = null;
       setDeferredPrompt(null);
       return true;
     }
@@ -65,12 +109,14 @@ function useSelfServicePwaInstall() {
     isInstalled,
     isIOS,
     isAndroid,
+    isInIframe,
     install,
   };
 }
 
 export const SelfServiceInstallButton: React.FC = () => {
-  const { isInstallable, isInstalled, isIOS, isAndroid, install } = useSelfServicePwaInstall();
+  const { isInstallable, isInstalled, isIOS, isAndroid, isInIframe, install } =
+    useSelfServicePwaInstall();
   const [guideOpen, setGuideOpen] = useState(false);
 
   useEffect(() => {
@@ -90,7 +136,7 @@ export const SelfServiceInstallButton: React.FC = () => {
   const handleTriggerInstall = async () => {
     if (isInstallable) {
       const accepted = await install();
-      if (!accepted && (isIOS || isAndroid)) {
+      if (!accepted) {
         setGuideOpen(true);
       }
       return;
@@ -98,16 +144,22 @@ export const SelfServiceInstallButton: React.FC = () => {
     setGuideOpen(true);
   };
 
+  const currentHref = typeof window !== 'undefined' ? window.location.href : '/autoservicio/';
+
   return (
     <>
       <button
         type="button"
         onClick={() => void handleTriggerInstall()}
         aria-label="Instalar aplicación de Autoservicio O'NDE LUIGI"
-        className="min-h-[38px] px-2.5 sm:px-3 rounded-xl border border-[#27272E] bg-[#1C1C22] text-xs font-semibold text-zinc-200 hover:border-amber-500/80 hover:text-amber-300 inline-flex items-center gap-1.5 transition-colors whitespace-nowrap shrink-0"
+        className={
+          isInstallable
+            ? 'min-h-[38px] px-2.5 sm:px-3 rounded-xl bg-amber-500 text-xs font-bold text-black hover:bg-amber-400 inline-flex items-center gap-1.5 transition-colors whitespace-nowrap shrink-0'
+            : 'min-h-[38px] px-2.5 sm:px-3 rounded-xl border border-[#27272E] bg-[#1C1C22] text-xs font-semibold text-zinc-200 hover:border-amber-500/80 hover:text-amber-300 inline-flex items-center gap-1.5 transition-colors whitespace-nowrap shrink-0'
+        }
       >
         {isInstallable ? (
-          <Download className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+          <Download className="w-3.5 h-3.5 shrink-0" />
         ) : (
           <Smartphone className="w-3.5 h-3.5 text-amber-400 shrink-0" />
         )}
@@ -138,7 +190,7 @@ export const SelfServiceInstallButton: React.FC = () => {
                     INSTALAR AUTOSERVICIO
                   </h3>
                   <p className="text-[11px] text-zinc-400">
-                    Accede directo a nuestra carta y a tu turno desde la pantalla de inicio.
+                    Instala Luigi Pide (/autoservicio/) directo en tu pantalla de inicio.
                   </p>
                 </div>
                 <button
@@ -150,6 +202,26 @@ export const SelfServiceInstallButton: React.FC = () => {
                   <X className="w-5 h-5" />
                 </button>
               </div>
+
+              {isInIframe && (
+                <div className="rounded-xl border border-amber-500/70 bg-amber-500/10 p-3.5 space-y-2.5">
+                  <p className="text-xs font-bold text-amber-300">
+                    Estás en la vista previa incrustada
+                  </p>
+                  <p className="text-[11px] text-zinc-200 leading-relaxed">
+                    Los navegadores bloquean la instalación de PWAs dentro de un recuadro de vista previa. Ábrela en su pestaña directa para instalarla.
+                  </p>
+                  <a
+                    href={currentHref}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="w-full min-h-[40px] rounded-xl bg-amber-500 text-black text-xs font-extrabold hover:bg-amber-400 transition-colors flex items-center justify-center gap-1.5"
+                  >
+                    <ExternalLink className="w-3.5 h-3.5" />
+                    <span>Abrir /autoservicio/ en pestaña nueva</span>
+                  </a>
+                </div>
+              )}
 
               <div className="space-y-3">
                 {/* iOS Safari Guide */}
@@ -214,6 +286,10 @@ export const SelfServiceInstallButton: React.FC = () => {
                     En computador (Chrome o Edge), usa el ícono de instalar en la barra de direcciones para abrir el Autoservicio como ventana independiente.
                   </p>
                 )}
+
+                <p className="text-[11px] text-zinc-400 leading-relaxed px-1">
+                  Si antes habías instalado la app desde la raíz principal, desinstálala una sola vez para que Luigi POS y Luigi Pide coexistan por separado.
+                </p>
               </div>
 
               <button

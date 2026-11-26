@@ -73,6 +73,7 @@ export function syncDynamicManifestLink(doc: Document, pathname: string): PwaRou
     head.appendChild(link);
   }
   link.id = 'app-pwa-manifest';
+  link.crossOrigin = 'use-credentials';
   link.setAttribute('href', target.manifestHref);
   return target;
 }

@@ -1,6 +1,13 @@
 import React, { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Download, MoreVertical, Share, Smartphone, X } from 'lucide-react';
+import {
+  Download,
+  ExternalLink,
+  MoreVertical,
+  Share,
+  Smartphone,
+  X,
+} from 'lucide-react';
 import { isInsidePosPath } from '../utils/autoservicioRouteGuard';
 
 interface BeforeInstallPromptEvent extends Event {
@@ -8,11 +15,23 @@ interface BeforeInstallPromptEvent extends Event {
   userChoice: Promise<{ outcome: 'accepted' | 'dismissed'; platform: string }>;
 }
 
+declare global {
+  interface Window {
+    __ondeluigiDeferredInstallPrompt?: BeforeInstallPromptEvent | null;
+  }
+}
+
 function usePWAInstall() {
-  const [deferredPrompt, setDeferredPrompt] = useState<BeforeInstallPromptEvent | null>(null);
+  const [deferredPrompt, setDeferredPrompt] = useState<BeforeInstallPromptEvent | null>(() => {
+    if (typeof window === 'undefined' || !isInsidePosPath(window.location.pathname)) {
+      return null;
+    }
+    return window.__ondeluigiDeferredInstallPrompt || null;
+  });
   const [isInstalled, setIsInstalled] = useState(false);
   const [isIOS, setIsIOS] = useState(false);
   const [isAndroid, setIsAndroid] = useState(false);
+  const [isInIframe, setIsInIframe] = useState(false);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -21,6 +40,12 @@ function usePWAInstall() {
       window.matchMedia('(display-mode: standalone)').matches ||
       (window.navigator as unknown as { standalone?: boolean }).standalone === true;
     setIsInstalled(isStandalone);
+
+    try {
+      setIsInIframe(window.self !== window.top);
+    } catch {
+      setIsInIframe(true);
+    }
 
     const ua = window.navigator.userAgent.toLowerCase();
     setIsIOS(/iphone|ipad|ipod/.test(ua));
@@ -31,31 +56,48 @@ function usePWAInstall() {
       return;
     }
 
+    if (window.__ondeluigiDeferredInstallPrompt) {
+      setDeferredPrompt(window.__ondeluigiDeferredInstallPrompt);
+    }
+
+    const onCaptured = () => {
+      if (window.__ondeluigiDeferredInstallPrompt) {
+        setDeferredPrompt(window.__ondeluigiDeferredInstallPrompt);
+      }
+    };
+
     const onBeforeInstall = (e: Event) => {
       e.preventDefault();
-      setDeferredPrompt(e as BeforeInstallPromptEvent);
+      const promptEvent = e as BeforeInstallPromptEvent;
+      window.__ondeluigiDeferredInstallPrompt = promptEvent;
+      setDeferredPrompt(promptEvent);
     };
 
     const onInstalled = () => {
       setIsInstalled(true);
+      window.__ondeluigiDeferredInstallPrompt = null;
       setDeferredPrompt(null);
     };
 
+    window.addEventListener('ondeluigi:beforeinstallprompt-captured', onCaptured);
     window.addEventListener('beforeinstallprompt', onBeforeInstall);
     window.addEventListener('appinstalled', onInstalled);
 
     return () => {
+      window.removeEventListener('ondeluigi:beforeinstallprompt-captured', onCaptured);
       window.removeEventListener('beforeinstallprompt', onBeforeInstall);
       window.removeEventListener('appinstalled', onInstalled);
     };
   }, []);
 
   const install = async () => {
-    if (!deferredPrompt) return false;
-    await deferredPrompt.prompt();
-    const { outcome } = await deferredPrompt.userChoice;
+    const promptToUse = deferredPrompt || window.__ondeluigiDeferredInstallPrompt || null;
+    if (!promptToUse) return false;
+    await promptToUse.prompt();
+    const { outcome } = await promptToUse.userChoice;
     if (outcome === 'accepted') {
       setIsInstalled(true);
+      window.__ondeluigiDeferredInstallPrompt = null;
       setDeferredPrompt(null);
       return true;
     }
@@ -67,35 +109,34 @@ function usePWAInstall() {
     isInstalled,
     isIOS,
     isAndroid,
+    isInIframe,
     install,
   };
 }
 
 export const PWAInstallButton: React.FC<{
   compact?: boolean;
-  alwaysShowGuideOption?: boolean;
-}> = ({ compact = false, alwaysShowGuideOption = false }) => {
-  const { isInstallable, isInstalled, isIOS, isAndroid, install } = usePWAInstall();
+}> = ({ compact = false }) => {
+  const { isInstallable, isInstalled, isIOS, isAndroid, isInIframe, install } =
+    usePWAInstall();
   const [showGuide, setShowGuide] = useState(false);
 
   if (isInstalled) {
     return null;
   }
 
-  if (!isInstallable && !isIOS && !alwaysShowGuideOption) {
-    return null;
-  }
-
   const handleClick = async () => {
     if (isInstallable) {
       const accepted = await install();
-      if (!accepted && (isIOS || isAndroid)) {
+      if (!accepted) {
         setShowGuide(true);
       }
       return;
     }
     setShowGuide(true);
   };
+
+  const currentHref = typeof window !== 'undefined' ? window.location.href : '/pos/';
 
   return (
     <>
@@ -140,7 +181,7 @@ export const PWAInstallButton: React.FC<{
                     INSTALAR APP POS
                   </h3>
                   <p className="text-[11px] text-zinc-400">
-                    Instala O&apos;NDE LUIGI POS como aplicación independiente (coexiste con Autoservicio).
+                    Instala Luigi POS (/pos/) como aplicación independiente (coexiste con Autoservicio).
                   </p>
                 </div>
                 <button
@@ -152,6 +193,26 @@ export const PWAInstallButton: React.FC<{
                   <X className="w-5 h-5" />
                 </button>
               </div>
+
+              {isInIframe && (
+                <div className="rounded-xl border border-amber-500/70 bg-amber-500/10 p-3.5 space-y-2.5">
+                  <p className="text-xs font-bold text-amber-300">
+                    Estás en la vista previa incrustada
+                  </p>
+                  <p className="text-[11px] text-zinc-200 leading-relaxed">
+                    Los navegadores bloquean la instalación de PWAs dentro de un recuadro de vista previa. Ábrela en su pestaña directa para instalarla.
+                  </p>
+                  <a
+                    href={currentHref}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="w-full min-h-[40px] rounded-xl bg-amber-500 text-black text-xs font-extrabold hover:bg-amber-400 transition-colors flex items-center justify-center gap-1.5"
+                  >
+                    <ExternalLink className="w-3.5 h-3.5" />
+                    <span>Abrir /pos/ en pestaña nueva</span>
+                  </a>
+                </div>
+              )}
 
               <div className="space-y-3">
                 <div
@@ -207,6 +268,10 @@ export const PWAInstallButton: React.FC<{
                     </li>
                   </ol>
                 </div>
+
+                <p className="text-[11px] text-zinc-400 leading-relaxed px-1">
+                  Si antes habías instalado la app desde la raíz principal, desinstala esa versión anterior una sola vez para instalar Luigi POS y Luigi Pide por separado.
+                </p>
               </div>
 
               <button

@@ -295,7 +295,7 @@ export const SettingsModal: React.FC<Props> = ({
             AJUSTES, PERMISOS Y EQUIPO
           </h2>
           <div className="flex items-center gap-2 shrink-0">
-            <PWAInstallButton compact alwaysShowGuideOption />
+            <PWAInstallButton compact />
             <button
               type="button"
               onClick={onClose}

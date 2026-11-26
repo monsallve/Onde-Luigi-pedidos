@@ -43,7 +43,10 @@ self.addEventListener('install', (event) => {
       await Promise.allSettled(
         urlsToCache.map(async (targetUrl) => {
           try {
-            const res = await fetch(targetUrl, { cache: 'reload' });
+            const res = await fetch(targetUrl, {
+              cache: 'reload',
+              credentials: 'same-origin',
+            });
             if (res && res.ok) {
               await shellCache.put(targetUrl, res);
             }
