@@ -16,27 +16,39 @@ export interface PwaRouteTargetConfig {
  * never share an id, start_url, scope, or manifest link.
  */
 export function resolvePwaTargetForPathname(pathname: string): PwaRouteTargetConfig | null {
-  const clean = (pathname || '').trim().toLowerCase();
+  const raw = (pathname || '').trim();
 
-  if (/\/autoservicio(\/|\/index\.html)?$/i.test(clean)) {
+  const autoMatch = raw.match(/^(.*)\/autoservicio(\/|\/index\.html)?$/i);
+  if (autoMatch) {
+    const prefix = autoMatch[1] || '';
+    const baseScope = `${prefix}/autoservicio/`;
+    const hasDirContext = Boolean(autoMatch[2]);
     return {
       app: 'autoservicio',
-      id: '/autoservicio/',
-      manifestHref: '/manifest-autoservicio.webmanifest',
-      startUrl: '/autoservicio/',
-      scope: '/autoservicio/',
+      id: baseScope,
+      manifestHref: hasDirContext
+        ? './manifest-autoservicio.webmanifest'
+        : './autoservicio/manifest-autoservicio.webmanifest',
+      startUrl: baseScope,
+      scope: baseScope,
       swScript: './sw.js',
       swScope: './',
     };
   }
 
-  if (/\/pos(\/|\/index\.html)?$/i.test(clean)) {
+  const posMatch = raw.match(/^(.*)\/pos(\/|\/index\.html)?$/i);
+  if (posMatch) {
+    const prefix = posMatch[1] || '';
+    const baseScope = `${prefix}/pos/`;
+    const hasDirContext = Boolean(posMatch[2]);
     return {
       app: 'pos',
-      id: '/pos/',
-      manifestHref: '/manifest-pos.webmanifest',
-      startUrl: '/pos/',
-      scope: '/pos/',
+      id: baseScope,
+      manifestHref: hasDirContext
+        ? './manifest-pos.webmanifest'
+        : './pos/manifest-pos.webmanifest',
+      startUrl: baseScope,
+      scope: baseScope,
       swScript: './sw-pos.js',
       swScope: './',
     };

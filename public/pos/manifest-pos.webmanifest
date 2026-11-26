@@ -1,10 +1,10 @@
 {
-  "id": "/pos/",
+  "id": "./",
   "name": "O'NDE LUIGI · Sistema POS",
   "short_name": "Luigi POS",
   "description": "Sistema interno POS O'NDE LUIGI para toma ágil de pedidos, comandas, caja, inventario y comprobantes.",
-  "start_url": "/pos/",
-  "scope": "/pos/",
+  "start_url": "./",
+  "scope": "./",
   "display": "standalone",
   "orientation": "any",
   "theme_color": "#0A0A0A",
@@ -13,19 +13,19 @@
   "categories": ["business", "food"],
   "icons": [
     {
-      "src": "/pos/pwa-192x192.png",
+      "src": "./pwa-192x192.png",
       "sizes": "192x192",
       "type": "image/png",
       "purpose": "any"
     },
     {
-      "src": "/pos/pwa-512x512.png",
+      "src": "./pwa-512x512.png",
       "sizes": "512x512",
       "type": "image/png",
       "purpose": "any"
     },
     {
-      "src": "/pos/pwa-maskable-512x512.png",
+      "src": "./pwa-maskable-512x512.png",
       "sizes": "512x512",
       "type": "image/png",
       "purpose": "maskable"

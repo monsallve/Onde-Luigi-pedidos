@@ -1,6 +1,6 @@
 /* Isolated Service Worker exclusively for O'NDE LUIGI POS PWA (/pos/ scope) */
 
-const CACHE_VERSION = 'v1';
+const CACHE_VERSION = 'v2';
 const SHELL_CACHE = `ondeluigi-pos-shell-${CACHE_VERSION}`;
 const ASSET_CACHE = `ondeluigi-pos-assets-${CACHE_VERSION}`;
 const FONT_CACHE = `ondeluigi-pos-fonts-${CACHE_VERSION}`;
@@ -11,7 +11,7 @@ const BUILD_PRECACHE_ASSETS = /* @__POS_PRECACHE__ */ [];
 const CORE_SHELL_PATHS = [
   './',
   './index.html',
-  '../manifest-pos.webmanifest',
+  './manifest-pos.webmanifest',
   './pwa-192x192.png',
   './pwa-512x512.png',
   './pwa-maskable-512x512.png',

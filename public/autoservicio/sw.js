@@ -1,6 +1,6 @@
 /* Isolated Service Worker exclusively for O'NDE LUIGI Autoservicio PWA (/autoservicio/ scope) */
 
-const CACHE_VERSION = 'v2';
+const CACHE_VERSION = 'v3';
 const SHELL_CACHE = `ondeluigi-autoservicio-shell-${CACHE_VERSION}`;
 const ASSET_CACHE = `ondeluigi-autoservicio-assets-${CACHE_VERSION}`;
 const FONT_CACHE = `ondeluigi-autoservicio-fonts-${CACHE_VERSION}`;
@@ -11,7 +11,7 @@ const BUILD_PRECACHE_ASSETS = /* @__AUTOSERVICIO_PRECACHE__ */ [];
 const CORE_SHELL_PATHS = [
   './',
   './index.html',
-  '../manifest-autoservicio.webmanifest',
+  './manifest-autoservicio.webmanifest',
   './pwa-192x192.png',
   './pwa-512x512.png',
   './pwa-maskable-512x512.png',
