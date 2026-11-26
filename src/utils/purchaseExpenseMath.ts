@@ -1,7 +1,9 @@
 import type {
   ExpenseLineKind,
   InventoryUnit,
+  Order,
   PurchaseInvoiceLine,
+  Shift,
   WorkspaceNotification,
   WorkspaceNotificationType,
 } from '../types/pos';
@@ -257,4 +259,180 @@ export function countUnreadNotifications(
   lastReadAtMs: number
 ): number {
   return notifications.filter((n) => n.createdAtMs > lastReadAtMs).length;
+}
+
+export function mergeWorkspaceNotifications(params: {
+  persistedNotifications: WorkspaceNotification[];
+  posOrders: Order[];
+  selfServiceOrders: Order[];
+  shifts: Shift[];
+  authorizedEmails: string[];
+  maxItems?: number;
+}): WorkspaceNotification[] {
+  const {
+    persistedNotifications,
+    posOrders,
+    selfServiceOrders,
+    shifts,
+    authorizedEmails,
+    maxItems = 80,
+  } = params;
+
+  const existingOrderCreated = new Set(
+    persistedNotifications
+      .filter((n) => n.type === 'nueva_comanda' && Boolean(n.orderId))
+      .map((n) => n.orderId)
+  );
+  const existingOrderVoided = new Set(
+    persistedNotifications
+      .filter((n) => n.type === 'venta_anulada' && Boolean(n.orderId))
+      .map((n) => n.orderId)
+  );
+  const existingShiftOpened = new Set(
+    persistedNotifications
+      .filter((n) => n.type === 'turno_abierto' && Boolean(n.shiftId))
+      .map((n) => n.shiftId)
+  );
+  const existingShiftClosed = new Set(
+    persistedNotifications
+      .filter((n) => n.type === 'turno_cerrado' && Boolean(n.shiftId))
+      .map((n) => n.shiftId)
+  );
+
+  const synthetic: WorkspaceNotification[] = [];
+
+  for (const s of selfServiceOrders) {
+    if (!existingOrderCreated.has(s.id) && s.status !== 'cancelado') {
+      synthetic.push({
+        id: `notif_self_${s.id}`,
+        type: 'nueva_comanda',
+        title: `Autoservicio #${s.orderNumber} · ${s.deliveryType === 'domicilio' ? 'Domicilio' : 'Local'}`,
+        message: `${s.customerName || 'Cliente'} envió pedido por $${Math.round(s.total).toLocaleString('es-CO')} con comprobante`,
+        orderId: s.id,
+        orderNumber: s.orderNumber,
+        shiftId: '',
+        actorName: s.customerName || 'Autoservicio',
+        actorUid: 'autoservicio_public',
+        ownerUid: s.ownerUid,
+        createdByUid: 'autoservicio_public',
+        allowedEmails: authorizedEmails,
+        createdAtMs: s.createdAtMs,
+      });
+    }
+  }
+
+  for (const o of posOrders) {
+    if (o.source !== 'autoservicio' && !existingOrderCreated.has(o.id) && o.createdAtMs > 0) {
+      const copy = buildNotificationCopy({
+        type: 'nueva_comanda',
+        actorName: o.waiterName || 'Equipo',
+        orderNumber: o.orderNumber,
+        orderReference: o.reference,
+        total: o.total,
+      });
+      synthetic.push({
+        id: `notif_sync_order_${o.id}`,
+        type: 'nueva_comanda',
+        title: copy.title,
+        message: copy.message,
+        orderId: o.id,
+        orderNumber: o.orderNumber,
+        shiftId: '',
+        actorName: o.waiterName || 'Equipo',
+        actorUid: o.createdByUid || '',
+        ownerUid: o.ownerUid,
+        createdByUid: o.createdByUid || '',
+        allowedEmails: authorizedEmails,
+        createdAtMs: o.createdAtMs,
+      });
+    }
+  }
+
+  const allOrders = [...posOrders, ...selfServiceOrders];
+  for (const o of allOrders) {
+    if (o.status === 'cancelado' && !existingOrderVoided.has(o.id)) {
+      const voidTs = o.voidedAtMs || o.updatedAtMs || o.createdAtMs;
+      if (voidTs > 0) {
+        const copy = buildNotificationCopy({
+          type: 'venta_anulada',
+          actorName: o.voidedByName || o.waiterName || 'Equipo',
+          orderNumber: o.orderNumber,
+          orderReference: o.reference,
+          wasPaidOrder: o.paymentStatus === 'pagado',
+          reason: o.voidReason,
+        });
+        synthetic.push({
+          id: `notif_sync_void_${o.id}`,
+          type: 'venta_anulada',
+          title: copy.title,
+          message: copy.message,
+          orderId: o.id,
+          orderNumber: o.orderNumber,
+          shiftId: '',
+          actorName: o.voidedByName || o.waiterName || 'Equipo',
+          actorUid: o.createdByUid || '',
+          ownerUid: o.ownerUid,
+          createdByUid: o.createdByUid || '',
+          allowedEmails: authorizedEmails,
+          createdAtMs: voidTs,
+        });
+      }
+    }
+  }
+
+  for (const sh of shifts) {
+    const openTs = sh.openedAtMs || sh.createdAtMs;
+    if (!existingShiftOpened.has(sh.id) && openTs > 0) {
+      const copy = buildNotificationCopy({
+        type: 'turno_abierto',
+        actorName: sh.openedByName || 'Equipo',
+        openingBaseAmount: sh.openingBaseAmount,
+      });
+      synthetic.push({
+        id: `notif_sync_shift_open_${sh.id}`,
+        type: 'turno_abierto',
+        title: copy.title,
+        message: copy.message,
+        orderId: '',
+        orderNumber: 0,
+        shiftId: sh.id,
+        actorName: sh.openedByName || 'Equipo',
+        actorUid: sh.openedByUid || '',
+        ownerUid: sh.ownerUid,
+        createdByUid: sh.createdByUid || '',
+        allowedEmails: authorizedEmails,
+        createdAtMs: openTs,
+      });
+    }
+    if (sh.status === 'cerrado' && !existingShiftClosed.has(sh.id)) {
+      const closeTs = sh.closedAtMs || sh.updatedAtMs || openTs;
+      if (closeTs > 0) {
+        const copy = buildNotificationCopy({
+          type: 'turno_cerrado',
+          actorName: sh.closedByName || sh.openedByName || 'Equipo',
+          paidOrdersCount: sh.paidOrdersCount,
+          total: sh.expectedTotal,
+        });
+        synthetic.push({
+          id: `notif_sync_shift_close_${sh.id}`,
+          type: 'turno_cerrado',
+          title: copy.title,
+          message: copy.message,
+          orderId: '',
+          orderNumber: 0,
+          shiftId: sh.id,
+          actorName: sh.closedByName || sh.openedByName || 'Equipo',
+          actorUid: sh.closedByUid || '',
+          ownerUid: sh.ownerUid,
+          createdByUid: sh.createdByUid || '',
+          allowedEmails: authorizedEmails,
+          createdAtMs: closeTs,
+        });
+      }
+    }
+  }
+
+  return [...persistedNotifications, ...synthetic]
+    .sort((a, b) => (b.createdAtMs || 0) - (a.createdAtMs || 0))
+    .slice(0, maxItems);
 }

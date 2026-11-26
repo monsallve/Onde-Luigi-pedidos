@@ -20,7 +20,11 @@ import {
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { AuthGate } from './components/AuthGate';
 import { EmailVerificationModal } from './components/EmailVerificationModal';
-import { NotificationCenter } from './components/NotificationCenter';
+import {
+  NotificationBellButton,
+  NotificationCenterOverlays,
+  NotificationCenterProvider,
+} from './components/NotificationCenter';
 import { OrderComposerModal } from './components/OrderComposerModal';
 import { PaymentSheetModal } from './components/PaymentSheetModal';
 import { SettingsModal } from './components/SettingsModal';
@@ -538,9 +542,13 @@ const PosShell: React.FC = () => {
   };
 
   return (
-    <div className="min-h-screen bg-[#0A0A0A] text-white flex flex-col">
-      {/* Desktop & Mobile Top Navigation */}
-      <header className="sticky top-0 z-30 bg-[#101014]/95 backdrop-blur-md border-b border-[#27272E]">
+    <NotificationCenterProvider
+      onNavigateTab={navigateToTab}
+      onOpenShiftModal={() => setShiftModalOpen(true)}
+    >
+      <div className="min-h-screen bg-[#0A0A0A] text-white flex flex-col">
+        {/* Desktop & Mobile Top Navigation */}
+        <header className="sticky top-0 z-30 bg-[#101014]/95 backdrop-blur-md border-b border-[#27272E]">
         <div className="max-w-7xl mx-auto px-3 sm:px-6 h-14 flex items-center justify-between gap-2 sm:gap-4 lg:gap-6">
           {/* Zone 1: O'NDE LUIGI Brand Emblem + Wordmark */}
           <button
@@ -621,10 +629,7 @@ const PosShell: React.FC = () => {
             </button>
 
             <div className="lg:hidden">
-              <NotificationCenter
-                onNavigateTab={navigateToTab}
-                onOpenShiftModal={() => setShiftModalOpen(true)}
-              />
+              <NotificationBellButton />
             </div>
 
             <button
@@ -694,10 +699,7 @@ const PosShell: React.FC = () => {
             </div>
 
             <div className="flex items-center gap-2 justify-self-end">
-              <NotificationCenter
-                onNavigateTab={navigateToTab}
-                onOpenShiftModal={() => setShiftModalOpen(true)}
-              />
+              <NotificationBellButton />
               <button
                 type="button"
                 onClick={() => setSettingsOpen(true)}
@@ -1089,8 +1091,10 @@ const PosShell: React.FC = () => {
         </div>
       )}
 
-      <OfflineIndicator />
-    </div>
+        <NotificationCenterOverlays />
+        <OfflineIndicator />
+      </div>
+    </NotificationCenterProvider>
   );
 };
 

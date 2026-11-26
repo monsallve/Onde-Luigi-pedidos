@@ -1,10 +1,20 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
+import { createPortal } from 'react-dom';
 import {
   AlertOctagon,
   Bell,
   BellRing,
   CheckCheck,
   Clock,
+  Loader2,
   ShoppingBag,
   Trash2,
   Volume2,
@@ -36,6 +46,7 @@ import {
 } from '../utils/purchaseExpenseMath';
 
 const LAST_READ_STORAGE_KEY = 'ondeluigi_notif_last_read_ms_v1';
+const DISMISSED_SYNTHETIC_STORAGE_KEY = 'ondeluigi_notif_dismissed_sync_v1';
 
 function readInitialLastReadMs(): number {
   try {
@@ -61,6 +72,36 @@ function persistLastReadMs(ms: number): void {
   } catch {
     // ignore storage quota errors
   }
+}
+
+function readDismissedSyntheticIds(): string[] {
+  try {
+    if (typeof window === 'undefined') return [];
+    const raw = window.localStorage.getItem(DISMISSED_SYNTHETIC_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((x): x is string => typeof x === 'string').slice(-200);
+  } catch {
+    return [];
+  }
+}
+
+function persistDismissedSyntheticIds(ids: string[]): void {
+  try {
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem(
+        DISMISSED_SYNTHETIC_STORAGE_KEY,
+        JSON.stringify(ids.slice(-200))
+      );
+    }
+  } catch {
+    // ignore storage quota errors
+  }
+}
+
+function isSyntheticNotificationId(id: string): boolean {
+  return id.startsWith('notif_self_') || id.startsWith('notif_sync_');
 }
 
 function getNotifVisuals(type: WorkspaceNotificationType): {
@@ -101,14 +142,49 @@ function getNotifVisuals(type: WorkspaceNotificationType): {
   }
 }
 
-interface Props {
-  onNavigateTab: (tab: AppTab) => void;
-  onOpenShiftModal: () => void;
+interface NotificationCenterContextValue {
+  panelOpen: boolean;
+  openPanel: () => void;
+  closePanel: () => void;
+  visibleNotifications: WorkspaceNotification[];
+  notificationsLoaded: boolean;
+  unreadCount: number;
+  permState: NotificationPermissionState;
+  soundMuted: boolean;
+  requestingPerm: boolean;
+  showFloatingPermPrompt: boolean;
+  liveToasts: WorkspaceNotification[];
+  isAdmin: boolean;
+  markAllRead: () => void;
+  handleRequestDevicePermission: () => Promise<void>;
+  handleDismissPrompt: () => void;
+  handleToggleSound: () => void;
+  handleTestAlert: () => void;
+  handleNotificationAction: (notif: WorkspaceNotification) => void;
+  handleDismissToast: (notifId: string) => void;
+  handleDeleteOrDismissNotification: (notif: WorkspaceNotification) => Promise<void>;
 }
 
-export const NotificationCenter: React.FC<Props> = ({
+const NotificationCenterContext = createContext<NotificationCenterContextValue | null>(null);
+
+function useNotificationCenterContext(): NotificationCenterContextValue {
+  const ctx = useContext(NotificationCenterContext);
+  if (!ctx) {
+    throw new Error('NotificationCenter components must be rendered inside NotificationCenterProvider');
+  }
+  return ctx;
+}
+
+interface ProviderProps {
+  onNavigateTab: (tab: AppTab) => void;
+  onOpenShiftModal: () => void;
+  children: React.ReactNode;
+}
+
+export const NotificationCenterProvider: React.FC<ProviderProps> = ({
   onNavigateTab,
   onOpenShiftModal,
+  children,
 }) => {
   const {
     notifications,
@@ -124,6 +200,9 @@ export const NotificationCenter: React.FC<Props> = ({
 
   const [panelOpen, setPanelOpen] = useState(false);
   const [lastReadAtMs, setLastReadAtMs] = useState<number>(() => readInitialLastReadMs());
+  const [dismissedSyntheticIds, setDismissedSyntheticIds] = useState<string[]>(() =>
+    readDismissedSyntheticIds()
+  );
   const [soundMuted, setSoundMuted] = useState<boolean>(() => isNotificationSoundMuted());
   const [permState, setPermState] = useState<NotificationPermissionState>(() =>
     getNotificationPermissionState()
@@ -138,6 +217,16 @@ export const NotificationCenter: React.FC<Props> = ({
   const hydratedRef = useRef<boolean>(false);
   const seenIdsRef = useRef<Set<string>>(new Set());
   const autoRequestedRef = useRef<boolean>(false);
+
+  const dismissedSet = useMemo(
+    () => new Set(dismissedSyntheticIds),
+    [dismissedSyntheticIds]
+  );
+
+  const visibleNotifications = useMemo(
+    () => notifications.filter((n) => !dismissedSet.has(n.id)),
+    [notifications, dismissedSet]
+  );
 
   // Sync permission state when returning from OS/browser settings
   useEffect(() => {
@@ -206,6 +295,7 @@ export const NotificationCenter: React.FC<Props> = ({
       seenIdsRef.current = new Set();
       autoRequestedRef.current = false;
       setLiveToasts([]);
+      setPanelOpen(false);
       return;
     }
     sessionStartRef.current = Date.now();
@@ -217,12 +307,12 @@ export const NotificationCenter: React.FC<Props> = ({
 
     if (!hydratedRef.current) {
       hydratedRef.current = true;
-      seenIdsRef.current = new Set(notifications.map((n) => n.id));
+      seenIdsRef.current = new Set(visibleNotifications.map((n) => n.id));
       return;
     }
 
     const fresh = selectLiveNewNotifications(
-      notifications,
+      visibleNotifications,
       sessionStartRef.current,
       seenIdsRef.current
     );
@@ -241,7 +331,7 @@ export const NotificationCenter: React.FC<Props> = ({
       );
       return unique.slice(0, 4);
     });
-  }, [notifications, notificationsLoaded]);
+  }, [visibleNotifications, notificationsLoaded]);
 
   // Auto-dismiss live floating toast cards
   useEffect(() => {
@@ -252,20 +342,29 @@ export const NotificationCenter: React.FC<Props> = ({
     return () => window.clearTimeout(timer);
   }, [liveToasts]);
 
-  // Intercept Android/Browser back button when drawer is open
+  // Intercept Android/Browser back button and Escape key when drawer is open
   useEffect(() => {
     if (!panelOpen) return;
     const handleBackIntercept = (e: Event) => {
       e.preventDefault();
       setPanelOpen(false);
     };
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setPanelOpen(false);
+      }
+    };
     window.addEventListener('ondeluigi:back-intercept', handleBackIntercept);
-    return () => window.removeEventListener('ondeluigi:back-intercept', handleBackIntercept);
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      window.removeEventListener('ondeluigi:back-intercept', handleBackIntercept);
+      window.removeEventListener('keydown', handleKeyDown);
+    };
   }, [panelOpen]);
 
   const unreadCount = useMemo(
-    () => countUnreadNotifications(notifications, lastReadAtMs),
-    [notifications, lastReadAtMs]
+    () => countUnreadNotifications(visibleNotifications, lastReadAtMs),
+    [visibleNotifications, lastReadAtMs]
   );
 
   useEffect(() => {
@@ -276,14 +375,24 @@ export const NotificationCenter: React.FC<Props> = ({
         : "O'NDE LUIGI · Sistema POS";
   }, [unreadCount]);
 
-  const markAllRead = () => {
-    const newest = notifications[0]?.createdAtMs || 0;
+  const markAllRead = useCallback(() => {
+    const newest = visibleNotifications[0]?.createdAtMs || 0;
     const nextMs = Math.max(Date.now(), newest);
     setLastReadAtMs(nextMs);
     persistLastReadMs(nextMs);
-  };
+  }, [visibleNotifications]);
 
-  const handleRequestDevicePermission = async () => {
+  const openPanel = useCallback(() => {
+    setPanelOpen(true);
+    markAllRead();
+    setPermState(getNotificationPermissionState());
+  }, [markAllRead]);
+
+  const closePanel = useCallback(() => {
+    setPanelOpen(false);
+  }, []);
+
+  const handleRequestDevicePermission = useCallback(async () => {
     setRequestingPerm(true);
     try {
       const next = await requestDeviceNotificationPermission();
@@ -313,27 +422,23 @@ export const NotificationCenter: React.FC<Props> = ({
     } finally {
       setRequestingPerm(false);
     }
-  };
+  }, [activeWaiter?.name]);
 
-  const handleDismissPrompt = () => {
+  const handleDismissPrompt = useCallback(() => {
     setPromptDismissed(true);
     setNotificationPromptDismissed(true);
-  };
+  }, []);
 
-  const handleOpenPanel = () => {
-    setPanelOpen(true);
-    markAllRead();
-    setPermState(getNotificationPermissionState());
-  };
+  const handleToggleSound = useCallback(() => {
+    setSoundMuted((prev) => {
+      const nextMuted = !prev;
+      setNotificationSoundMuted(nextMuted);
+      if (!nextMuted) unlockNotificationAudio();
+      return nextMuted;
+    });
+  }, []);
 
-  const handleToggleSound = () => {
-    const nextMuted = !soundMuted;
-    setSoundMuted(nextMuted);
-    setNotificationSoundMuted(nextMuted);
-    if (!nextMuted) unlockNotificationAudio();
-  };
-
-  const handleTestAlert = () => {
+  const handleTestAlert = useCallback(() => {
     unlockNotificationAudio();
     triggerDeviceAlert(
       {
@@ -353,67 +458,152 @@ export const NotificationCenter: React.FC<Props> = ({
       },
       { forceOsNotification: true }
     );
-  };
+  }, [activeWaiter?.name]);
 
-  const handleNotificationAction = (notif: WorkspaceNotification) => {
-    setLiveToasts((prev) => prev.filter((t) => t.id !== notif.id));
-    setPanelOpen(false);
-    markAllRead();
+  const handleNotificationAction = useCallback(
+    (notif: WorkspaceNotification) => {
+      setLiveToasts((prev) => prev.filter((t) => t.id !== notif.id));
+      setPanelOpen(false);
+      markAllRead();
 
-    if (notif.type === 'nueva_comanda' && permissions.allowedTabs.includes('comandas')) {
-      onNavigateTab('comandas');
-      return;
-    }
-    if (notif.type === 'venta_anulada') {
-      if (permissions.canViewHistory) {
-        onNavigateTab('historial');
-      } else if (permissions.allowedTabs.includes('comandas')) {
+      if (notif.type === 'nueva_comanda' && permissions.allowedTabs.includes('comandas')) {
         onNavigateTab('comandas');
+        return;
       }
-      return;
-    }
-    if (
-      (notif.type === 'turno_abierto' || notif.type === 'turno_cerrado') &&
-      permissions.canManageShifts
-    ) {
-      onOpenShiftModal();
-    }
-  };
+      if (notif.type === 'venta_anulada') {
+        if (permissions.canViewHistory) {
+          onNavigateTab('historial');
+        } else if (permissions.allowedTabs.includes('comandas')) {
+          onNavigateTab('comandas');
+        }
+        return;
+      }
+      if (
+        (notif.type === 'turno_abierto' || notif.type === 'turno_cerrado') &&
+        permissions.canManageShifts
+      ) {
+        onOpenShiftModal();
+      }
+    },
+    [markAllRead, onNavigateTab, onOpenShiftModal, permissions]
+  );
+
+  const handleDismissToast = useCallback((notifId: string) => {
+    setLiveToasts((prev) => prev.filter((t) => t.id !== notifId));
+  }, []);
+
+  const handleDeleteOrDismissNotification = useCallback(
+    async (notif: WorkspaceNotification) => {
+      setLiveToasts((prev) => prev.filter((t) => t.id !== notif.id));
+      if (isSyntheticNotificationId(notif.id)) {
+        setDismissedSyntheticIds((prev) => {
+          if (prev.includes(notif.id)) return prev;
+          const next = [...prev, notif.id].slice(-200);
+          persistDismissedSyntheticIds(next);
+          return next;
+        });
+        return;
+      }
+      await deleteWorkspaceNotification(notif.id);
+    },
+    [deleteWorkspaceNotification]
+  );
 
   const showFloatingPermPrompt =
     Boolean(sessionMode) &&
     (isRealPrimaryAdmin || Boolean(myLinkedStaff)) &&
     shouldOfferPermissionPrompt(permState, promptDismissed);
 
-  return (
-    <>
-      {/* Header Trigger Button */}
-      <button
-        type="button"
-        onClick={handleOpenPanel}
-        aria-label={
-          unreadCount > 0
-            ? `Notificaciones (${unreadCount} sin leer)`
-            : 'Notificaciones en tiempo real'
-        }
-        className="relative min-h-[36px] min-w-[36px] lg:min-h-[34px] lg:px-2.5 flex items-center justify-center gap-1.5 rounded-xl lg:rounded-lg border border-[#27272E] bg-[#1C1C22] lg:bg-[#141418] text-zinc-200 hover:border-amber-500 transition-colors shrink-0"
-      >
-        <Bell className={`w-4 h-4 ${unreadCount > 0 ? 'text-amber-400' : 'text-zinc-300'}`} />
-        <span className="hidden xl:inline text-xs font-semibold">Alertas</span>
-        {unreadCount > 0 ? (
-          <span className="font-mono text-[10px] font-extrabold bg-red-600 text-white px-1.5 py-0.5 rounded-full leading-none tabular-nums">
-            {unreadCount > 99 ? '99+' : unreadCount}
-          </span>
-        ) : (
-          permState === 'default' && (
-            <span
-              className="w-2 h-2 rounded-full bg-amber-400 shrink-0"
-              aria-hidden="true"
-            />
-          )
-        )}
-      </button>
+  const ctxValue: NotificationCenterContextValue = {
+    panelOpen,
+    openPanel,
+    closePanel,
+    visibleNotifications,
+    notificationsLoaded,
+    unreadCount,
+    permState,
+    soundMuted,
+    requestingPerm,
+    showFloatingPermPrompt,
+    liveToasts,
+    isAdmin,
+    markAllRead,
+    handleRequestDevicePermission,
+    handleDismissPrompt,
+    handleToggleSound,
+    handleTestAlert,
+    handleNotificationAction,
+    handleDismissToast,
+    handleDeleteOrDismissNotification,
+  };
 
+  return (
+    <NotificationCenterContext.Provider value={ctxValue}>
+      {children}
+    </NotificationCenterContext.Provider>
+  );
+};
+
+export const NotificationBellButton: React.FC = () => {
+  const { panelOpen, openPanel, unreadCount, permState } = useNotificationCenterContext();
+
+  return (
+    <button
+      type="button"
+      onClick={openPanel}
+      aria-expanded={panelOpen}
+      aria-haspopup="dialog"
+      aria-label={
+        unreadCount > 0
+          ? `Notificaciones (${unreadCount} sin leer)`
+          : 'Notificaciones en tiempo real'
+      }
+      className="relative min-h-[36px] min-w-[36px] lg:min-h-[34px] lg:px-2.5 flex items-center justify-center gap-1.5 rounded-xl lg:rounded-lg border border-[#27272E] bg-[#1C1C22] lg:bg-[#141418] text-zinc-200 hover:border-amber-500 transition-colors shrink-0"
+    >
+      <Bell className={`w-4 h-4 ${unreadCount > 0 ? 'text-amber-400' : 'text-zinc-300'}`} />
+      <span className="hidden xl:inline text-xs font-semibold">Alertas</span>
+      {unreadCount > 0 ? (
+        <span className="font-mono text-[10px] font-extrabold bg-red-600 text-white px-1.5 py-0.5 rounded-full leading-none tabular-nums">
+          {unreadCount > 99 ? '99+' : unreadCount}
+        </span>
+      ) : (
+        permState === 'default' && (
+          <span
+            className="w-2 h-2 rounded-full bg-amber-400 shrink-0"
+            aria-hidden="true"
+          />
+        )
+      )}
+    </button>
+  );
+};
+
+export const NotificationCenterOverlays: React.FC = () => {
+  const {
+    panelOpen,
+    closePanel,
+    visibleNotifications,
+    notificationsLoaded,
+    permState,
+    soundMuted,
+    requestingPerm,
+    showFloatingPermPrompt,
+    liveToasts,
+    isAdmin,
+    markAllRead,
+    handleRequestDevicePermission,
+    handleDismissPrompt,
+    handleToggleSound,
+    handleTestAlert,
+    handleNotificationAction,
+    handleDismissToast,
+    handleDeleteOrDismissNotification,
+  } = useNotificationCenterContext();
+
+  if (typeof document === 'undefined') return null;
+
+  return createPortal(
+    <>
       {/* One-tap permission bar (shown only while browser permission is 'default' & not dismissed) */}
       {showFloatingPermPrompt && !panelOpen && (
         <div className="fixed bottom-[4.4rem] lg:bottom-4 right-3 left-3 sm:left-auto sm:w-96 z-40 rounded-2xl border border-amber-500/70 bg-[#141418]/95 backdrop-blur-md p-3 shadow-2xl flex items-center justify-between gap-2.5">
@@ -480,9 +670,7 @@ export const NotificationCenter: React.FC<Props> = ({
                 </button>
                 <button
                   type="button"
-                  onClick={() =>
-                    setLiveToasts((prev) => prev.filter((t) => t.id !== toast.id))
-                  }
+                  onClick={() => handleDismissToast(toast.id)}
                   aria-label="Cerrar alerta"
                   className="min-h-[28px] min-w-[28px] flex items-center justify-center rounded-lg text-zinc-400 hover:text-white hover:bg-black/30 shrink-0"
                 >
@@ -494,18 +682,18 @@ export const NotificationCenter: React.FC<Props> = ({
         </div>
       )}
 
-      {/* Notification Center Modal / Drawer */}
+      {/* Notification Center Modal / Drawer (Portaled outside backdrop-blur header) */}
       {panelOpen && (
         <div
           className="fixed inset-0 z-50 flex items-end sm:items-start sm:justify-end bg-black/70 backdrop-blur-sm sm:p-4"
           role="dialog"
           aria-modal="true"
           aria-labelledby="notif-center-title"
-          onClick={() => setPanelOpen(false)}
+          onClick={closePanel}
         >
           <div
             onClick={(e) => e.stopPropagation()}
-            className="w-full sm:max-w-md bg-[#141418] text-white rounded-t-3xl sm:rounded-2xl border border-[#27272E] shadow-2xl overflow-hidden max-h-[88vh] flex flex-col sm:mt-12"
+            className="w-full sm:max-w-md bg-[#141418] text-white rounded-t-3xl sm:rounded-2xl border border-[#27272E] shadow-2xl overflow-hidden max-h-[82vh] sm:max-h-[80vh] flex flex-col sm:mt-14"
           >
             <div className="px-4 py-3 border-b border-[#27272E] bg-[#101014] flex items-center justify-between gap-2 shrink-0">
               <div className="flex items-center gap-2 min-w-0">
@@ -514,13 +702,13 @@ export const NotificationCenter: React.FC<Props> = ({
                   id="notif-center-title"
                   className="font-poster text-lg font-extrabold tracking-wide uppercase truncate"
                 >
-                  NOTIFICACIONES ({notifications.length})
+                  NOTIFICACIONES ({visibleNotifications.length})
                 </h2>
               </div>
 
               <button
                 type="button"
-                onClick={() => setPanelOpen(false)}
+                onClick={closePanel}
                 aria-label="Cerrar centro de notificaciones"
                 className="min-h-[38px] min-w-[38px] flex items-center justify-center rounded-xl text-zinc-400 hover:bg-[#1C1C22] hover:text-white shrink-0"
               >
@@ -560,7 +748,7 @@ export const NotificationCenter: React.FC<Props> = ({
                     </button>
                   )}
 
-                  {notifications.length > 0 && (
+                  {visibleNotifications.length > 0 && (
                     <button
                       type="button"
                       onClick={markAllRead}
@@ -597,15 +785,25 @@ export const NotificationCenter: React.FC<Props> = ({
             </div>
 
             <div className="p-3 overflow-y-auto space-y-2 flex-1">
-              {notifications.length === 0 ? (
+              {!notificationsLoaded && visibleNotifications.length === 0 ? (
+                <div className="py-10 px-4 text-center space-y-2">
+                  <Loader2 className="w-7 h-7 text-amber-400 animate-spin mx-auto" />
+                  <p className="text-sm font-bold text-zinc-300">
+                    Cargando notificaciones...
+                  </p>
+                </div>
+              ) : visibleNotifications.length === 0 ? (
                 <div className="py-10 px-4 text-center space-y-1.5">
                   <Bell className="w-8 h-8 text-zinc-600 mx-auto" />
                   <p className="text-sm font-bold text-zinc-300">
                     Sin notificaciones aún
                   </p>
+                  <p className="text-xs text-zinc-500 max-w-xs mx-auto">
+                    Aquí aparecerán las comandas nuevas, aperturas y cierres de turno y anulaciones.
+                  </p>
                 </div>
               ) : (
-                notifications.slice(0, 60).map((notif) => {
+                visibleNotifications.slice(0, 60).map((notif) => {
                   const visuals = getNotifVisuals(notif.type);
                   return (
                     <div
@@ -638,7 +836,7 @@ export const NotificationCenter: React.FC<Props> = ({
                       {isAdmin && (
                         <button
                           type="button"
-                          onClick={() => void deleteWorkspaceNotification(notif.id)}
+                          onClick={() => void handleDeleteOrDismissNotification(notif)}
                           aria-label={`Eliminar notificación ${notif.title}`}
                           className="min-h-[30px] min-w-[30px] flex items-center justify-center rounded-lg text-zinc-500 hover:text-red-400 hover:bg-red-950/40 shrink-0"
                         >
@@ -653,6 +851,7 @@ export const NotificationCenter: React.FC<Props> = ({
           </div>
         </div>
       )}
-    </>
+    </>,
+    document.body
   );
 };

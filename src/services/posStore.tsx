@@ -116,6 +116,7 @@ import {
   aggregateInventoriablePurchases,
   buildNotificationCopy,
   calculateInvoiceTotals,
+  mergeWorkspaceNotifications,
   normalizeInvoiceLine,
   validatePurchaseInvoiceDraft,
 } from '../utils/purchaseExpenseMath';
@@ -402,11 +403,13 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [sauces, setSauces] = useState<Sauce[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
   const [posOrders, setPosOrders] = useState<Order[]>([]);
+  const [posOrdersLoaded, setPosOrdersLoaded] = useState(false);
   const [selfServiceOrders, setSelfServiceOrders] = useState<Order[]>([]);
   const [selfOrdersLoaded, setSelfOrdersLoaded] = useState(false);
   const [movements, setMovements] = useState<Movement[]>([]);
   const [posTransfers, setPosTransfers] = useState<TransferReceipt[]>([]);
   const [shifts, setShifts] = useState<Shift[]>([]);
+  const [shiftsLoaded, setShiftsLoaded] = useState(false);
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [billingConfig, setBillingConfig] = useState<BusinessBillingConfig>(DEFAULT_BILLING_CONFIG);
   const [selfServiceConfig, setSelfServiceConfig] = useState<SelfServicePaymentConfig>(
@@ -455,35 +458,20 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     );
   }, [posTransfers, selfServiceOrders, authorizedEmails]);
 
-  const notifications = useMemo(() => {
-    const existingNotifOrderIds = new Set(
-      posNotifications
-        .filter((n) => n.type === 'nueva_comanda' && Boolean(n.orderId))
-        .map((n) => n.orderId)
-    );
-    const syntheticSelfNotifs: WorkspaceNotification[] = selfServiceOrders
-      .filter((s) => !existingNotifOrderIds.has(s.id) && s.status !== 'cancelado')
-      .map((s) => ({
-        id: `notif_self_${s.id}`,
-        type: 'nueva_comanda' as const,
-        title: `Autoservicio #${s.orderNumber} · ${s.deliveryType === 'domicilio' ? 'Domicilio' : 'Local'}`,
-        message: `${s.customerName || 'Cliente'} envió pedido por $${Math.round(s.total).toLocaleString('es-CO')} con comprobante`,
-        orderId: s.id,
-        orderNumber: s.orderNumber,
-        shiftId: '',
-        actorName: s.customerName || 'Autoservicio',
-        actorUid: 'autoservicio_public',
-        ownerUid: s.ownerUid,
-        createdByUid: 'autoservicio_public',
-        allowedEmails: authorizedEmails,
-        createdAtMs: s.createdAtMs,
-      }));
-    return [...posNotifications, ...syntheticSelfNotifs].sort(
-      (a, b) => (b.createdAtMs || 0) - (a.createdAtMs || 0)
-    );
-  }, [posNotifications, selfServiceOrders, authorizedEmails]);
+  const notifications = useMemo(
+    () =>
+      mergeWorkspaceNotifications({
+        persistedNotifications: posNotifications,
+        posOrders,
+        selfServiceOrders,
+        shifts,
+        authorizedEmails,
+      }),
+    [posNotifications, posOrders, selfServiceOrders, shifts, authorizedEmails]
+  );
 
-  const notificationsLoaded = posNotificationsLoaded && selfOrdersLoaded;
+  const notificationsLoaded =
+    posNotificationsLoaded && selfOrdersLoaded && posOrdersLoaded && shiftsLoaded;
 
   const openShift = useMemo(
     () => shifts.find((s) => s.status === 'abierto') || null,
@@ -661,6 +649,10 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       } else if (!activeUser && sessionModeRef.current === 'cloud') {
         setCloudReadyForUid(null);
         setStaffLoaded(false);
+        setPosOrdersLoaded(false);
+        setShiftsLoaded(false);
+        setPosNotificationsLoaded(false);
+        setSelfOrdersLoaded(false);
         setLoadingData(false);
         setSessionMode(null);
       }
@@ -680,6 +672,8 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setLoadingData(true);
     setStaffLoaded(false);
     setInventoryLoaded(false);
+    setPosOrdersLoaded(false);
+    setShiftsLoaded(false);
     setPosNotificationsLoaded(false);
     setSelfOrdersLoaded(false);
     setPublicStorefrontChecked(false);
@@ -789,6 +783,8 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                 setter(items);
                 if (subName === 'staff') setStaffLoaded(true);
                 if (subName === 'inventory') setInventoryLoaded(true);
+                if (subName === 'orders') setPosOrdersLoaded(true);
+                if (subName === 'shifts') setShiftsLoaded(true);
                 if (subName === 'notifications') setPosNotificationsLoaded(true);
                 loadedCollections.add(subName);
                 if (REQUIRED_COLLECTIONS.every((c) => loadedCollections.has(c))) {
@@ -798,6 +794,8 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
               (err) => {
                 setCloudError(err instanceof Error ? err.message : `Error al cargar ${subName}`);
                 setStaffLoaded(true);
+                if (subName === 'orders') setPosOrdersLoaded(true);
+                if (subName === 'shifts') setShiftsLoaded(true);
                 if (subName === 'notifications') setPosNotificationsLoaded(true);
                 setLoadingData(false);
                 handleFirestoreError(err, OperationType.LIST, path);
@@ -949,11 +947,13 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setSauces([]);
     setProducts([]);
     setPosOrders([]);
+    setPosOrdersLoaded(false);
     setSelfServiceOrders([]);
     setSelfOrdersLoaded(false);
     setMovements([]);
     setPosTransfers([]);
     setShifts([]);
+    setShiftsLoaded(false);
     setCustomers([]);
     setInventory([]);
     setInventoryMovements([]);
@@ -4034,6 +4034,9 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     async (notifId: string) => {
       requireAdmin();
       requireCloud();
+      if (notifId.startsWith('notif_self_') || notifId.startsWith('notif_sync_')) {
+        return;
+      }
       const path = `workspaces/${SHARED_WORKSPACE_ID}/notifications/${notifId}`;
       try {
         await deleteDoc(doc(db!, path));

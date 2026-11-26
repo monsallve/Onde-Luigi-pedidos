@@ -6,12 +6,13 @@ import {
   buildNotificationCopy,
   calculateInvoiceTotals,
   countUnreadNotifications,
+  mergeWorkspaceNotifications,
   normalizeInvoiceLine,
   normalizeReceiptCode,
   selectLiveNewNotifications,
   validatePurchaseInvoiceDraft,
 } from './purchaseExpenseMath';
-import type { WorkspaceNotification } from '../types/pos';
+import type { Order, Shift, WorkspaceNotification } from '../types/pos';
 
 test('normalizeReceiptCode preserves alphanumeric letters and numbers cleanly', () => {
   assert.equal(normalizeReceiptCode('  fev-00412 / a9 '), 'FEV-00412-/-A9');
@@ -165,4 +166,125 @@ test('notification builders and live filter distinguish events without historica
     ['live_3']
   );
   assert.equal(countUnreadNotifications(list, 1_000_500), 2);
+});
+
+test('mergeWorkspaceNotifications synthesizes missing POS/shift/void events without duplicating persisted notifications', () => {
+  const persisted: WorkspaceNotification[] = [
+    {
+      id: 'notif_persisted_1',
+      type: 'nueva_comanda',
+      title: 'Nueva comanda #10 · Mesa 1',
+      message: 'Laura registró pedido',
+      orderId: 'ord_10',
+      orderNumber: 10,
+      shiftId: '',
+      actorName: 'Laura',
+      actorUid: 'u1',
+      ownerUid: 'owner',
+      createdByUid: 'u1',
+      allowedEmails: [],
+      createdAtMs: 2_000,
+    },
+  ];
+
+  const posOrders: Order[] = [
+    {
+      id: 'ord_10',
+      orderNumber: 10,
+      reference: 'Mesa 1',
+      waiterId: 'w1',
+      waiterName: 'Laura',
+      status: 'tomado',
+      paymentStatus: 'pendiente',
+      paymentMethod: '',
+      items: [],
+      subtotal: 16000,
+      total: 16000,
+      notes: '',
+      receiptCount: 0,
+      latestReceiptUrl: '',
+      ownerUid: 'owner',
+      createdByUid: 'u1',
+      allowedEmails: [],
+      createdAtMs: 2_000,
+      updatedAtMs: 2_000,
+    },
+    {
+      id: 'ord_11',
+      orderNumber: 11,
+      reference: 'Mesa 2',
+      waiterId: 'w1',
+      waiterName: 'Carlos',
+      status: 'cancelado',
+      paymentStatus: 'pagado',
+      paymentMethod: 'efectivo',
+      items: [],
+      subtotal: 26000,
+      total: 26000,
+      notes: '',
+      receiptCount: 0,
+      latestReceiptUrl: '',
+      voidReason: 'Cliente cambió pedido',
+      voidedByName: 'Admin',
+      voidedAtMs: 4_000,
+      ownerUid: 'owner',
+      createdByUid: 'u1',
+      allowedEmails: [],
+      createdAtMs: 3_000,
+      updatedAtMs: 4_000,
+    },
+  ];
+
+  const shifts: Shift[] = [
+    {
+      id: 'shift_1',
+      status: 'cerrado',
+      openedByStaffId: 'w1',
+      openedByName: 'Admin',
+      openedByUid: 'u1',
+      openingBaseAmount: 100000,
+      openingNote: '',
+      openedAtMs: 1_000,
+      closedByStaffId: 'w1',
+      closedByName: 'Admin',
+      closedByUid: 'u1',
+      closedAtMs: 5_000,
+      closingNote: '',
+      usedPaymentMethods: ['efectivo'],
+      declaredClosingBase: 100000,
+      declaredByMethod: { efectivo: 26000 },
+      expectedBaseAmount: 100000,
+      expectedByMethod: { efectivo: 26000 },
+      expectedTotal: 126000,
+      declaredTotal: 126000,
+      differenceTotal: 0,
+      paidOrdersCount: 1,
+      pendingOrdersCount: 0,
+      ownerUid: 'owner',
+      createdByUid: 'u1',
+      allowedEmails: [],
+      createdAtMs: 1_000,
+      updatedAtMs: 5_000,
+    },
+  ];
+
+  const merged = mergeWorkspaceNotifications({
+    persistedNotifications: persisted,
+    posOrders,
+    selfServiceOrders: [],
+    shifts,
+    authorizedEmails: [],
+  });
+
+  // ord_10 is not duplicated; ord_11 generates created + voided; shift_1 generates open + close
+  assert.deepEqual(
+    merged.map((n) => n.id),
+    [
+      'notif_sync_shift_close_shift_1',
+      'notif_sync_void_ord_11',
+      'notif_sync_order_ord_11',
+      'notif_persisted_1',
+      'notif_sync_shift_open_shift_1',
+    ]
+  );
 });
