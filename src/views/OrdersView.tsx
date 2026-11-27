@@ -19,8 +19,9 @@ import {
   X,
   XCircle,
 } from 'lucide-react';
+import { VoidOrderModal } from '../components/VoidOrderModal';
 import { usePosStore } from '../services/posStore';
-import type { Order, OrderStatus } from '../types/pos';
+import type { Order, OrderStatus, TrackedPaymentMethod } from '../types/pos';
 import { isDefaultFinalConsumer, resolveOrderCustomerInfo } from '../utils/billingUtils';
 import {
   formatCurrency,
@@ -30,6 +31,7 @@ import {
   ORDER_STATUS_LABELS,
   PAYMENT_METHOD_LABELS,
 } from '../utils/orderMath';
+import { TRACKED_PAYMENT_METHOD_LABELS } from '../utils/shiftMath';
 
 interface Props {
   onNewOrder: () => void;
@@ -103,7 +105,10 @@ export const OrdersView: React.FC<Props> = ({
   const [paymentFilter, setPaymentFilter] = useState<'todos' | 'pendiente' | 'pagado'>('todos');
   const [searchQuery, setSearchQuery] = useState('');
   const [busyOrderId, setBusyOrderId] = useState<string | null>(null);
-  const [confirmCancelId, setConfirmCancelId] = useState<string | null>(null);
+  const [voidTarget, setVoidTarget] = useState<Order | null>(null);
+  const [voidBusy, setVoidBusy] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [actionNotice, setActionNotice] = useState<{ orderNumber: number; text: string } | null>(null);
 
   const [deleteTarget, setDeleteTarget] = useState<Order | null>(null);
   const [deleting, setDeleting] = useState(false);
@@ -143,7 +148,8 @@ export const OrdersView: React.FC<Props> = ({
     const pendingPay = orders.filter(
       (o) => o.status !== 'cancelado' && o.paymentStatus === 'pendiente'
     ).length;
-    return { active, pendingPay, total: orders.length };
+    const voided = orders.filter((o) => o.status === 'cancelado').length;
+    return { active, pendingPay, voided, total: orders.length };
   }, [orders, isKitchenOnly]);
 
   const filteredOrders = useMemo(() => {
@@ -200,16 +206,60 @@ export const OrdersView: React.FC<Props> = ({
       onOpenWaiterPicker();
       return;
     }
+    setActionError(null);
     setBusyOrderId(orderId);
     try {
-      if (nextStatus === 'cancelado') {
-        await voidOrder(orderId);
-      } else {
-        await updateOrderStatus(orderId, nextStatus);
-      }
-      setConfirmCancelId(null);
+      await updateOrderStatus(orderId, nextStatus);
+    } catch (err) {
+      setActionError(
+        err instanceof Error ? err.message : 'No se pudo actualizar el estado del pedido.'
+      );
     } finally {
       setBusyOrderId(null);
+    }
+  };
+
+  const handleOpenVoid = (order: Order) => {
+    if (!activeWaiter) {
+      onOpenWaiterPicker();
+      return;
+    }
+    setActionError(null);
+    setActionNotice(null);
+    setVoidTarget(order);
+  };
+
+  const handleConfirmVoid = async ({
+    orderId,
+    reason,
+    refundMethod,
+  }: {
+    orderId: string;
+    reason: string;
+    refundMethod?: TrackedPaymentMethod;
+  }) => {
+    const target = orders.find((o) => o.id === orderId) || voidTarget;
+    setVoidBusy(true);
+    setActionError(null);
+    try {
+      await voidOrder(orderId, reason, refundMethod);
+      setVoidTarget(null);
+      if (target) {
+        const refundNote =
+          target.paymentStatus === 'pagado' && refundMethod
+            ? ` · Devolución en ${TRACKED_PAYMENT_METHOD_LABELS[refundMethod]}`
+            : '';
+        setActionNotice({
+          orderNumber: target.orderNumber,
+          text: `Comanda #${target.orderNumber} (${target.reference}) movida a Comandas Anuladas${refundNote}.`,
+        });
+      }
+    } catch (err) {
+      setActionError(
+        err instanceof Error ? err.message : 'No se pudo anular la comanda.'
+      );
+    } finally {
+      setVoidBusy(false);
     }
   };
 
@@ -232,12 +282,12 @@ export const OrdersView: React.FC<Props> = ({
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
         <div>
           <h1 className="font-poster text-3xl sm:text-4xl font-extrabold tracking-wide text-white leading-none">
-            COMANDAS EN CURSO
+            {statusFilter === 'cancelado' ? 'COMANDAS ANULADAS' : 'COMANDAS EN CURSO'}
           </h1>
           <p className="text-xs text-zinc-400 mt-1 tabular-nums">
             {isKitchenOnly
               ? `${counts.active} comandas en cocina`
-              : `${counts.active} activos · ${counts.pendingPay} por cobrar · ${counts.total} registrados`}
+              : `${counts.active} activos · ${counts.pendingPay} por cobrar · ${counts.voided} anuladas`}
           </p>
         </div>
         {permissions.canTakeOrders && (
@@ -302,20 +352,23 @@ export const OrdersView: React.FC<Props> = ({
                 { id: 'listo', label: 'Listo' },
               ] as const)
             : ([
-                { id: 'activos', label: 'En curso' },
-                { id: 'todos', label: 'Todos' },
+                { id: 'activos', label: `En curso (${counts.active})` },
+                { id: 'cancelado', label: `Anuladas (${counts.voided})` },
+                { id: 'todos', label: `Todos (${counts.total})` },
                 { id: 'pendiente_validacion', label: 'Por validar' },
                 { id: 'tomado', label: 'Tomado' },
                 { id: 'preparacion', label: 'En preparación' },
                 { id: 'listo', label: 'Listo' },
                 { id: 'entregado', label: 'Entregado' },
-                { id: 'cancelado', label: 'Anulado' },
               ] as const)
           ).map((sf) => (
             <button
               key={sf.id}
               type="button"
-              onClick={() => setStatusFilter(sf.id)}
+              onClick={() => {
+                setStatusFilter(sf.id);
+                if (sf.id === 'cancelado') setPaymentFilter('todos');
+              }}
               className={`min-h-[36px] px-3 rounded-lg text-xs font-semibold border whitespace-nowrap shrink-0 transition-colors ${
                 statusFilter === sf.id
                   ? 'bg-red-600 text-white border-red-500 font-bold'
@@ -327,6 +380,61 @@ export const OrdersView: React.FC<Props> = ({
           ))}
         </div>
       </div>
+
+      {actionError && !voidTarget && (
+        <div
+          role="alert"
+          className="rounded-xl border border-red-700 bg-red-950/70 px-4 py-3 text-xs font-semibold text-red-100 flex items-center justify-between gap-3"
+        >
+          <div className="flex items-center gap-2">
+            <AlertTriangle className="w-4 h-4 text-red-400 shrink-0" />
+            <span>{actionError}</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setActionError(null)}
+            aria-label="Cerrar aviso"
+            className="text-red-300 hover:text-white"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
+
+      {actionNotice && (
+        <div
+          role="status"
+          className="rounded-xl border border-emerald-700 bg-emerald-950/60 px-4 py-3 text-xs font-semibold text-emerald-100 flex flex-wrap items-center justify-between gap-3"
+        >
+          <div className="flex items-center gap-2">
+            <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+            <span>{actionNotice.text}</span>
+          </div>
+          <div className="flex items-center gap-2">
+            {statusFilter !== 'cancelado' && !isKitchenOnly && (
+              <button
+                type="button"
+                onClick={() => {
+                  setStatusFilter('cancelado');
+                  setPaymentFilter('todos');
+                  setActionNotice(null);
+                }}
+                className="min-h-[32px] px-3 rounded-lg bg-red-600 text-white text-xs font-bold hover:bg-red-500"
+              >
+                Ver en Anuladas
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => setActionNotice(null)}
+              aria-label="Cerrar aviso"
+              className="text-emerald-300 hover:text-white"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Orders Grid */}
       {loadingData ? (
@@ -468,13 +576,23 @@ export const OrdersView: React.FC<Props> = ({
                     </div>
                   </div>
 
-                  {isVoided && (order.voidedByName || order.voidReason) && (
-                    <div className="rounded-lg bg-red-950/40 border border-red-900/60 px-2.5 py-1.5 text-xs text-red-200 flex items-start gap-1.5">
-                      <Ban className="w-3.5 h-3.5 text-red-400 shrink-0 mt-0.5" />
-                      <span>
-                        Anulada{order.voidedByName ? ` por ${order.voidedByName}` : ''}
-                        {order.voidReason ? ` · ${order.voidReason}` : ''}
-                      </span>
+                  {isVoided && (order.voidedByName || order.voidReason || order.refundMethod) && (
+                    <div className="rounded-lg bg-red-950/40 border border-red-900/60 px-2.5 py-2 text-xs text-red-200 space-y-1">
+                      {(order.voidedByName || order.voidReason) && (
+                        <div className="flex items-start gap-1.5">
+                          <Ban className="w-3.5 h-3.5 text-red-400 shrink-0 mt-0.5" />
+                          <span>
+                            Anulada{order.voidedByName ? ` por ${order.voidedByName}` : ''}
+                            {order.voidReason ? ` · ${order.voidReason}` : ''}
+                          </span>
+                        </div>
+                      )}
+                      {order.paymentStatus === 'pagado' && order.refundMethod && (
+                        <p className="text-[11px] font-bold text-amber-300 pl-5">
+                          Devolución: {TRACKED_PAYMENT_METHOD_LABELS[order.refundMethod]} (
+                          {formatCurrency(order.refundAmount ?? order.total)})
+                        </p>
+                      )}
                     </div>
                   )}
 
@@ -619,28 +737,20 @@ export const OrdersView: React.FC<Props> = ({
                       </button>
                     )}
 
-                    {!isVoided && order.status !== 'entregado' && permissions.canVoidOrders && (
-                      confirmCancelId === order.id ? (
-                        <button
-                          type="button"
-                          disabled={isBusy}
-                          onClick={() => handleStatusChange(order.id, 'cancelado')}
-                          className="min-h-[42px] px-3 rounded-xl bg-red-600 text-white text-xs font-bold hover:bg-red-500 whitespace-nowrap"
-                        >
-                          ¿Anular pedido?
-                        </button>
-                      ) : (
-                        <button
-                          type="button"
-                          onClick={() => setConfirmCancelId(order.id)}
-                          title="Anular pedido"
-                          aria-label={`Anular pedido #${order.orderNumber}`}
-                          className="min-h-[42px] px-3 rounded-xl border border-red-800 bg-red-950/40 text-red-300 text-xs font-semibold hover:bg-red-950 flex items-center gap-1 whitespace-nowrap"
-                        >
-                          <Ban className="w-3.5 h-3.5" />
-                          <span>Anular</span>
-                        </button>
-                      )
+                    {!isVoided && permissions.canVoidOrders && (
+                      <button
+                        type="button"
+                        disabled={isBusy}
+                        onClick={() => handleOpenVoid(order)}
+                        title="Anular comanda"
+                        aria-label={`Anular comanda #${order.orderNumber}`}
+                        className={`${
+                          nextStatus && canAdvanceThisStatus ? '' : 'flex-1 justify-center '
+                        }min-h-[42px] px-3 rounded-xl border border-red-800 bg-red-950/40 text-red-300 text-xs font-semibold hover:bg-red-950 flex items-center gap-1 whitespace-nowrap`}
+                      >
+                        <Ban className="w-3.5 h-3.5" />
+                        <span>Anular</span>
+                      </button>
                     )}
 
                     {isVoided && permissions.canHardDelete && (
@@ -740,6 +850,18 @@ export const OrdersView: React.FC<Props> = ({
           </div>
         </div>
       )}
+      <VoidOrderModal
+        order={voidTarget}
+        busy={voidBusy}
+        error={actionError}
+        onClose={() => {
+          if (!voidBusy) {
+            setVoidTarget(null);
+            setActionError(null);
+          }
+        }}
+        onConfirm={handleConfirmVoid}
+      />
     </div>
   );
 };

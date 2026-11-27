@@ -7,7 +7,10 @@ import {
   resolvePosBasePath,
   shouldPosRedirectToAutoservicio,
 } from './utils/autoservicioRouteGuard';
+import { installGlobalInputExecutionGuard } from './utils/inputSecurity';
 import { syncDynamicManifestLink } from './utils/pwaManifest';
+
+installGlobalInputExecutionGuard();
 
 window.addEventListener('vite:preloadError', () => {
   window.location.reload();

@@ -1,9 +1,13 @@
 import { initializeApp, getApps, type FirebaseApp } from 'firebase/app';
 import { getAuth, type Auth } from 'firebase/auth';
 import {
+  CACHE_SIZE_UNLIMITED,
   doc,
   getDocFromServer,
   getFirestore,
+  initializeFirestore,
+  persistentLocalCache,
+  persistentMultipleTabManager,
   type Firestore,
 } from 'firebase/firestore';
 import { getStorage, type FirebaseStorage } from 'firebase/storage';
@@ -91,6 +95,26 @@ let db: Firestore | null = null;
 let auth: Auth | null = null;
 let storage: FirebaseStorage | null = null;
 
+function createPersistentFirestore(
+  firebaseApp: FirebaseApp,
+  databaseId?: string
+): Firestore {
+  try {
+    return initializeFirestore(
+      firebaseApp,
+      {
+        localCache: persistentLocalCache({
+          tabManager: persistentMultipleTabManager(),
+          cacheSizeBytes: CACHE_SIZE_UNLIMITED,
+        }),
+      },
+      databaseId
+    );
+  } catch {
+    return databaseId ? getFirestore(firebaseApp, databaseId) : getFirestore(firebaseApp);
+  }
+}
+
 function initFromConfig(cfg: FirebaseResolvedConfig): boolean {
   try {
     const firebaseApp =
@@ -105,9 +129,7 @@ function initFromConfig(cfg: FirebaseResolvedConfig): boolean {
             appId: cfg.appId,
           });
 
-    const firestoreDb = cfg.firestoreDatabaseId
-      ? getFirestore(firebaseApp, cfg.firestoreDatabaseId)
-      : getFirestore(firebaseApp);
+    const firestoreDb = createPersistentFirestore(firebaseApp, cfg.firestoreDatabaseId);
 
     const firebaseAuth = getAuth(firebaseApp);
     let firebaseStorage: FirebaseStorage | null = null;

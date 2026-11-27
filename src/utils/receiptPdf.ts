@@ -7,6 +7,7 @@ import {
   normalizeBillingConfig,
   resolveOrderCustomerInfo,
 } from './billingUtils';
+import { sanitizePlainText } from './inputSecurity';
 import {
   formatCurrency,
   formatDateTimeShort,
@@ -47,6 +48,7 @@ export async function downloadOrderReceiptPdf(
   const receiptNo = buildReceiptNumber(order, cfg);
   const filename = buildReceiptFilename(order, cfg);
   const logoDataUrl = await loadLogoDataUrl();
+  const safeText = (val: unknown, maxLen = 200) => sanitizePlainText(val, { maxLen });
 
   const { jsPDF } = await import('jspdf');
   const pageWidth = 80;
@@ -70,20 +72,20 @@ export async function downloadOrderReceiptPdf(
 
     doc.setFont('helvetica', 'bold');
     doc.setFontSize(12);
-    const bizLines = doc.splitTextToSize(cfg.businessName.toUpperCase(), contentWidth);
+    const bizLines = doc.splitTextToSize(safeText(cfg.businessName, 120).toUpperCase(), contentWidth);
     doc.text(bizLines, pageWidth / 2, y, { align: 'center' });
     y += bizLines.length * 4.6;
 
     doc.setFont('helvetica', 'normal');
     doc.setFontSize(8);
     const headerMeta: string[] = [];
-    if (cfg.legalName) headerMeta.push(cfg.legalName);
-    if (cfg.nit) headerMeta.push(`NIT: ${cfg.nit}`);
-    if (cfg.regime) headerMeta.push(cfg.regime);
-    if (cfg.address) headerMeta.push(cfg.address);
-    if (cfg.city) headerMeta.push(cfg.city);
-    if (cfg.phone) headerMeta.push(`Tel: ${cfg.phone}`);
-    if (cfg.email) headerMeta.push(cfg.email);
+    if (cfg.legalName) headerMeta.push(safeText(cfg.legalName, 120));
+    if (cfg.nit) headerMeta.push(`NIT: ${safeText(cfg.nit, 40)}`);
+    if (cfg.regime) headerMeta.push(safeText(cfg.regime, 80));
+    if (cfg.address) headerMeta.push(safeText(cfg.address, 160));
+    if (cfg.city) headerMeta.push(safeText(cfg.city, 80));
+    if (cfg.phone) headerMeta.push(`Tel: ${safeText(cfg.phone, 40)}`);
+    if (cfg.email) headerMeta.push(safeText(cfg.email, 160));
 
     for (const line of headerMeta) {
       const wrapped = doc.splitTextToSize(line, contentWidth);
@@ -99,16 +101,16 @@ export async function downloadOrderReceiptPdf(
 
     doc.setFont('helvetica', 'bold');
     doc.setFontSize(9.5);
-    doc.text(`COLILLA DE COMPRA ${receiptNo}`, pageWidth / 2, y, { align: 'center' });
+    doc.text(`COLILLA DE COMPRA ${safeText(receiptNo, 40)}`, pageWidth / 2, y, { align: 'center' });
     y += 4.2;
 
     doc.setFont('helvetica', 'normal');
     doc.setFontSize(8);
-    doc.text(`Pedido: #${order.orderNumber} (${order.reference})`, marginX, y);
+    doc.text(`Pedido: #${order.orderNumber} (${safeText(order.reference, 100)})`, marginX, y);
     y += 3.6;
     doc.text(`Fecha: ${formatDateTimeShort(order.createdAtMs)}`, marginX, y);
     y += 3.6;
-    doc.text(`Atendido por: ${order.waiterName}`, marginX, y);
+    doc.text(`Atendido por: ${safeText(order.waiterName, 80)}`, marginX, y);
     y += 3.6;
     doc.text(`Estado: ${ORDER_STATUS_LABELS[order.status]}`, marginX, y);
     y += 4.2;
@@ -123,17 +125,17 @@ export async function downloadOrderReceiptPdf(
     y += 3.6;
     doc.setFont('helvetica', 'normal');
     doc.setFontSize(8);
-    const custNameLines = doc.splitTextToSize(`Cliente: ${customer.name}`, contentWidth);
+    const custNameLines = doc.splitTextToSize(`Cliente: ${safeText(customer.name, 120)}`, contentWidth);
     doc.text(custNameLines, marginX, y);
     y += custNameLines.length * 3.5;
-    doc.text(`NIT / Cédula: ${customer.documentNumber}`, marginX, y);
+    doc.text(`NIT / Cédula: ${safeText(customer.documentNumber, 40)}`, marginX, y);
     y += 3.5;
     if (customer.phone) {
-      doc.text(`Tel: ${customer.phone}`, marginX, y);
+      doc.text(`Tel: ${safeText(customer.phone, 40)}`, marginX, y);
       y += 3.5;
     }
     if (customer.email) {
-      const emailLines = doc.splitTextToSize(`Correo: ${customer.email}`, contentWidth);
+      const emailLines = doc.splitTextToSize(`Correo: ${safeText(customer.email, 160)}`, contentWidth);
       doc.text(emailLines, marginX, y);
       y += emailLines.length * 3.5;
     }
@@ -151,7 +153,7 @@ export async function downloadOrderReceiptPdf(
 
     doc.setFont('helvetica', 'normal');
     for (const item of order.items) {
-      const titleText = `${item.quantity}x ${item.productName}`;
+      const titleText = `${item.quantity}x ${safeText(item.productName, 100)}`;
       const titleLines = doc.splitTextToSize(titleText, contentWidth - 18);
       doc.setFont('helvetica', 'bold');
       doc.setFontSize(8);
@@ -161,7 +163,7 @@ export async function downloadOrderReceiptPdf(
 
       doc.setFont('helvetica', 'normal');
       doc.setFontSize(7.2);
-      const details = buildReceiptItemLineDetails(item);
+      const details = safeText(buildReceiptItemLineDetails(item), 240);
       if (details) {
         const detailLines = doc.splitTextToSize(details, contentWidth - 3);
         doc.text(detailLines, marginX + 2, y);
@@ -188,7 +190,9 @@ export async function downloadOrderReceiptPdf(
     doc.setFontSize(8);
     const payLabel =
       order.status === 'cancelado'
-        ? 'VENTA ANULADA'
+        ? order.paymentStatus === 'pagado' && order.refundMethod
+          ? `VENTA ANULADA · Devolución: ${PAYMENT_METHOD_LABELS[order.refundMethod]}`
+          : 'VENTA ANULADA'
         : order.paymentStatus === 'pagado'
           ? `Pagado (${PAYMENT_METHOD_LABELS[order.paymentMethod]})`
           : 'Pendiente por pagar';
@@ -196,7 +200,7 @@ export async function downloadOrderReceiptPdf(
     y += 3.8;
 
     if (order.notes) {
-      const noteLines = doc.splitTextToSize(`Nota: ${order.notes}`, contentWidth);
+      const noteLines = doc.splitTextToSize(`Nota: ${safeText(order.notes, 400)}`, contentWidth);
       doc.text(noteLines, marginX, y);
       y += noteLines.length * 3.5;
     }
@@ -206,7 +210,7 @@ export async function downloadOrderReceiptPdf(
     y += 4;
 
     doc.setFontSize(7.4);
-    const footerLines = doc.splitTextToSize(cfg.footerNote, contentWidth);
+    const footerLines = doc.splitTextToSize(safeText(cfg.footerNote, 280), contentWidth);
     doc.text(footerLines, pageWidth / 2, y, { align: 'center' });
     y += footerLines.length * 3.2 + 5;
 

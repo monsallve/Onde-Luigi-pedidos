@@ -16,17 +16,21 @@ import {
   Clock,
   Loader2,
   ShoppingBag,
+  Smartphone,
   Trash2,
+  UserPlus,
   Volume2,
   VolumeX,
   X,
 } from 'lucide-react';
+import type { PushSyncStatusInfo } from '../services/pushMessagingService';
 import { usePosStore } from '../services/posStore';
 import type {
   AppTab,
   WorkspaceNotification,
   WorkspaceNotificationType,
 } from '../types/pos';
+import { safeJsonParse } from '../utils/inputSecurity';
 import {
   getNotificationPermissionState,
   isNotificationPromptDismissed,
@@ -79,7 +83,7 @@ function readDismissedSyntheticIds(): string[] {
     if (typeof window === 'undefined') return [];
     const raw = window.localStorage.getItem(DISMISSED_SYNTHETIC_STORAGE_KEY);
     if (!raw) return [];
-    const parsed = JSON.parse(raw);
+    const parsed = safeJsonParse<unknown>(raw, []);
     if (!Array.isArray(parsed)) return [];
     return parsed.filter((x): x is string => typeof x === 'string').slice(-200);
   } catch {
@@ -101,7 +105,11 @@ function persistDismissedSyntheticIds(ids: string[]): void {
 }
 
 function isSyntheticNotificationId(id: string): boolean {
-  return id.startsWith('notif_self_') || id.startsWith('notif_sync_');
+  return (
+    id.startsWith('notif_self_') ||
+    id.startsWith('notif_sync_') ||
+    id.startsWith('notif_access_req_')
+  );
 }
 
 function getNotifVisuals(type: WorkspaceNotificationType): {
@@ -139,6 +147,13 @@ function getNotifVisuals(type: WorkspaceNotificationType): {
         toastTone: 'border-red-600/85 bg-[#1A1012]',
         icon: <AlertOctagon className="w-4 h-4 text-red-400 shrink-0" />,
       };
+    case 'solicitud_acceso':
+      return {
+        badge: 'Nueva solicitud',
+        tone: 'bg-amber-500/20 border-amber-400/70 text-amber-300',
+        toastTone: 'border-amber-400/90 bg-[#1A150E]',
+        icon: <UserPlus className="w-4 h-4 text-amber-400 shrink-0" />,
+      };
   }
 }
 
@@ -150,6 +165,7 @@ interface NotificationCenterContextValue {
   notificationsLoaded: boolean;
   unreadCount: number;
   permState: NotificationPermissionState;
+  pushSyncStatus: PushSyncStatusInfo;
   soundMuted: boolean;
   requestingPerm: boolean;
   showFloatingPermPrompt: boolean;
@@ -157,6 +173,7 @@ interface NotificationCenterContextValue {
   isAdmin: boolean;
   markAllRead: () => void;
   handleRequestDevicePermission: () => Promise<void>;
+  handleSyncPushNow: () => Promise<void>;
   handleDismissPrompt: () => void;
   handleToggleSound: () => void;
   handleTestAlert: () => void;
@@ -178,12 +195,14 @@ function useNotificationCenterContext(): NotificationCenterContextValue {
 interface ProviderProps {
   onNavigateTab: (tab: AppTab) => void;
   onOpenShiftModal: () => void;
+  onOpenSettings?: () => void;
   children: React.ReactNode;
 }
 
 export const NotificationCenterProvider: React.FC<ProviderProps> = ({
   onNavigateTab,
   onOpenShiftModal,
+  onOpenSettings,
   children,
 }) => {
   const {
@@ -195,6 +214,8 @@ export const NotificationCenterProvider: React.FC<ProviderProps> = ({
     activeWaiter,
     myLinkedStaff,
     isRealPrimaryAdmin,
+    pushSyncStatus,
+    syncBackgroundPushNow,
     deleteWorkspaceNotification,
   } = usePosStore();
 
@@ -282,11 +303,13 @@ export const NotificationCenterProvider: React.FC<ProviderProps> = ({
         permissions.canManageShifts
       ) {
         onOpenShiftModal();
+      } else if (notifType === 'solicitud_acceso' && isAdmin) {
+        onOpenSettings?.();
       }
     };
     navigator.serviceWorker.addEventListener('message', onSwMessage);
     return () => navigator.serviceWorker.removeEventListener('message', onSwMessage);
-  }, [permissions, onNavigateTab, onOpenShiftModal]);
+  }, [permissions, isAdmin, onNavigateTab, onOpenShiftModal, onOpenSettings]);
 
   // Reset hydration guards on sign-out / workspace switch
   useEffect(() => {
@@ -400,6 +423,7 @@ export const NotificationCenterProvider: React.FC<ProviderProps> = ({
       if (next === 'granted') {
         setPromptDismissed(false);
         setNotificationPromptDismissed(false);
+        void syncBackgroundPushNow();
         triggerDeviceAlert(
           {
             id: `perm_ok_${Date.now()}`,
@@ -422,7 +446,16 @@ export const NotificationCenterProvider: React.FC<ProviderProps> = ({
     } finally {
       setRequestingPerm(false);
     }
-  }, [activeWaiter?.name]);
+  }, [activeWaiter?.name, syncBackgroundPushNow]);
+
+  const handleSyncPushNow = useCallback(async () => {
+    setRequestingPerm(true);
+    try {
+      await syncBackgroundPushNow();
+    } finally {
+      setRequestingPerm(false);
+    }
+  }, [syncBackgroundPushNow]);
 
   const handleDismissPrompt = useCallback(() => {
     setPromptDismissed(true);
@@ -483,9 +516,13 @@ export const NotificationCenterProvider: React.FC<ProviderProps> = ({
         permissions.canManageShifts
       ) {
         onOpenShiftModal();
+        return;
+      }
+      if (notif.type === 'solicitud_acceso' && isAdmin) {
+        onOpenSettings?.();
       }
     },
-    [markAllRead, onNavigateTab, onOpenShiftModal, permissions]
+    [markAllRead, onNavigateTab, onOpenShiftModal, onOpenSettings, permissions, isAdmin]
   );
 
   const handleDismissToast = useCallback((notifId: string) => {
@@ -522,6 +559,7 @@ export const NotificationCenterProvider: React.FC<ProviderProps> = ({
     notificationsLoaded,
     unreadCount,
     permState,
+    pushSyncStatus,
     soundMuted,
     requestingPerm,
     showFloatingPermPrompt,
@@ -529,6 +567,7 @@ export const NotificationCenterProvider: React.FC<ProviderProps> = ({
     isAdmin,
     markAllRead,
     handleRequestDevicePermission,
+    handleSyncPushNow,
     handleDismissPrompt,
     handleToggleSound,
     handleTestAlert,
@@ -585,6 +624,7 @@ export const NotificationCenterOverlays: React.FC = () => {
     visibleNotifications,
     notificationsLoaded,
     permState,
+    pushSyncStatus,
     soundMuted,
     requestingPerm,
     showFloatingPermPrompt,
@@ -592,6 +632,7 @@ export const NotificationCenterOverlays: React.FC = () => {
     isAdmin,
     markAllRead,
     handleRequestDevicePermission,
+    handleSyncPushNow,
     handleDismissPrompt,
     handleToggleSound,
     handleTestAlert,
@@ -782,6 +823,31 @@ export const NotificationCenterOverlays: React.FC = () => {
                   Notificaciones bloqueadas en el navegador. Habilítalas en la configuración del sitio para recibir alertas en segundo plano.
                 </div>
               )}
+
+              <div
+                className={`rounded-xl border px-3 py-2 flex items-center justify-between gap-2 text-[11px] ${
+                  pushSyncStatus.status === 'active'
+                    ? 'border-emerald-700/60 bg-emerald-950/40 text-emerald-200'
+                    : pushSyncStatus.status === 'blocked' || pushSyncStatus.status === 'error'
+                      ? 'border-red-800/70 bg-red-950/35 text-red-200'
+                      : 'border-[#27272E] bg-[#141418] text-zinc-300'
+                }`}
+              >
+                <div className="flex items-start gap-1.5 min-w-0">
+                  <Smartphone className="w-3.5 h-3.5 shrink-0 mt-0.5 text-amber-400" />
+                  <span className="leading-snug">{pushSyncStatus.message}</span>
+                </div>
+                {permState === 'granted' && pushSyncStatus.status !== 'active' && (
+                  <button
+                    type="button"
+                    disabled={requestingPerm}
+                    onClick={() => void handleSyncPushNow()}
+                    className="min-h-[28px] px-2.5 rounded-lg border border-amber-500/60 bg-amber-500/15 text-[10px] font-bold text-amber-300 hover:bg-amber-500/25 shrink-0"
+                  >
+                    Reintentar
+                  </button>
+                )}
+              </div>
             </div>
 
             <div className="p-3 overflow-y-auto space-y-2 flex-1">

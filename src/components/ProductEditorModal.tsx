@@ -1270,7 +1270,7 @@ export const ProductEditorModal: React.FC<Props> = ({ product, copySource, onClo
                 <p className="text-xs font-bold text-white">Foto del producto (opcional)</p>
               </div>
               <span className="text-[11px] text-zinc-400 hidden sm:inline">
-                Compresión automática
+                Compresión automática WebP
               </span>
             </div>
 
@@ -1343,7 +1343,7 @@ export const ProductEditorModal: React.FC<Props> = ({ product, copySource, onClo
                         setImagePreviewUrl('');
                         setImageUrl(e.target.value);
                       }}
-                      placeholder="/menu/mixta.jpg o https://..."
+                      placeholder="/menu/mixta.webp o https://..."
                       className="w-full min-h-[38px] rounded-xl border border-[#27272E] bg-[#0A0A0A] px-3 font-mono text-xs text-zinc-200 placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-amber-500"
                     />
                   </div>

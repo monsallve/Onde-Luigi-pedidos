@@ -1,4 +1,10 @@
-import type { ConnectionMode, StaffMember } from '../types/pos';
+import type {
+  AccessRequestStatus,
+  ConnectionMode,
+  StaffMember,
+  StartupAccessStatus,
+} from '../types/pos';
+import { sanitizePlainText } from './inputSecurity';
 
 export function findLinkedStaffMember(
   staff: StaffMember[],
@@ -25,8 +31,33 @@ export interface StartupIdentityParams {
   cloudError: string | null;
   firebaseUid: string | null;
   cloudReadyForUid: string | null;
+  accessStatus?: StartupAccessStatus;
   staffLoaded: boolean;
   loadingData: boolean;
+}
+
+export function resolveStartupAccessStatus(params: {
+  sessionMode: ConnectionMode | null;
+  cloudError: string | null;
+  isPrimaryAdmin: boolean;
+  memberExists: boolean;
+  memberActive: boolean;
+  requestStatus?: AccessRequestStatus | null;
+  staffLoaded?: boolean;
+  myLinkedStaff?: StaffMember | null;
+}): StartupAccessStatus {
+  if (!params.sessionMode) return 'unauthenticated';
+  if (params.isPrimaryAdmin) return 'approved';
+  if (params.memberExists) {
+    if (!params.memberActive) return 'deactivated';
+    if (params.staffLoaded && params.myLinkedStaff && !params.myLinkedStaff.active) {
+      return 'deactivated';
+    }
+    return 'approved';
+  }
+  if (params.requestStatus === 'rejected') return 'rejected';
+  if (params.cloudError && !params.requestStatus) return 'pending';
+  return 'pending';
 }
 
 export function isStartupIdentityReady({
@@ -35,18 +66,18 @@ export function isStartupIdentityReady({
   cloudError,
   firebaseUid,
   cloudReadyForUid,
+  accessStatus,
   staffLoaded,
   loadingData,
 }: StartupIdentityParams): boolean {
   if (!authReady) return false;
   if (!sessionMode) return true;
   if (cloudError) return true;
-  return Boolean(
-    firebaseUid &&
-      cloudReadyForUid === firebaseUid &&
-      staffLoaded &&
-      !loadingData
-  );
+  if (!firebaseUid || cloudReadyForUid !== firebaseUid) return false;
+  if (accessStatus === 'pending' || accessStatus === 'rejected' || accessStatus === 'deactivated') {
+    return true;
+  }
+  return Boolean(staffLoaded && !loadingData);
 }
 
 export interface ActiveWaiterResolutionParams {
@@ -79,11 +110,11 @@ export function resolveActiveWaiter({
 
     if (firebaseUid) {
       const now = Date.now();
-      const cleanName = (firebaseDisplayName || '').trim() || 'Administrador';
+      const cleanName = sanitizePlainText(firebaseDisplayName, { maxLen: 80 }) || 'Administrador';
       const normalizedEmail = (firebaseEmail || '').trim().toLowerCase();
       return {
         id: `staff_${firebaseUid}`,
-        name: cleanName.slice(0, 80),
+        name: cleanName,
         role: 'admin',
         active: true,
         linkedUid: firebaseUid,
@@ -105,6 +136,7 @@ export interface PermanentPromptParams {
   loadingData: boolean;
   cloudError: string | null;
   isPrimaryAdmin: boolean;
+  accessStatus?: StartupAccessStatus;
   myLinkedStaff: StaffMember | null;
 }
 
@@ -114,10 +146,12 @@ export function shouldPromptPermanentRegistration({
   loadingData,
   cloudError,
   isPrimaryAdmin,
+  accessStatus,
   myLinkedStaff,
 }: PermanentPromptParams): boolean {
   if (sessionMode !== 'cloud') return false;
   if (!identityReady || loadingData || cloudError) return false;
   if (isPrimaryAdmin) return false;
+  if (accessStatus && accessStatus !== 'approved') return false;
   return !myLinkedStaff;
 }

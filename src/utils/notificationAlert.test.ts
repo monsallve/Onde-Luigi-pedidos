@@ -95,4 +95,16 @@ test('buildSystemNotificationOptions sets sound enabled, vibration, icon, and de
     orderNumber: 0,
   });
   assert.equal(shiftOpts.requireInteraction, false);
+
+  const accessOpts = buildSystemNotificationOptions({
+    ...sampleNotif,
+    id: 'notif_3',
+    type: 'solicitud_acceso',
+    title: 'Nueva solicitud de acceso al POS',
+    message: 'Carlos espera aprobación y asignación de rol.',
+    orderId: '',
+    orderNumber: 0,
+  });
+  assert.equal(accessOpts.data.type, 'solicitud_acceso');
+  assert.equal(accessOpts.requireInteraction, false);
 });

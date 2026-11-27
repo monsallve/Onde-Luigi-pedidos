@@ -1,4 +1,4 @@
-import type { DateRangePreset, Order, PaymentMethod } from '../types/pos';
+import type { DateRangePreset, Order, PaymentMethod, TrackedPaymentMethod } from '../types/pos';
 
 export interface DateRangeBounds {
   startMs: number;
@@ -36,6 +36,8 @@ export interface SalesReport {
   totalPaid: number;
   totalPending: number;
   cancelledTotal: number;
+  refundedTotal: number;
+  refundedByMethod: Partial<Record<TrackedPaymentMethod, number>>;
   orderCount: number;
   paidCount: number;
   pendingCount: number;
@@ -147,6 +149,8 @@ export function computeSalesReport(
   let totalPaid = 0;
   let totalPending = 0;
   let cancelledTotal = 0;
+  let refundedTotal = 0;
+  const refundedByMethod: Partial<Record<TrackedPaymentMethod, number>> = {};
   let orderCount = 0;
   let paidCount = 0;
   let pendingCount = 0;
@@ -170,6 +174,12 @@ export function computeSalesReport(
     if (order.status === 'cancelado') {
       cancelledCount += 1;
       cancelledTotal += order.total;
+      if (order.paymentStatus === 'pagado' && order.refundMethod) {
+        const refAmt = Math.max(0, Math.round(order.refundAmount ?? order.total));
+        refundedTotal += refAmt;
+        refundedByMethod[order.refundMethod] =
+          (refundedByMethod[order.refundMethod] || 0) + refAmt;
+      }
       continue;
     }
 
@@ -263,6 +273,8 @@ export function computeSalesReport(
     totalPaid,
     totalPending,
     cancelledTotal,
+    refundedTotal,
+    refundedByMethod,
     orderCount,
     paidCount,
     pendingCount,

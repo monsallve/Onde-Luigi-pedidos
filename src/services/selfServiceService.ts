@@ -19,6 +19,11 @@ import type {
 } from '../types/pos';
 import { calculateOrderTotals } from '../utils/orderMath';
 import {
+  assertSafeTextInput,
+  sanitizePlainText,
+  sanitizeStringList,
+} from '../utils/inputSecurity';
+import {
   createSelfOrderId,
   formatSelfServiceOrderReference,
   resolveNextSelfServiceOrderNumber,
@@ -245,19 +250,58 @@ export async function submitSelfServiceOrder(
     throw new Error('Falta completar la modalidad de entrega o el comprobante.');
   }
 
+  const cleanName = assertSafeTextInput(input.customerName, 'Nombre completo', {
+    maxLen: 120,
+    required: true,
+  });
+  const cleanPhone = assertSafeTextInput(input.deliveryPhone, 'Teléfono o WhatsApp', {
+    maxLen: 40,
+  });
+  const cleanAddress =
+    input.deliveryType === 'domicilio'
+      ? assertSafeTextInput(input.deliveryAddress, 'Dirección de entrega', {
+          maxLen: 220,
+          required: true,
+        })
+      : '';
+  const cleanNeighborhood =
+    input.deliveryType === 'domicilio'
+      ? assertSafeTextInput(input.deliveryNeighborhood, 'Barrio o sector', {
+          maxLen: 100,
+          required: true,
+        })
+      : '';
+  const cleanDeliveryNotes =
+    input.deliveryType === 'domicilio'
+      ? assertSafeTextInput(input.deliveryNotes || '', 'Indicaciones de entrega', {
+          maxLen: 240,
+          allowNewlines: true,
+        })
+      : '';
+  const cleanNotes = assertSafeTextInput(input.notes || '', 'Notas del pedido', {
+    maxLen: 400,
+    allowNewlines: true,
+  });
+
+  const sanitizedItems: OrderItem[] = input.items.map((it) => ({
+    ...it,
+    productName: sanitizePlainText(it.productName, { maxLen: 100 }),
+    category: sanitizePlainText(it.category, { maxLen: 60 }),
+    removedIngredients: sanitizeStringList(it.removedIngredients, 30, 80),
+    selectedSauces: sanitizeStringList(it.selectedSauces, 10, 60),
+    addedExtras: (it.addedExtras || []).map((ex) => ({
+      ...ex,
+      name: sanitizePlainText(ex.name, { maxLen: 80 }),
+    })),
+    customNote: assertSafeTextInput(it.customNote || '', `Nota de ${it.productName}`, {
+      maxLen: 200,
+    }),
+  }));
+
   const orderId = createSelfOrderId();
   const orderNumber = resolveNextSelfServiceOrderNumber(input.queueTickets);
-  const cleanName = input.customerName.trim().slice(0, 120);
-  const cleanPhone = input.deliveryPhone.trim().slice(0, 40);
-  const cleanAddress =
-    input.deliveryType === 'domicilio' ? input.deliveryAddress.trim().slice(0, 220) : '';
-  const cleanNeighborhood =
-    input.deliveryType === 'domicilio' ? input.deliveryNeighborhood.trim().slice(0, 100) : '';
-  const cleanDeliveryNotes =
-    input.deliveryType === 'domicilio' ? (input.deliveryNotes || '').trim().slice(0, 240) : '';
-  const cleanNotes = (input.notes || '').trim().slice(0, 400);
   const reference = formatSelfServiceOrderReference(orderNumber, input.deliveryType, cleanName);
-  const { subtotal, total } = calculateOrderTotals(input.items);
+  const { subtotal, total } = calculateOrderTotals(sanitizedItems);
 
   const uploadRes = await uploadSelfServiceReceiptImage({
     workspaceId: SHARED_WORKSPACE_ID,
@@ -283,7 +327,7 @@ export async function submitSelfServiceOrder(
     status: 'pendiente_validacion',
     paymentStatus: 'pendiente',
     paymentMethod: 'transferencia',
-    items: input.items,
+    items: sanitizedItems,
     subtotal,
     total,
     notes: cleanNotes,
@@ -323,7 +367,7 @@ export async function submitSelfServiceOrder(
     status: 'pendiente_validacion',
     paymentStatus: 'pendiente',
     paymentMethod: 'transferencia',
-    items: input.items,
+    items: sanitizedItems,
     subtotal,
     total,
     notes: cleanNotes,

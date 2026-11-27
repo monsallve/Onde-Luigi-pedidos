@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { ArrowLeft, KeyRound, Lock, Mail, ShieldCheck, UserPlus } from 'lucide-react';
 import { usePosStore } from '../services/posStore';
+import { assertSafeEmailInput, assertSafeTextInput } from '../utils/inputSecurity';
 import { resolveAssetUrl } from '../utils/orderMath';
 import { PWAInstallButton } from './PWAInstallBanner';
 
@@ -80,7 +81,8 @@ export const AuthGate: React.FC = () => {
     setErrorMsg(null);
     setSuccessMsg(null);
     try {
-      await signInWithEmail(email, password);
+      const cleanEmail = assertSafeEmailInput(email, 'Correo electrónico');
+      await signInWithEmail(cleanEmail, password);
     } catch (err) {
       setErrorMsg(mapAuthError(err, 'No se pudo iniciar sesión.'));
     } finally {
@@ -90,14 +92,6 @@ export const AuthGate: React.FC = () => {
 
   const handleRegister = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!fullName.trim()) {
-      setErrorMsg('Ingresa tu nombre completo.');
-      return;
-    }
-    if (!email.trim() || !password) {
-      setErrorMsg('Completa tu correo y una contraseña (mínimo 6 caracteres).');
-      return;
-    }
     if (password.length < 6) {
       setErrorMsg('La contraseña debe tener al menos 6 caracteres.');
       return;
@@ -110,7 +104,12 @@ export const AuthGate: React.FC = () => {
     setErrorMsg(null);
     setSuccessMsg(null);
     try {
-      await registerWithEmail(fullName, email, password);
+      const cleanName = assertSafeTextInput(fullName, 'Nombre completo', {
+        maxLen: 80,
+        required: true,
+      });
+      const cleanEmail = assertSafeEmailInput(email, 'Correo electrónico');
+      await registerWithEmail(cleanName, cleanEmail, password);
     } catch (err) {
       setErrorMsg(mapAuthError(err, 'No se pudo registrar la cuenta.'));
     } finally {
@@ -120,15 +119,12 @@ export const AuthGate: React.FC = () => {
 
   const handleResetPassword = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!email.trim()) {
-      setErrorMsg('Ingresa el correo con el que te registraste.');
-      return;
-    }
     setBusy(true);
     setErrorMsg(null);
     setSuccessMsg(null);
     try {
-      await resetPassword(email);
+      const cleanEmail = assertSafeEmailInput(email, 'Correo electrónico');
+      await resetPassword(cleanEmail);
       setSuccessMsg(
         'Te enviamos un enlace para restablecer tu contraseña. Revisa tu bandeja de entrada o spam.'
       );
@@ -144,7 +140,7 @@ export const AuthGate: React.FC = () => {
       <header className="max-w-5xl w-full mx-auto flex items-center justify-between gap-4">
         <div className="flex items-center gap-3">
           <img
-            src={resolveAssetUrl('/onde-luigi-logo.png')}
+            src={resolveAssetUrl('/onde-luigi-logo.webp')}
             alt="Logo O'NDE LUIGI"
             className="w-11 h-11 rounded-full border-2 border-red-600 object-cover shrink-0"
           />
@@ -165,7 +161,7 @@ export const AuthGate: React.FC = () => {
         <div className="lg:col-span-6 space-y-5">
           <div className="overflow-hidden rounded-2xl border border-[#27272E] bg-black">
             <img
-              src={resolveAssetUrl('/onde-luigi-banner.jpg')}
+              src={resolveAssetUrl('/onde-luigi-banner.webp')}
               alt="O'NDE LUIGI Hamburguesas y Comida Rápida"
               className="w-full aspect-[2.15/1] object-contain bg-black"
             />
@@ -206,7 +202,7 @@ export const AuthGate: React.FC = () => {
                   {mode === 'login'
                     ? 'Ingresa con tu cuenta de Google o con correo y contraseña.'
                     : mode === 'register'
-                      ? 'Crea tu cuenta para entrar, elegir tu nombre permanente y verificar tu correo.'
+                      ? 'Crea tu cuenta y espera la asignación de rol por un administrador para entrar al POS.'
                       : 'Te enviaremos un correo para definir una nueva contraseña.'}
                 </p>
               </div>

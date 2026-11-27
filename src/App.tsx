@@ -2,6 +2,7 @@ import React, { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useStat
 import {
   BarChart3,
   Boxes,
+  ChevronDown,
   ClipboardList,
   Clock,
   History,
@@ -14,6 +15,7 @@ import {
   Settings,
   UserCheck,
   UtensilsCrossed,
+  WalletCards,
   WifiOff,
   X,
 } from 'lucide-react';
@@ -27,6 +29,7 @@ import {
 } from './components/NotificationCenter';
 import { OrderComposerModal } from './components/OrderComposerModal';
 import { PaymentSheetModal } from './components/PaymentSheetModal';
+import { PendingApprovalScreen } from './components/PendingApprovalScreen';
 import { SettingsModal } from './components/SettingsModal';
 import { ShiftModal } from './components/ShiftModal';
 import { WaiterSelectorModal } from './components/WaiterSelectorModal';
@@ -63,6 +66,9 @@ const PaymentSettingsAdminView = lazy(() =>
     default: m.PaymentSettingsAdminView,
   }))
 );
+const PayrollView = lazy(() =>
+  import('./views/PayrollView').then((m) => ({ default: m.PayrollView }))
+);
 
 const MOBILE_PRIMARY_TAB_IDS = new Set<AppTab>([
   'pedidos',
@@ -70,6 +76,8 @@ const MOBILE_PRIMARY_TAB_IDS = new Set<AppTab>([
   'historial',
   'transferencias',
 ]);
+
+const DESKTOP_OVERFLOW_TAB_IDS = new Set<AppTab>(['datos_pago', 'nomina']);
 
 interface NavDef {
   id: AppTab;
@@ -87,6 +95,7 @@ const ALL_NAV_ITEMS: NavDef[] = [
   { id: 'menu', label: 'Menú y Salsas', shortLabel: 'Menú', icon: <UtensilsCrossed className="w-5 h-5" /> },
   { id: 'inventario', label: 'Inventario', shortLabel: 'Stock', icon: <Boxes className="w-5 h-5" /> },
   { id: 'datos_pago', label: 'Datos de Pago', shortLabel: 'Pago QR', icon: <QrCode className="w-5 h-5" /> },
+  { id: 'nomina', label: 'Nómina', shortLabel: 'Nómina', icon: <WalletCards className="w-5 h-5" /> },
 ];
 
 function resolveRequestedProtectedTabFromUrl(): AppTab | null {
@@ -103,6 +112,14 @@ function resolveRequestedProtectedTabFromUrl(): AppTab | null {
   ) {
     return 'datos_pago';
   }
+  if (
+    pathname === '/admin/nomina' ||
+    pathname.endsWith('/admin/nomina') ||
+    hash.startsWith('#/admin/nomina') ||
+    tabParam === 'nomina'
+  ) {
+    return 'nomina';
+  }
   return null;
 }
 
@@ -111,10 +128,16 @@ function clearProtectedTabFromUrl(): void {
   try {
     const url = new URL(window.location.href);
     url.searchParams.delete('tab');
-    const cleanPath = url.pathname.toLowerCase().endsWith('/admin/pagos')
-      ? resolvePosBasePath(url.pathname)
-      : url.pathname;
-    const cleanHash = url.hash.toLowerCase().startsWith('#/admin/pagos') ? '' : url.hash;
+    const lowerPath = url.pathname.toLowerCase();
+    const cleanPath =
+      lowerPath.endsWith('/admin/pagos') || lowerPath.endsWith('/admin/nomina')
+        ? resolvePosBasePath(url.pathname)
+        : url.pathname;
+    const lowerHash = url.hash.toLowerCase();
+    const cleanHash =
+      lowerHash.startsWith('#/admin/pagos') || lowerHash.startsWith('#/admin/nomina')
+        ? ''
+        : url.hash;
     window.history.replaceState(
       window.history.state,
       '',
@@ -160,10 +183,13 @@ const PosShell: React.FC = () => {
     authReady,
     loadingData,
     identityReady,
+    accessStatus,
+    pendingAccessRequestsCount,
     activeWaiter,
     myLinkedStaff,
     effectiveRole,
     permissions,
+    isAdmin,
     isPrimaryAdmin,
     isRealPrimaryAdmin,
     emailVerified,
@@ -188,8 +214,10 @@ const PosShell: React.FC = () => {
   const [shiftModalOpen, setShiftModalOpen] = useState(false);
   const [exitConfirmOpen, setExitConfirmOpen] = useState(false);
   const [mobileMoreOpen, setMobileMoreOpen] = useState(false);
+  const [desktopMoreOpen, setDesktopMoreOpen] = useState(false);
   const [routeAccessDeniedNotice, setRouteAccessDeniedNotice] = useState<string | null>(null);
   const autoPromptedRef = useRef(false);
+  const desktopMoreRef = useRef<HTMLDivElement | null>(null);
 
   const [viewerState, setViewerState] = useState<{
     index: number;
@@ -208,6 +236,7 @@ const PosShell: React.FC = () => {
   const navigateToTab = useCallback((nextTab: AppTab) => {
     if (!permissionsRef.current.allowedTabs.includes(nextTab)) return;
     setMobileMoreOpen(false);
+    setDesktopMoreOpen(false);
     setActiveTab((prev) => {
       if (prev !== nextTab) {
         const currentStack = tabHistoryRef.current;
@@ -224,6 +253,16 @@ const PosShell: React.FC = () => {
     [permissions]
   );
 
+  const desktopPrimaryItems = useMemo(
+    () => navItems.filter((item) => !DESKTOP_OVERFLOW_TAB_IDS.has(item.id)),
+    [navItems]
+  );
+
+  const desktopOverflowItems = useMemo(
+    () => navItems.filter((item) => DESKTOP_OVERFLOW_TAB_IDS.has(item.id)),
+    [navItems]
+  );
+
   const hasMobileOverflow = navItems.length > 5;
   const mobilePrimaryItems = useMemo(() => {
     if (!hasMobileOverflow) return navItems;
@@ -235,7 +274,7 @@ const PosShell: React.FC = () => {
     return navItems.filter((item) => !MOBILE_PRIMARY_TAB_IDS.has(item.id));
   }, [navItems, hasMobileOverflow]);
 
-  // Protect admin-only /admin/pagos and ?tab=datos_pago routes strictly by role
+  // Protect admin-only /admin/pagos, /admin/nomina, and ?tab=... routes strictly by role
   useEffect(() => {
     if (!sessionMode || !identityReady) return;
     const syncProtectedRoute = () => {
@@ -251,12 +290,29 @@ const PosShell: React.FC = () => {
           );
           clearProtectedTabFromUrl();
         }
+      } else if (requested === 'nomina') {
+        if (permissions.canManagePayroll) {
+          setRouteAccessDeniedNotice(null);
+          setActiveTab('nomina');
+        } else {
+          setActiveTab(permissions.defaultTab);
+          setRouteAccessDeniedNotice(
+            'Acceso restringido: solo los usuarios con rol de Administrador pueden acceder al módulo de Nómina.'
+          );
+          clearProtectedTabFromUrl();
+        }
       }
     };
     syncProtectedRoute();
     window.addEventListener('hashchange', syncProtectedRoute);
     return () => window.removeEventListener('hashchange', syncProtectedRoute);
-  }, [sessionMode, identityReady, permissions.canManagePaymentSettings, permissions.defaultTab]);
+  }, [
+    sessionMode,
+    identityReady,
+    permissions.canManagePaymentSettings,
+    permissions.canManagePayroll,
+    permissions.defaultTab,
+  ]);
 
   // Redirect away from disallowed tabs whenever effective role/permissions change
   useEffect(() => {
@@ -266,10 +322,35 @@ const PosShell: React.FC = () => {
           'Acceso restringido: tu rol actual no tiene permisos para administrar los Datos de Pago.'
         );
         clearProtectedTabFromUrl();
+      } else if (activeTab === 'nomina') {
+        setRouteAccessDeniedNotice(
+          'Acceso restringido: solo los usuarios con rol de Administrador pueden acceder al módulo de Nómina.'
+        );
+        clearProtectedTabFromUrl();
       }
       setActiveTab(permissions.defaultTab);
     }
   }, [permissions, activeTab]);
+
+  useEffect(() => {
+    if (!desktopMoreOpen) return;
+    const handlePointerDown = (e: MouseEvent) => {
+      if (desktopMoreRef.current && !desktopMoreRef.current.contains(e.target as Node)) {
+        setDesktopMoreOpen(false);
+      }
+    };
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setDesktopMoreOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handlePointerDown);
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', handlePointerDown);
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [desktopMoreOpen]);
 
   useEffect(() => {
     if (!mobileMoreOpen) return;
@@ -495,6 +576,10 @@ const PosShell: React.FC = () => {
     return <AuthGate />;
   }
 
+  if (accessStatus !== 'approved') {
+    return <PendingApprovalScreen />;
+  }
+
   const handleOpenNewOrderModal = () => {
     if (!permissions.canTakeOrders) return;
     if (!activeWaiter) {
@@ -549,6 +634,7 @@ const PosShell: React.FC = () => {
     <NotificationCenterProvider
       onNavigateTab={navigateToTab}
       onOpenShiftModal={() => setShiftModalOpen(true)}
+      onOpenSettings={() => setSettingsOpen(true)}
     >
       <div className="min-h-screen bg-[#0A0A0A] text-white flex flex-col">
         {/* Desktop & Mobile Top Navigation */}
@@ -561,7 +647,7 @@ const PosShell: React.FC = () => {
             className="flex items-center gap-1.5 sm:gap-2.5 shrink-0 text-left"
           >
             <img
-              src={resolveAssetUrl('/onde-luigi-logo.png')}
+              src={resolveAssetUrl('/onde-luigi-logo.webp')}
               alt="O'NDE LUIGI"
               className="w-7 h-7 sm:w-8 sm:h-8 rounded-full border border-red-600 object-cover shrink-0"
             />
@@ -591,7 +677,7 @@ const PosShell: React.FC = () => {
             aria-label="Navegación principal"
             className="hidden lg:flex items-center gap-2.5 xl:gap-4 text-xs xl:text-sm font-semibold"
           >
-            {navItems.map((item) => {
+            {desktopPrimaryItems.map((item) => {
               const active = activeTab === item.id;
               return (
                 <button
@@ -613,6 +699,59 @@ const PosShell: React.FC = () => {
                 </button>
               );
             })}
+
+            {desktopOverflowItems.length > 0 && (
+              <div ref={desktopMoreRef} className="relative">
+                <button
+                  type="button"
+                  aria-expanded={desktopMoreOpen}
+                  aria-haspopup="menu"
+                  onClick={() => setDesktopMoreOpen((prev) => !prev)}
+                  className={`py-1.5 border-b-2 whitespace-nowrap shrink-0 flex items-center gap-1 transition-colors ${
+                    desktopMoreOpen ||
+                    desktopOverflowItems.some((item) => item.id === activeTab)
+                      ? 'border-amber-500 text-amber-400 font-bold'
+                      : 'border-transparent text-zinc-400 hover:text-white'
+                  }`}
+                >
+                  <LayoutGrid className="w-4 h-4 shrink-0" />
+                  <span>Más</span>
+                  <ChevronDown
+                    className={`w-3.5 h-3.5 shrink-0 transition-transform ${
+                      desktopMoreOpen ? 'rotate-180' : ''
+                    }`}
+                  />
+                </button>
+
+                {desktopMoreOpen && (
+                  <div
+                    role="menu"
+                    aria-label="Más módulos administrativos"
+                    className="absolute right-0 top-full mt-2 w-52 rounded-xl bg-[#141418] border border-[#27272E] shadow-2xl p-1.5 z-40 space-y-1"
+                  >
+                    {desktopOverflowItems.map((item) => {
+                      const active = activeTab === item.id;
+                      return (
+                        <button
+                          key={item.id}
+                          type="button"
+                          role="menuitem"
+                          onClick={() => navigateToTab(item.id)}
+                          className={`w-full px-3 py-2.5 rounded-lg text-left text-xs font-bold flex items-center gap-2.5 transition-colors ${
+                            active
+                              ? 'bg-amber-500/15 text-amber-400 border border-amber-500/40'
+                              : 'text-zinc-200 hover:bg-[#1C1C22] hover:text-white border border-transparent'
+                          }`}
+                        >
+                          <span className="shrink-0 text-amber-400">{item.icon}</span>
+                          <span>{item.label}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            )}
           </nav>
 
           {/* Zone 3: Single Primary CTA on Desktop + Mobile Quick Controls */}
@@ -640,9 +779,14 @@ const PosShell: React.FC = () => {
               type="button"
               onClick={() => setSettingsOpen(true)}
               aria-label="Abrir ajustes y permisos"
-              className="lg:hidden min-h-[36px] min-w-[36px] flex items-center justify-center rounded-xl border border-[#27272E] bg-[#1C1C22] text-zinc-200"
+              className="relative lg:hidden min-h-[36px] min-w-[36px] flex items-center justify-center rounded-xl border border-[#27272E] bg-[#1C1C22] text-zinc-200"
             >
               <Settings className="w-4 h-4" />
+              {isAdmin && pendingAccessRequestsCount > 0 && (
+                <span className="absolute -top-1 -right-1 font-mono text-[9px] font-extrabold bg-amber-500 text-black px-1 rounded-full leading-tight tabular-nums">
+                  {pendingAccessRequestsCount}
+                </span>
+              )}
             </button>
 
             {permissions.allowedTabs.includes('comandas') && (
@@ -712,6 +856,11 @@ const PosShell: React.FC = () => {
               >
                 <Settings className="w-3.5 h-3.5 text-amber-400" />
                 <span>Ajustes y permisos</span>
+                {isAdmin && pendingAccessRequestsCount > 0 && (
+                  <span className="font-mono text-[10px] font-extrabold bg-amber-500 text-black px-1.5 py-0.5 rounded-full leading-none tabular-nums">
+                    {pendingAccessRequestsCount}
+                  </span>
+                )}
               </button>
             </div>
           </div>
@@ -857,6 +1006,8 @@ const PosShell: React.FC = () => {
           {activeTab === 'datos_pago' && permissions.canManagePaymentSettings && (
             <PaymentSettingsAdminView />
           )}
+
+          {activeTab === 'nomina' && permissions.canManagePayroll && <PayrollView />}
         </Suspense>
       </main>
 

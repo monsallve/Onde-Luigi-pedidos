@@ -1,4 +1,5 @@
 import type { Order, OrderItem, OrderItemAddon, OrderStatus, PaymentMethod, Product } from '../types/pos';
+import { sanitizePlainText, sanitizeSafeUrl } from './inputSecurity';
 
 export const ORDER_STATUS_LABELS: Record<OrderStatus, string> = {
   pendiente_validacion: 'Validando pago',
@@ -104,10 +105,16 @@ export function buildOrderItem(params: {
     category: params.category,
     quantity: safeQty,
     basePrice: params.basePrice,
-    removedIngredients: [...params.removedIngredients].sort(),
+    removedIngredients: [...params.removedIngredients]
+      .map((r) => sanitizePlainText(r, { maxLen: 80 }))
+      .filter(Boolean)
+      .sort(),
     addedExtras: normalizedExtras,
-    selectedSauces: [...(params.selectedSauces || [])].sort(),
-    customNote: params.customNote.trim().slice(0, 160),
+    selectedSauces: [...(params.selectedSauces || [])]
+      .map((s) => sanitizePlainText(s, { maxLen: 80 }))
+      .filter(Boolean)
+      .sort(),
+    customNote: sanitizePlainText(params.customNote, { maxLen: 160 }),
     unitPrice,
     lineTotal,
   };
@@ -272,14 +279,30 @@ export function diffOrderItems(prevItems: OrderItem[], nextItems: OrderItem[]): 
   return changes.length > 0 ? changes.join('; ') : 'Actualizó detalle del pedido';
 }
 
+const LEGACY_BUILTIN_WEBP_MAP: Record<string, string> = {
+  'menu/doble_todo.jpg': 'menu/doble_todo.webp',
+  'menu/especial.jpg': 'menu/especial.webp',
+  'menu/mixta.jpg': 'menu/mixta.webp',
+  'menu/pollo.jpg': 'menu/pollo.webp',
+  'menu/queso.jpg': 'menu/queso.webp',
+  'menu/sencilla.jpg': 'menu/sencilla.webp',
+  'menu/tocineta.jpg': 'menu/tocineta.webp',
+  'onde-luigi-banner.jpg': 'onde-luigi-banner.webp',
+};
+
 /**
  * Resolves local public asset paths against Vite's configured BASE_URL
- * so assets load cleanly on root domains AND subpath deployments (e.g. GitHub Pages).
+ * so assets load cleanly on root domains AND subpath deployments (e.g. GitHub Pages),
+ * upgrading legacy built-in menu/banner JPG filenames transparently to WebP.
  */
 export function resolveAssetUrl(pathOrUrl: string): string {
   if (!pathOrUrl) return pathOrUrl;
-  if (/^(https?:|data:|blob:)/i.test(pathOrUrl)) {
-    return pathOrUrl;
+  const trimmed = pathOrUrl.trim();
+  if (/^(https?:|data:|blob:)/i.test(trimmed)) {
+    if (/^blob:/i.test(trimmed)) {
+      return trimmed;
+    }
+    return sanitizeSafeUrl(trimmed, { allowDataImage: true, allowRelative: true });
   }
   const metaEnv = (import.meta as { env?: { BASE_URL?: string } }).env;
   let base = metaEnv?.BASE_URL || '/';
@@ -293,7 +316,8 @@ export function resolveAssetUrl(pathOrUrl: string): string {
       : './';
   }
   const normalizedBase = base.endsWith('/') ? base : `${base}/`;
-  const cleanPath = pathOrUrl.replace(/^\/+/, '');
+  const rawCleanPath = trimmed.replace(/^\/+/, '');
+  const cleanPath = LEGACY_BUILTIN_WEBP_MAP[rawCleanPath.toLowerCase()] || rawCleanPath;
   return `${normalizedBase}${cleanPath}`;
 }
 
@@ -387,7 +411,11 @@ export function normalizeProductImageUrl(
   existingImageUrl?: string
 ): string {
   const raw = nextImageUrl !== undefined ? nextImageUrl : existingImageUrl || '';
-  return raw.trim().slice(0, PRODUCT_IMAGE_MAX_URL_LENGTH);
+  return sanitizeSafeUrl(raw, {
+    allowDataImage: true,
+    allowRelative: true,
+    maxLen: PRODUCT_IMAGE_MAX_URL_LENGTH,
+  });
 }
 
 export interface ProductInteractionStats {
@@ -468,7 +496,7 @@ export function collectMenuCategories(
   const categories: string[] = [];
 
   for (const source of [...products.map((p) => p.category), ...defaults]) {
-    const clean = (source || '').trim().replace(/\s+/g, ' ').slice(0, 60);
+    const clean = sanitizePlainText(source, { maxLen: 60 });
     if (!clean) continue;
     const key = clean.toLowerCase();
     if (seen.has(key)) continue;
@@ -570,7 +598,7 @@ export function splitProductIngredientsFromEditor(
   const removableOptions: string[] = [];
 
   for (const item of ingredients) {
-    const clean = (item.name || '').trim().slice(0, 80);
+    const clean = sanitizePlainText(item.name, { maxLen: 80 });
     const key = normalizeProductNameKey(clean);
     if (!clean || seen.has(key)) continue;
     seen.add(key);

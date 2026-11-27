@@ -96,7 +96,7 @@ export const EmailVerificationModal: React.FC<Props> = ({ open, onClose }) => {
         <div className="px-5 py-4 border-b border-[#27272E] flex items-center justify-between bg-[#101014]">
           <div className="flex items-center gap-3 min-w-0">
             <img
-              src={resolveAssetUrl('/onde-luigi-logo.png')}
+              src={resolveAssetUrl('/onde-luigi-logo.webp')}
               alt="Logo O'NDE LUIGI"
               className="w-9 h-9 rounded-full border border-red-600 object-cover shrink-0"
             />
@@ -212,7 +212,7 @@ export const EmailVerificationModal: React.FC<Props> = ({ open, onClose }) => {
                 <div className="rounded-xl border border-[#27272E] bg-[#0A0A0A] overflow-hidden">
                   <div className="px-4 py-3 bg-[#101014] border-b-2 border-red-600 flex items-center gap-2.5">
                     <img
-                      src={resolveAssetUrl('/onde-luigi-logo.png')}
+                      src={resolveAssetUrl('/onde-luigi-logo.webp')}
                       alt="Logo O'NDE LUIGI"
                       className="w-8 h-8 rounded-full border border-red-600 object-cover shrink-0"
                     />

@@ -75,7 +75,8 @@ export type AppTab =
   | 'ventas'
   | 'menu'
   | 'inventario'
-  | 'datos_pago';
+  | 'datos_pago'
+  | 'nomina';
 
 export type ConnectionMode = 'cloud';
 
@@ -247,6 +248,8 @@ export interface Order {
   voidReason?: string;
   voidedByName?: string;
   voidedAtMs?: number;
+  refundMethod?: TrackedPaymentMethod;
+  refundAmount?: number;
   ownerUid: string;
   createdByUid: string;
   allowedEmails: string[];
@@ -342,7 +345,8 @@ export type WorkspaceNotificationType =
   | 'nueva_comanda'
   | 'turno_abierto'
   | 'turno_cerrado'
-  | 'venta_anulada';
+  | 'venta_anulada'
+  | 'solicitud_acceso';
 
 export interface WorkspaceNotification {
   id: string;
@@ -358,6 +362,51 @@ export interface WorkspaceNotification {
   createdByUid: string;
   allowedEmails: string[];
   createdAtMs: number;
+}
+
+export type AccessRequestStatus = 'pending' | 'approved' | 'rejected';
+
+export type StartupAccessStatus =
+  | 'unauthenticated'
+  | 'loading'
+  | 'pending'
+  | 'rejected'
+  | 'deactivated'
+  | 'approved';
+
+export interface WorkspaceAccessRequest {
+  uid: string;
+  email: string;
+  displayName: string;
+  requestedName: string;
+  status: AccessRequestStatus;
+  assignedRole?: StaffRole;
+  reviewedByName?: string;
+  reviewedByUid?: string;
+  rejectionReason?: string;
+  ownerUid: string;
+  createdAtMs: number;
+  updatedAtMs: number;
+}
+
+export type PushPlatform = 'android' | 'ios' | 'desktop' | 'unknown';
+
+export interface PushSubscriptionRecord {
+  id: string;
+  uid: string;
+  staffId: string;
+  staffName: string;
+  email: string;
+  role: StaffRole;
+  active: boolean;
+  token: string;
+  platform: PushPlatform;
+  deviceLabel: string;
+  ownerUid: string;
+  createdByUid: string;
+  allowedEmails: string[];
+  createdAtMs: number;
+  updatedAtMs: number;
 }
 
 export type ExpenseLineKind =

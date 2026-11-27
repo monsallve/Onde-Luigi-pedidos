@@ -39,6 +39,7 @@ export interface RolePermissions {
   canManageShifts: boolean;
   canAuditShiftDifferences: boolean;
   canManagePaymentSettings: boolean;
+  canManagePayroll: boolean;
 }
 
 export function isValidStaffRole(value: unknown): value is StaffRole {
@@ -60,6 +61,7 @@ export function getRolePermissions(role: StaffRole): RolePermissions {
           'menu',
           'inventario',
           'datos_pago',
+          'nomina',
         ],
         defaultTab: 'pedidos',
         canTakeOrders: true,
@@ -80,6 +82,7 @@ export function getRolePermissions(role: StaffRole): RolePermissions {
         canManageShifts: true,
         canAuditShiftDifferences: true,
         canManagePaymentSettings: true,
+        canManagePayroll: true,
       };
     case 'mesero':
       return {
@@ -105,6 +108,7 @@ export function getRolePermissions(role: StaffRole): RolePermissions {
         canManageShifts: true,
         canAuditShiftDifferences: false,
         canManagePaymentSettings: false,
+        canManagePayroll: false,
       };
     case 'cajero':
       return {
@@ -130,6 +134,7 @@ export function getRolePermissions(role: StaffRole): RolePermissions {
         canManageShifts: true,
         canAuditShiftDifferences: false,
         canManagePaymentSettings: false,
+        canManagePayroll: false,
       };
     case 'cocina':
       return {
@@ -155,6 +160,7 @@ export function getRolePermissions(role: StaffRole): RolePermissions {
         canManageShifts: false,
         canAuditShiftDifferences: false,
         canManagePaymentSettings: false,
+        canManagePayroll: false,
       };
   }
 }

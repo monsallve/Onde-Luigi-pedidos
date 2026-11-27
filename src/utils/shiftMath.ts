@@ -22,6 +22,8 @@ export interface ShiftExpectedSummary {
   paidOrdersCount: number;
   pendingOrdersCount: number;
   pendingAmount: number;
+  refundsTotal: number;
+  refundsByMethod: Partial<Record<TrackedPaymentMethod, number>>;
 }
 
 export interface ShiftCloseEvaluation extends ShiftExpectedSummary {
@@ -47,7 +49,8 @@ function normalizeTrackedMethod(method: Order['paymentMethod']): TrackedPaymentM
 
 /**
  * Determines which orders were created or settled during a shift window [openedAtMs, closedAtMs].
- * Only paid, non-cancelled orders contribute to usedPaymentMethods and expected revenue.
+ * Active paid orders contribute to expected revenue; voided paid orders with an explicit
+ * refundMethod adjust incoming/outgoing method totals accurately (including cross-method refunds).
  */
 export function computeShiftExpectedSummary(params: {
   orders: Order[];
@@ -72,17 +75,48 @@ export function computeShiftExpectedSummary(params: {
 
   const expectedByMethod: Partial<Record<TrackedPaymentMethod, number>> = {};
   const countsByMethod: Partial<Record<TrackedPaymentMethod, number>> = {};
+  const refundsByMethod: Partial<Record<TrackedPaymentMethod, number>> = {};
   let paidOrdersCount = 0;
   let pendingOrdersCount = 0;
   let pendingAmount = 0;
+  let refundsTotal = 0;
 
   for (const order of orders) {
-    if (order.status === 'cancelado') continue;
     const createdInShift = order.createdAtMs >= openedAtMs && order.createdAtMs <= closedAtMs;
     const settledInShift =
       order.paymentStatus === 'pagado' &&
       order.createdAtMs < openedAtMs &&
       paidInWindowOrderIds.has(order.id);
+    const paidInShift = order.paymentStatus === 'pagado' && (createdInShift || settledInShift);
+
+    if (order.status === 'cancelado') {
+      if (order.paymentStatus === 'pagado' && order.refundMethod) {
+        const payM = normalizeTrackedMethod(order.paymentMethod);
+        const refM = normalizeTrackedMethod(order.refundMethod);
+        const refundAmount = Math.max(0, Math.round(order.refundAmount ?? order.total));
+        const refundTs = order.voidedAtMs || order.updatedAtMs || order.createdAtMs;
+        const refundedInShift = refundTs >= openedAtMs && refundTs <= closedAtMs;
+
+        if (refundedInShift && refundAmount > 0) {
+          refundsByMethod[refM] = (refundsByMethod[refM] || 0) + refundAmount;
+          refundsTotal += refundAmount;
+        }
+
+        if (paidInShift && refundedInShift && payM === refM) {
+          // Paid and refunded in the exact same method during this shift: net 0
+          continue;
+        }
+
+        if (paidInShift) {
+          expectedByMethod[payM] = (expectedByMethod[payM] || 0) + order.total;
+          countsByMethod[payM] = (countsByMethod[payM] || 0) + 1;
+        }
+        if (refundedInShift && refundAmount > 0) {
+          expectedByMethod[refM] = (expectedByMethod[refM] || 0) - refundAmount;
+        }
+      }
+      continue;
+    }
 
     if (!createdInShift && !settledInShift) continue;
 
@@ -97,9 +131,25 @@ export function computeShiftExpectedSummary(params: {
     }
   }
 
-  // Only include payment methods that actually had paid orders in this shift
+  // If cash refunds exceeded cash sales during the shift, the difference came out of the physical opening base
+  let expectedBaseAmount = safeBase;
+  const rawCash = expectedByMethod.efectivo;
+  if (rawCash !== undefined && rawCash < 0) {
+    expectedBaseAmount = Math.max(0, safeBase + rawCash);
+    expectedByMethod.efectivo = 0;
+  }
+
+  // Clamp any non-cash negative balance to 0 cleanly so declared unsigned inputs always align
+  for (const m of TRACKED_PAYMENT_METHODS) {
+    const val = expectedByMethod[m];
+    if (val !== undefined && val < 0) {
+      expectedByMethod[m] = 0;
+    }
+  }
+
+  // Only include payment methods that actually had net inflows or active sales in this shift
   const usedPaymentMethods = TRACKED_PAYMENT_METHODS.filter(
-    (m) => (countsByMethod[m] || 0) > 0
+    (m) => (countsByMethod[m] || 0) > 0 || (expectedByMethod[m] || 0) > 0
   );
 
   const expectedSalesTotal = usedPaymentMethods.reduce(
@@ -109,12 +159,14 @@ export function computeShiftExpectedSummary(params: {
 
   return {
     usedPaymentMethods,
-    expectedBaseAmount: safeBase,
+    expectedBaseAmount,
     expectedByMethod,
-    expectedTotal: safeBase + expectedSalesTotal,
+    expectedTotal: expectedBaseAmount + expectedSalesTotal,
     paidOrdersCount,
     pendingOrdersCount,
     pendingAmount,
+    refundsTotal,
+    refundsByMethod,
   };
 }
 

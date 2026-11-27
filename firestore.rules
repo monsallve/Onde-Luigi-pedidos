@@ -93,11 +93,7 @@ service cloud.firestore {
     function isAuthorizedWorkspaceUser(workspaceId) {
       return isAuthenticatedEmailUser() && (
         isPrimaryAdmin(workspaceId) ||
-        isActiveWorkspaceMember(workspaceId) ||
-        (workspaceExists(workspaceId) && (
-          get(workspacePath(workspaceId)).data.ownerUid == request.auth.uid ||
-          request.auth.token.email in get(workspacePath(workspaceId)).data.authorizedEmails
-        ))
+        isActiveWorkspaceMember(workspaceId)
       );
     }
 
@@ -110,8 +106,7 @@ service cloud.firestore {
           resource.data.ownerUid == get(workspacePath(workspaceId)).data.ownerUid
         ) ||
         resource.data.ownerUid == request.auth.uid ||
-        resource.data.createdByUid == request.auth.uid ||
-        request.auth.token.email in resource.data.allowedEmails
+        resource.data.createdByUid == request.auth.uid
       );
     }
 
@@ -119,8 +114,29 @@ service cloud.firestore {
       return val is string && val.size() >= minLen && val.size() <= maxLen;
     }
 
+    function hasNoCodeInjection(val) {
+      return val is string &&
+        !val.matches('.*(<|>|\\$\\{|\\{\\{|<%|<\\?).*') &&
+        !val.matches('(?i).*(javascript:|vbscript:|data:text/html|data:application/x-javascript|image/svg\\+xml).*') &&
+        !val.matches('(?i).*(\\bon(error|load|click|mouseover|focus|submit|input|change)\\s*=|\\beval\\s*\\(|\\bnew\\s+Function\\s*\\(|document\\.cookie|window\\.location).*');
+    }
+
+    function isSafeTextBounded(val, minLen, maxLen) {
+      return isStringBounded(val, minLen, maxLen) && hasNoCodeInjection(val);
+    }
+
+    function isSafeUrlBounded(val, minLen, maxLen) {
+      return isStringBounded(val, minLen, maxLen) &&
+        !val.matches('.*(<|>|\\$\\{|\\{\\{|<%|<\\?).*') &&
+        !val.matches('(?i).*(javascript:|vbscript:|data:text/html|data:application/x-javascript|image/svg\\+xml).*') &&
+        (
+          val.size() == 0 ||
+          val.matches('^(https?://|\\./|/|data:image/(png|jpeg|jpg|webp|gif);base64,).*')
+        );
+    }
+
     function isStringListBounded(arr, maxLen) {
-      return arr is list && arr.size() <= maxLen && (arr.size() == 0 || arr[0] is string);
+      return arr is list && arr.size() <= maxLen && (arr.size() == 0 || (arr[0] is string && hasNoCodeInjection(arr[0])));
     }
 
     // 3. Entity Validation Blueprints
@@ -134,16 +150,16 @@ service cloud.firestore {
           'businessName', 'legalName', 'nit', 'regime', 'address',
           'city', 'phone', 'email', 'receiptPrefix', 'footerNote'
         ]) &&
-        isStringBounded(cfg.businessName, 1, 120) &&
-        isStringBounded(cfg.legalName, 0, 120) &&
-        isStringBounded(cfg.nit, 0, 40) &&
-        isStringBounded(cfg.regime, 0, 80) &&
-        isStringBounded(cfg.address, 0, 160) &&
-        isStringBounded(cfg.city, 0, 80) &&
-        isStringBounded(cfg.phone, 0, 40) &&
-        isStringBounded(cfg.email, 0, 160) &&
-        isStringBounded(cfg.receiptPrefix, 1, 12) &&
-        isStringBounded(cfg.footerNote, 0, 280);
+        isSafeTextBounded(cfg.businessName, 1, 120) &&
+        isSafeTextBounded(cfg.legalName, 0, 120) &&
+        isSafeTextBounded(cfg.nit, 0, 40) &&
+        isSafeTextBounded(cfg.regime, 0, 80) &&
+        isSafeTextBounded(cfg.address, 0, 160) &&
+        isSafeTextBounded(cfg.city, 0, 80) &&
+        isSafeTextBounded(cfg.phone, 0, 40) &&
+        isSafeTextBounded(cfg.email, 0, 160) &&
+        isSafeTextBounded(cfg.receiptPrefix, 1, 12) &&
+        isSafeTextBounded(cfg.footerNote, 0, 280);
     }
 
     function isValidSelfServiceConfig(cfg) {
@@ -157,21 +173,21 @@ service cloud.firestore {
           'bankName', 'paymentInstructions', 'deliveryInstructions'
         ]) &&
         cfg.enabled is bool &&
-        isStringBounded(cfg.qrImageUrl, 0, 250000) &&
-        isStringBounded(cfg.brebKey, 0, 100) &&
-        isStringBounded(cfg.accountHolder, 0, 120) &&
-        isStringBounded(cfg.bankName, 0, 120) &&
-        isStringBounded(cfg.paymentInstructions, 0, 400) &&
-        isStringBounded(cfg.deliveryInstructions, 0, 400);
+        isSafeUrlBounded(cfg.qrImageUrl, 0, 250000) &&
+        isSafeTextBounded(cfg.brebKey, 0, 100) &&
+        isSafeTextBounded(cfg.accountHolder, 0, 120) &&
+        isSafeTextBounded(cfg.bankName, 0, 120) &&
+        isSafeTextBounded(cfg.paymentInstructions, 0, 400) &&
+        isSafeTextBounded(cfg.deliveryInstructions, 0, 400);
     }
 
     function isValidWorkspace(data, workspaceId) {
       return data.keys().hasAll(['id', 'name', 'ownerUid', 'ownerEmail', 'authorizedEmails', 'createdAt', 'updatedAt']) &&
         data.keys().hasOnly(['id', 'name', 'ownerUid', 'ownerEmail', 'authorizedEmails', 'billingConfig', 'selfServiceConfig', 'createdAt', 'updatedAt']) &&
         data.id == workspaceId &&
-        isStringBounded(data.name, 1, 120) &&
+        isSafeTextBounded(data.name, 1, 120) &&
         isStringBounded(data.ownerUid, 1, 128) &&
-        isStringBounded(data.ownerEmail, 3, 160) &&
+        isSafeTextBounded(data.ownerEmail, 3, 160) &&
         isStringListBounded(data.authorizedEmails, 25) &&
         (!('billingConfig' in data) || isValidBillingConfig(data.billingConfig)) &&
         (!('selfServiceConfig' in data) || isValidSelfServiceConfig(data.selfServiceConfig)) &&
@@ -183,7 +199,7 @@ service cloud.firestore {
       return data.keys().hasAll(['id', 'name', 'ownerUid', 'allowSelfRegistration', 'updatedAt']) &&
         data.keys().hasOnly(['id', 'name', 'ownerUid', 'allowSelfRegistration', 'updatedAt']) &&
         data.id == workspaceId &&
-        isStringBounded(data.name, 1, 120) &&
+        isSafeTextBounded(data.name, 1, 120) &&
         isStringBounded(data.ownerUid, 1, 128) &&
         data.allowSelfRegistration is bool &&
         data.updatedAt is timestamp;
@@ -193,7 +209,7 @@ service cloud.firestore {
       return data.keys().hasAll(['uid', 'displayName', 'role', 'active', 'ownerUid', 'createdAt']) &&
         data.keys().hasOnly(['uid', 'displayName', 'role', 'active', 'ownerUid', 'createdAt']) &&
         data.uid == uid &&
-        isStringBounded(data.displayName, 1, 100) &&
+        isSafeTextBounded(data.displayName, 1, 100) &&
         data.role in ['admin', 'mesero'] &&
         data.active is bool &&
         isStringBounded(data.ownerUid, 1, 128) &&
@@ -204,11 +220,11 @@ service cloud.firestore {
       return data.keys().hasAll(['id', 'name', 'role', 'active', 'linkedUid', 'linkedEmail', 'ownerUid', 'createdByUid', 'allowedEmails', 'createdAt', 'updatedAt']) &&
         data.keys().hasOnly(['id', 'name', 'role', 'active', 'linkedUid', 'linkedEmail', 'ownerUid', 'createdByUid', 'allowedEmails', 'createdAt', 'updatedAt']) &&
         data.id == staffId &&
-        isStringBounded(data.name, 1, 80) &&
+        isSafeTextBounded(data.name, 1, 80) &&
         data.role in ['admin', 'mesero', 'cajero', 'cocina'] &&
         data.active is bool &&
         isStringBounded(data.linkedUid, 0, 128) &&
-        isStringBounded(data.linkedEmail, 0, 160) &&
+        isSafeTextBounded(data.linkedEmail, 0, 160) &&
         isStringBounded(data.ownerUid, 1, 128) &&
         isStringBounded(data.createdByUid, 1, 128) &&
         isStringListBounded(data.allowedEmails, 25) &&
@@ -220,7 +236,7 @@ service cloud.firestore {
       return data.keys().hasAll(['id', 'name', 'active', 'ownerUid', 'createdByUid', 'allowedEmails', 'createdAt', 'updatedAt']) &&
         data.keys().hasOnly(['id', 'name', 'active', 'ownerUid', 'createdByUid', 'allowedEmails', 'createdAt', 'updatedAt']) &&
         data.id == sauceId &&
-        isStringBounded(data.name, 1, 60) &&
+        isSafeTextBounded(data.name, 1, 60) &&
         data.active is bool &&
         isStringBounded(data.ownerUid, 1, 128) &&
         isStringBounded(data.createdByUid, 1, 128) &&
@@ -233,10 +249,10 @@ service cloud.firestore {
       return data.keys().hasAll(['id', 'name', 'category', 'basePrice', 'imageUrl', 'baseRecipe', 'removableOptions', 'addonOptions', 'allowSauces', 'minSauces', 'maxSauces', 'active', 'ownerUid', 'createdByUid', 'allowedEmails', 'createdAt', 'updatedAt']) &&
         data.keys().hasOnly(['id', 'name', 'category', 'basePrice', 'imageUrl', 'baseRecipe', 'removableOptions', 'recipeIngredients', 'addonOptions', 'allowSauces', 'minSauces', 'maxSauces', 'active', 'ownerUid', 'createdByUid', 'allowedEmails', 'createdAt', 'updatedAt']) &&
         data.id == productId &&
-        isStringBounded(data.name, 1, 100) &&
-        isStringBounded(data.category, 1, 60) &&
+        isSafeTextBounded(data.name, 1, 100) &&
+        isSafeTextBounded(data.category, 1, 60) &&
         data.basePrice is number && data.basePrice >= 0 && data.basePrice <= 100000000 &&
-        isStringBounded(data.imageUrl, 0, 250000) &&
+        isSafeUrlBounded(data.imageUrl, 0, 250000) &&
         isStringListBounded(data.baseRecipe, 30) &&
         isStringListBounded(data.removableOptions, 30) &&
         (!('recipeIngredients' in data) || (
@@ -262,38 +278,40 @@ service cloud.firestore {
 
     function isValidOrder(data, orderId) {
       return data.keys().hasAll(['id', 'orderNumber', 'reference', 'waiterId', 'waiterName', 'status', 'paymentStatus', 'paymentMethod', 'items', 'subtotal', 'total', 'notes', 'receiptCount', 'latestReceiptUrl', 'ownerUid', 'createdByUid', 'allowedEmails', 'createdAt', 'updatedAt']) &&
-        data.keys().hasOnly(['id', 'orderNumber', 'reference', 'waiterId', 'waiterName', 'status', 'paymentStatus', 'paymentMethod', 'items', 'subtotal', 'total', 'notes', 'receiptCount', 'latestReceiptUrl', 'receiptStoragePath', 'source', 'deliveryType', 'deliveryAddress', 'deliveryNeighborhood', 'deliveryPhone', 'deliveryNotes', 'customerId', 'customerDocument', 'customerName', 'customerPhone', 'customerEmail', 'inventoryDeducted', 'voidReason', 'voidedByName', 'voidedAtMs', 'ownerUid', 'createdByUid', 'allowedEmails', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['id', 'orderNumber', 'reference', 'waiterId', 'waiterName', 'status', 'paymentStatus', 'paymentMethod', 'items', 'subtotal', 'total', 'notes', 'receiptCount', 'latestReceiptUrl', 'receiptStoragePath', 'source', 'deliveryType', 'deliveryAddress', 'deliveryNeighborhood', 'deliveryPhone', 'deliveryNotes', 'customerId', 'customerDocument', 'customerName', 'customerPhone', 'customerEmail', 'inventoryDeducted', 'voidReason', 'voidedByName', 'voidedAtMs', 'refundMethod', 'refundAmount', 'ownerUid', 'createdByUid', 'allowedEmails', 'createdAt', 'updatedAt']) &&
         data.id == orderId &&
         data.orderNumber is number && data.orderNumber >= 1 && data.orderNumber <= 10000000 &&
-        isStringBounded(data.reference, 1, 100) &&
+        isSafeTextBounded(data.reference, 1, 100) &&
         isStringBounded(data.waiterId, 1, 128) &&
-        isStringBounded(data.waiterName, 1, 80) &&
+        isSafeTextBounded(data.waiterName, 1, 80) &&
         data.status in ['pendiente_validacion', 'tomado', 'preparacion', 'listo', 'entregado', 'cancelado'] &&
         data.paymentStatus in ['pendiente', 'pagado'] &&
         data.paymentMethod in ['', 'efectivo', 'transferencia', 'tarjeta', 'otro'] &&
         data.items is list && data.items.size() <= 50 &&
-        (data.items.size() == 0 || (data.items[0] is map && data.items[0].keys().hasAll(['lineId', 'productId', 'productName', 'quantity', 'unitPrice', 'lineTotal']))) &&
+        (data.items.size() == 0 || (data.items[0] is map && data.items[0].keys().hasAll(['lineId', 'productId', 'productName', 'quantity', 'unitPrice', 'lineTotal']) && isSafeTextBounded(data.items[0].productName, 1, 100))) &&
         data.subtotal is number && data.subtotal >= 0 && data.subtotal <= 100000000 &&
         data.total is number && data.total >= 0 && data.total <= 100000000 &&
-        isStringBounded(data.notes, 0, 400) &&
+        isSafeTextBounded(data.notes, 0, 400) &&
         data.receiptCount is number && data.receiptCount >= 0 && data.receiptCount <= 100 &&
-        isStringBounded(data.latestReceiptUrl, 0, 250000) &&
-        (!('receiptStoragePath' in data) || isStringBounded(data.receiptStoragePath, 0, 500)) &&
+        isSafeUrlBounded(data.latestReceiptUrl, 0, 250000) &&
+        (!('receiptStoragePath' in data) || isSafeTextBounded(data.receiptStoragePath, 0, 500)) &&
         (!('source' in data) || data.source in ['pos', 'autoservicio']) &&
         (!('deliveryType' in data) || data.deliveryType in ['local', 'domicilio']) &&
-        (!('deliveryAddress' in data) || isStringBounded(data.deliveryAddress, 0, 220)) &&
-        (!('deliveryNeighborhood' in data) || isStringBounded(data.deliveryNeighborhood, 0, 100)) &&
-        (!('deliveryPhone' in data) || isStringBounded(data.deliveryPhone, 0, 40)) &&
-        (!('deliveryNotes' in data) || isStringBounded(data.deliveryNotes, 0, 240)) &&
+        (!('deliveryAddress' in data) || isSafeTextBounded(data.deliveryAddress, 0, 220)) &&
+        (!('deliveryNeighborhood' in data) || isSafeTextBounded(data.deliveryNeighborhood, 0, 100)) &&
+        (!('deliveryPhone' in data) || isSafeTextBounded(data.deliveryPhone, 0, 40)) &&
+        (!('deliveryNotes' in data) || isSafeTextBounded(data.deliveryNotes, 0, 240)) &&
         (!('customerId' in data) || isStringBounded(data.customerId, 0, 128)) &&
-        (!('customerDocument' in data) || isStringBounded(data.customerDocument, 0, 40)) &&
-        (!('customerName' in data) || isStringBounded(data.customerName, 0, 120)) &&
-        (!('customerPhone' in data) || isStringBounded(data.customerPhone, 0, 40)) &&
-        (!('customerEmail' in data) || isStringBounded(data.customerEmail, 0, 160)) &&
+        (!('customerDocument' in data) || isSafeTextBounded(data.customerDocument, 0, 40)) &&
+        (!('customerName' in data) || isSafeTextBounded(data.customerName, 0, 120)) &&
+        (!('customerPhone' in data) || isSafeTextBounded(data.customerPhone, 0, 40)) &&
+        (!('customerEmail' in data) || isSafeTextBounded(data.customerEmail, 0, 160)) &&
         (!('inventoryDeducted' in data) || data.inventoryDeducted is map) &&
-        (!('voidReason' in data) || isStringBounded(data.voidReason, 0, 240)) &&
-        (!('voidedByName' in data) || isStringBounded(data.voidedByName, 0, 80)) &&
+        (!('voidReason' in data) || isSafeTextBounded(data.voidReason, 0, 240)) &&
+        (!('voidedByName' in data) || isSafeTextBounded(data.voidedByName, 0, 80)) &&
         (!('voidedAtMs' in data) || data.voidedAtMs is number) &&
+        (!('refundMethod' in data) || data.refundMethod in ['', 'efectivo', 'transferencia', 'tarjeta', 'otro']) &&
+        (!('refundAmount' in data) || (data.refundAmount is number && data.refundAmount >= 0 && data.refundAmount <= 100000000)) &&
         isStringBounded(data.ownerUid, 1, 128) &&
         isStringBounded(data.createdByUid, 1, 128) &&
         isStringListBounded(data.allowedEmails, 25) &&
@@ -307,11 +325,11 @@ service cloud.firestore {
         data.id == movementId &&
         isStringBounded(data.orderId, 1, 128) &&
         data.orderNumber is number && data.orderNumber >= 1 &&
-        isStringBounded(data.orderReference, 1, 100) &&
+        isSafeTextBounded(data.orderReference, 1, 100) &&
         data.type in ['creacion', 'edicion_items', 'estado_pedido', 'estado_pago', 'comprobante'] &&
-        isStringBounded(data.description, 1, 500) &&
+        isSafeTextBounded(data.description, 1, 500) &&
         isStringBounded(data.waiterId, 1, 128) &&
-        isStringBounded(data.waiterName, 1, 80) &&
+        isSafeTextBounded(data.waiterName, 1, 80) &&
         isStringBounded(data.actorUid, 1, 128) &&
         data.details is map &&
         isStringBounded(data.ownerUid, 1, 128) &&
@@ -326,17 +344,17 @@ service cloud.firestore {
         data.id == transferId &&
         isStringBounded(data.orderId, 1, 128) &&
         data.orderNumber is number && data.orderNumber >= 1 &&
-        isStringBounded(data.orderReference, 1, 100) &&
+        isSafeTextBounded(data.orderReference, 1, 100) &&
         data.amount is number && data.amount >= 0 && data.amount <= 100000000 &&
-        isStringBounded(data.imageUrl, 1, 250000) &&
-        isStringBounded(data.storagePath, 0, 500) &&
+        isSafeUrlBounded(data.imageUrl, 1, 250000) &&
+        isSafeTextBounded(data.storagePath, 0, 500) &&
         isStringBounded(data.waiterId, 1, 128) &&
-        isStringBounded(data.waiterName, 1, 80) &&
+        isSafeTextBounded(data.waiterName, 1, 80) &&
         data.paymentStatus in ['pagado', 'pendiente'] &&
-        isStringBounded(data.notes, 0, 300) &&
+        isSafeTextBounded(data.notes, 0, 300) &&
         (!('annulled' in data) || data.annulled is bool) &&
-        (!('annulledByName' in data) || isStringBounded(data.annulledByName, 0, 80)) &&
-        (!('annulledReason' in data) || isStringBounded(data.annulledReason, 0, 240)) &&
+        (!('annulledByName' in data) || isSafeTextBounded(data.annulledByName, 0, 80)) &&
+        (!('annulledReason' in data) || isSafeTextBounded(data.annulledReason, 0, 240)) &&
         (!('annulledAtMs' in data) || data.annulledAtMs is number) &&
         isStringBounded(data.ownerUid, 1, 128) &&
         isStringBounded(data.createdByUid, 1, 128) &&
@@ -366,14 +384,14 @@ service cloud.firestore {
         data.id == shiftId &&
         data.status in ['abierto', 'cerrado'] &&
         data.openingBaseAmount is number && data.openingBaseAmount >= 0 && data.openingBaseAmount <= 100000000 &&
-        isStringBounded(data.openingNote, 0, 300) &&
+        isSafeTextBounded(data.openingNote, 0, 300) &&
         isStringBounded(data.openedByStaffId, 1, 128) &&
-        isStringBounded(data.openedByName, 1, 80) &&
+        isSafeTextBounded(data.openedByName, 1, 80) &&
         isStringBounded(data.openedByUid, 1, 128) &&
         isStringBounded(data.closedByStaffId, 0, 128) &&
-        isStringBounded(data.closedByName, 0, 80) &&
+        isSafeTextBounded(data.closedByName, 0, 80) &&
         isStringBounded(data.closedByUid, 0, 128) &&
-        isStringBounded(data.closingNote, 0, 300) &&
+        isSafeTextBounded(data.closingNote, 0, 300) &&
         isStringListBounded(data.usedPaymentMethods, 6) &&
         data.declaredClosingBase is number && data.declaredClosingBase >= 0 && data.declaredClosingBase <= 100000000 &&
         data.declaredByMethod is map &&
@@ -401,11 +419,11 @@ service cloud.firestore {
           'ownerUid', 'createdByUid', 'allowedEmails', 'createdAt', 'updatedAt'
         ]) &&
         data.id == customerId &&
-        isStringBounded(data.documentNumber, 1, 40) &&
-        isStringBounded(data.name, 1, 120) &&
-        isStringBounded(data.phone, 0, 40) &&
-        isStringBounded(data.email, 0, 160) &&
-        isStringBounded(data.notes, 0, 300) &&
+        isSafeTextBounded(data.documentNumber, 1, 40) &&
+        isSafeTextBounded(data.name, 1, 120) &&
+        isSafeTextBounded(data.phone, 0, 40) &&
+        isSafeTextBounded(data.email, 0, 160) &&
+        isSafeTextBounded(data.notes, 0, 300) &&
         isStringBounded(data.ownerUid, 1, 128) &&
         isStringBounded(data.createdByUid, 1, 128) &&
         isStringListBounded(data.allowedEmails, 25) &&
@@ -425,8 +443,8 @@ service cloud.firestore {
           'ownerUid', 'createdByUid', 'allowedEmails', 'createdAt', 'updatedAt'
         ]) &&
         data.id == itemId &&
-        isStringBounded(data.name, 1, 80) &&
-        isStringBounded(data.nameKey, 1, 80) &&
+        isSafeTextBounded(data.name, 1, 80) &&
+        isSafeTextBounded(data.nameKey, 1, 80) &&
         data.unit in ['g', 'ud'] &&
         data.currentStock is number && data.currentStock >= -100000000 && data.currentStock <= 100000000 &&
         data.minStock is number && data.minStock >= 0 && data.minStock <= 100000000 &&
@@ -456,7 +474,7 @@ service cloud.firestore {
         ]) &&
         data.id == movId &&
         isStringBounded(data.inventoryItemId, 1, 128) &&
-        isStringBounded(data.ingredientName, 1, 80) &&
+        isSafeTextBounded(data.ingredientName, 1, 80) &&
         data.unit in ['g', 'ud'] &&
         data.type in ['compra', 'consumo_pedido', 'edicion_pedido', 'anulacion_pedido', 'ajuste_manual', 'fusion'] &&
         data.quantityDelta is number && data.quantityDelta >= -100000000 && data.quantityDelta <= 100000000 &&
@@ -464,8 +482,8 @@ service cloud.firestore {
         data.calculatedUnitCost is number && data.calculatedUnitCost >= 0 && data.calculatedUnitCost <= 100000000 &&
         isStringBounded(data.orderId, 0, 128) &&
         data.orderNumber is number && data.orderNumber >= 0 && data.orderNumber <= 10000000 &&
-        isStringBounded(data.notes, 0, 300) &&
-        isStringBounded(data.actorName, 1, 80) &&
+        isSafeTextBounded(data.notes, 0, 300) &&
+        isSafeTextBounded(data.actorName, 1, 80) &&
         isStringBounded(data.actorUid, 1, 128) &&
         isStringBounded(data.ownerUid, 1, 128) &&
         isStringBounded(data.createdByUid, 1, 128) &&
@@ -485,18 +503,70 @@ service cloud.firestore {
           'allowedEmails', 'createdAt'
         ]) &&
         data.id == notifId &&
-        data.type in ['nueva_comanda', 'turno_abierto', 'turno_cerrado', 'venta_anulada'] &&
-        isStringBounded(data.title, 1, 140) &&
-        isStringBounded(data.message, 1, 360) &&
+        data.type in ['nueva_comanda', 'turno_abierto', 'turno_cerrado', 'venta_anulada', 'solicitud_acceso'] &&
+        isSafeTextBounded(data.title, 1, 140) &&
+        isSafeTextBounded(data.message, 1, 360) &&
         isStringBounded(data.orderId, 0, 128) &&
         data.orderNumber is number && data.orderNumber >= 0 && data.orderNumber <= 10000000 &&
         isStringBounded(data.shiftId, 0, 128) &&
-        isStringBounded(data.actorName, 1, 80) &&
+        isSafeTextBounded(data.actorName, 1, 80) &&
         isStringBounded(data.actorUid, 1, 128) &&
         isStringBounded(data.ownerUid, 1, 128) &&
         isStringBounded(data.createdByUid, 1, 128) &&
         isStringListBounded(data.allowedEmails, 25) &&
         data.createdAt is timestamp;
+    }
+
+    function isValidAccessRequest(data, reqId) {
+      return data.keys().hasAll([
+          'uid', 'email', 'displayName', 'requestedName', 'status',
+          'ownerUid', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'uid', 'email', 'displayName', 'requestedName', 'status',
+          'assignedRole', 'reviewedByName', 'reviewedByUid', 'rejectionReason',
+          'ownerUid', 'createdAt', 'updatedAt'
+        ]) &&
+        data.uid == reqId &&
+        isSafeTextBounded(data.email, 3, 160) &&
+        isSafeTextBounded(data.displayName, 1, 100) &&
+        isSafeTextBounded(data.requestedName, 1, 80) &&
+        data.status in ['pending', 'approved', 'rejected'] &&
+        (!('assignedRole' in data) || data.assignedRole in ['admin', 'mesero', 'cajero', 'cocina']) &&
+        (!('reviewedByName' in data) || isSafeTextBounded(data.reviewedByName, 0, 80)) &&
+        (!('reviewedByUid' in data) || isStringBounded(data.reviewedByUid, 0, 128)) &&
+        (!('rejectionReason' in data) || isSafeTextBounded(data.rejectionReason, 0, 240)) &&
+        isStringBounded(data.ownerUid, 1, 128) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidPushSubscription(data, subId) {
+      return data.keys().hasAll([
+          'id', 'uid', 'staffId', 'staffName', 'email', 'role',
+          'active', 'token', 'platform', 'deviceLabel',
+          'ownerUid', 'createdByUid', 'allowedEmails', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'uid', 'staffId', 'staffName', 'email', 'role',
+          'active', 'token', 'platform', 'deviceLabel',
+          'ownerUid', 'createdByUid', 'allowedEmails', 'createdAt', 'updatedAt'
+        ]) &&
+        data.id == subId &&
+        isStringBounded(data.uid, 1, 128) &&
+        isStringBounded(data.staffId, 1, 128) &&
+        isSafeTextBounded(data.staffName, 1, 80) &&
+        isSafeTextBounded(data.email, 3, 160) &&
+        data.role in ['admin', 'mesero', 'cajero', 'cocina'] &&
+        data.active is bool &&
+        isSafeTextBounded(data.token, 1, 500) &&
+        data.platform in ['android', 'ios', 'desktop', 'unknown'] &&
+        isSafeTextBounded(data.deviceLabel, 1, 120) &&
+        isStringBounded(data.ownerUid, 1, 128) &&
+        isStringBounded(data.createdByUid, 1, 128) &&
+        isStringListBounded(data.allowedEmails, 25) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
     }
 
     function isValidPurchaseInvoice(data, invoiceId) {
@@ -513,22 +583,61 @@ service cloud.firestore {
           'ownerUid', 'createdByUid', 'allowedEmails', 'createdAt', 'updatedAt'
         ]) &&
         data.id == invoiceId &&
-        isStringBounded(data.receiptCode, 1, 60) &&
+        isSafeTextBounded(data.receiptCode, 1, 60) &&
         isStringBounded(data.supplierId, 1, 128) &&
-        isStringBounded(data.supplierDocument, 1, 40) &&
-        isStringBounded(data.supplierName, 1, 120) &&
-        isStringBounded(data.supplierPhone, 0, 40) &&
-        isStringBounded(data.supplierEmail, 0, 160) &&
-        isStringBounded(data.paymentMethod, 0, 40) &&
-        isStringBounded(data.notes, 0, 300) &&
+        isSafeTextBounded(data.supplierDocument, 1, 40) &&
+        isSafeTextBounded(data.supplierName, 1, 120) &&
+        isSafeTextBounded(data.supplierPhone, 0, 40) &&
+        isSafeTextBounded(data.supplierEmail, 0, 160) &&
+        isSafeTextBounded(data.paymentMethod, 0, 40) &&
+        isSafeTextBounded(data.notes, 0, 300) &&
         data.lines is list && data.lines.size() >= 1 && data.lines.size() <= 80 &&
         data.lines[0] is map &&
         data.lines[0].keys().hasAll(['id', 'kind', 'description', 'quantity', 'totalCost', 'calculatedUnitCost']) &&
+        isSafeTextBounded(data.lines[0].description, 1, 160) &&
         data.inventoriableTotal is number && data.inventoriableTotal >= 0 && data.inventoriableTotal <= 1000000000 &&
         data.expensesTotal is number && data.expensesTotal >= 0 && data.expensesTotal <= 1000000000 &&
         data.grandTotal is number && data.grandTotal >= 0 && data.grandTotal <= 1000000000 &&
-        isStringBounded(data.actorName, 1, 80) &&
+        isSafeTextBounded(data.actorName, 1, 80) &&
         isStringBounded(data.actorUid, 1, 128) &&
+        isStringBounded(data.ownerUid, 1, 128) &&
+        isStringBounded(data.createdByUid, 1, 128) &&
+        isStringListBounded(data.allowedEmails, 25) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidPayrollCompany(data, companyId) {
+      return data.keys().hasAll([
+          'id', 'name', 'nit', 'address', 'phone', 'email', 'rep', 'legal',
+          'logo', 'employees', 'stubs', 'ownerUid', 'createdByUid', 'allowedEmails',
+          'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'name', 'nit', 'address', 'phone', 'email', 'rep', 'legal',
+          'logo', 'employees', 'stubs', 'ownerUid', 'createdByUid', 'allowedEmails',
+          'createdAt', 'updatedAt'
+        ]) &&
+        data.id == companyId &&
+        isSafeTextBounded(data.name, 1, 140) &&
+        isSafeTextBounded(data.nit, 1, 40) &&
+        isSafeTextBounded(data.address, 0, 160) &&
+        isSafeTextBounded(data.phone, 0, 40) &&
+        isSafeTextBounded(data.email, 0, 160) &&
+        isSafeTextBounded(data.rep, 0, 120) &&
+        isSafeTextBounded(data.legal, 0, 400) &&
+        isSafeUrlBounded(data.logo, 0, 250000) &&
+        data.employees is list && data.employees.size() <= 120 &&
+        (data.employees.size() == 0 || (
+          data.employees[0] is map &&
+          data.employees[0].keys().hasAll(['id', 'name', 'document', 'hourlyRate']) &&
+          isSafeTextBounded(data.employees[0].name, 1, 120)
+        )) &&
+        data.stubs is list && data.stubs.size() <= 300 &&
+        (data.stubs.size() == 0 || (
+          data.stubs[0] is map &&
+          data.stubs[0].keys().hasAll(['id', 'employeeId', 'periodKey', 'total'])
+        )) &&
         isStringBounded(data.ownerUid, 1, 128) &&
         isStringBounded(data.createdByUid, 1, 128) &&
         isStringListBounded(data.allowedEmails, 25) &&
@@ -548,14 +657,14 @@ service cloud.firestore {
           'ownerUid', 'updatedAt'
         ]) &&
         data.id == workspaceId &&
-        isStringBounded(data.businessName, 1, 120) &&
+        isSafeTextBounded(data.businessName, 1, 120) &&
         data.enabled is bool &&
-        isStringBounded(data.qrImageUrl, 0, 250000) &&
-        isStringBounded(data.brebKey, 0, 100) &&
-        isStringBounded(data.accountHolder, 0, 120) &&
-        isStringBounded(data.bankName, 0, 120) &&
-        isStringBounded(data.paymentInstructions, 0, 400) &&
-        isStringBounded(data.deliveryInstructions, 0, 400) &&
+        isSafeUrlBounded(data.qrImageUrl, 0, 250000) &&
+        isSafeTextBounded(data.brebKey, 0, 100) &&
+        isSafeTextBounded(data.accountHolder, 0, 120) &&
+        isSafeTextBounded(data.bankName, 0, 120) &&
+        isSafeTextBounded(data.paymentInstructions, 0, 400) &&
+        isSafeTextBounded(data.deliveryInstructions, 0, 400) &&
         isStringBounded(data.ownerUid, 1, 128) &&
         data.updatedAt is timestamp;
     }
@@ -572,10 +681,10 @@ service cloud.firestore {
           'maxSauces', 'active', 'updatedAt'
         ]) &&
         data.id == productId &&
-        isStringBounded(data.name, 1, 100) &&
-        isStringBounded(data.category, 1, 60) &&
+        isSafeTextBounded(data.name, 1, 100) &&
+        isSafeTextBounded(data.category, 1, 60) &&
         data.basePrice is number && data.basePrice >= 0 && data.basePrice <= 100000000 &&
-        isStringBounded(data.imageUrl, 0, 250000) &&
+        isSafeUrlBounded(data.imageUrl, 0, 250000) &&
         isStringListBounded(data.baseRecipe, 30) &&
         isStringListBounded(data.removableOptions, 30) &&
         data.addonOptions is list && data.addonOptions.size() <= 30 &&
@@ -591,7 +700,7 @@ service cloud.firestore {
       return data.keys().hasAll(['id', 'name', 'active', 'updatedAt']) &&
         data.keys().hasOnly(['id', 'name', 'active', 'updatedAt']) &&
         data.id == sauceId &&
-        isStringBounded(data.name, 1, 60) &&
+        isSafeTextBounded(data.name, 1, 60) &&
         data.active is bool &&
         data.updatedAt is timestamp;
     }
@@ -623,25 +732,25 @@ service cloud.firestore {
           'customerName', 'status', 'paymentStatus', 'paymentMethod',
           'items', 'subtotal', 'total', 'notes', 'receiptCount',
           'latestReceiptUrl', 'receiptStoragePath',
-          'voidReason', 'voidedByName', 'voidedAtMs',
+          'voidReason', 'voidedByName', 'voidedAtMs', 'refundMethod', 'refundAmount',
           'ownerUid', 'createdByUid', 'createdAtMs', 'createdAt', 'updatedAt'
         ]) &&
         data.id == orderId &&
         data.orderNumber is number && data.orderNumber >= 1 && data.orderNumber <= 10000000 &&
-        isStringBounded(data.reference, 1, 100) &&
+        isSafeTextBounded(data.reference, 1, 100) &&
         data.source == 'autoservicio' &&
         data.deliveryType in ['local', 'domicilio'] &&
-        isStringBounded(data.deliveryAddress, 0, 220) &&
-        isStringBounded(data.deliveryNeighborhood, 0, 100) &&
-        isStringBounded(data.deliveryPhone, 0, 40) &&
-        isStringBounded(data.deliveryNotes, 0, 240) &&
-        isStringBounded(data.customerName, 2, 120) &&
+        isSafeTextBounded(data.deliveryAddress, 0, 220) &&
+        isSafeTextBounded(data.deliveryNeighborhood, 0, 100) &&
+        isSafeTextBounded(data.deliveryPhone, 0, 40) &&
+        isSafeTextBounded(data.deliveryNotes, 0, 240) &&
+        isSafeTextBounded(data.customerName, 2, 120) &&
         (
           data.deliveryType == 'local' ||
           (
-            isStringBounded(data.deliveryAddress, 5, 220) &&
-            isStringBounded(data.deliveryNeighborhood, 2, 100) &&
-            isStringBounded(data.deliveryPhone, 7, 40)
+            isSafeTextBounded(data.deliveryAddress, 5, 220) &&
+            isSafeTextBounded(data.deliveryNeighborhood, 2, 100) &&
+            isSafeTextBounded(data.deliveryPhone, 7, 40)
           )
         ) &&
         data.status in ['pendiente_validacion', 'tomado', 'preparacion', 'listo', 'entregado', 'cancelado'] &&
@@ -650,15 +759,18 @@ service cloud.firestore {
         data.items is list && data.items.size() >= 1 && data.items.size() <= 50 &&
         data.items[0] is map &&
         data.items[0].keys().hasAll(['lineId', 'productId', 'productName', 'quantity', 'unitPrice', 'lineTotal']) &&
+        isSafeTextBounded(data.items[0].productName, 1, 100) &&
         data.subtotal is number && data.subtotal > 0 && data.subtotal <= 100000000 &&
         data.total is number && data.total > 0 && data.total <= 100000000 &&
-        isStringBounded(data.notes, 0, 400) &&
+        isSafeTextBounded(data.notes, 0, 400) &&
         data.receiptCount is number && data.receiptCount >= 0 && data.receiptCount <= 10 &&
-        isStringBounded(data.latestReceiptUrl, 0, 250000) &&
-        isStringBounded(data.receiptStoragePath, 0, 500) &&
-        (!('voidReason' in data) || isStringBounded(data.voidReason, 0, 240)) &&
-        (!('voidedByName' in data) || isStringBounded(data.voidedByName, 0, 80)) &&
+        isSafeUrlBounded(data.latestReceiptUrl, 0, 250000) &&
+        isSafeTextBounded(data.receiptStoragePath, 0, 500) &&
+        (!('voidReason' in data) || isSafeTextBounded(data.voidReason, 0, 240)) &&
+        (!('voidedByName' in data) || isSafeTextBounded(data.voidedByName, 0, 80)) &&
         (!('voidedAtMs' in data) || data.voidedAtMs is number) &&
+        (!('refundMethod' in data) || data.refundMethod in ['', 'efectivo', 'transferencia', 'tarjeta', 'otro']) &&
+        (!('refundAmount' in data) || (data.refundAmount is number && data.refundAmount >= 0 && data.refundAmount <= 100000000)) &&
         isStringBounded(data.ownerUid, 1, 128) &&
         isStringBounded(data.createdByUid, 1, 128) &&
         data.createdAtMs is number && data.createdAtMs > 0 &&
@@ -713,32 +825,22 @@ service cloud.firestore {
         incoming().diff(existing()).affectedKeys().hasOnly(['name', 'authorizedEmails', 'billingConfig', 'selfServiceConfig', 'updatedAt']);
       allow delete: if false;
 
-      // ADMINS CAN MANAGE NON-OWNER MEMBERS; OWNER IS PROTECTED
+      // ADMINS CAN MANAGE NON-OWNER MEMBERS; NO DIRECT SELF-CREATION (MUST PASS WAITING SCREEN)
       match /members/{uid} {
         allow get: if isAuthenticatedEmailUser() && isValidId(uid) && (
           uid == request.auth.uid || isWorkspaceAdmin(workspaceId)
         );
         allow list: if isAuthenticatedEmailUser() && (
           isBootstrappedAdmin() ||
+          isWorkspaceAdmin(workspaceId) ||
           resource.data.ownerUid == request.auth.uid ||
           resource.data.uid == request.auth.uid
         );
         allow create: if isAuthenticatedEmailUser() && isValidId(uid) &&
+          isWorkspaceAdmin(workspaceId) &&
           isValidWorkspaceMember(incoming(), uid) &&
           incoming().ownerUid == getAfter(workspacePath(workspaceId)).data.ownerUid &&
-          incoming().createdAt == request.time &&
-          (
-            isWorkspaceAdmin(workspaceId) ||
-            (
-              uid == request.auth.uid &&
-              incoming().role == 'mesero' &&
-              incoming().active == true &&
-              (
-                (exists(directoryPath(workspaceId)) && get(directoryPath(workspaceId)).data.allowSelfRegistration == true) ||
-                (workspaceExists(workspaceId) && request.auth.token.email in get(workspacePath(workspaceId)).data.authorizedEmails)
-              )
-            )
-          );
+          incoming().createdAt == request.time;
         allow update: if isWorkspaceAdmin(workspaceId) && isValidId(uid) &&
           isValidWorkspaceMember(incoming(), uid) &&
           incoming().ownerUid == existing().ownerUid &&
@@ -748,27 +850,17 @@ service cloud.firestore {
         allow delete: if isWorkspaceAdmin(workspaceId) && isValidId(uid) && uid != existing().ownerUid;
       }
 
-      // ONE-TIME SELF NAME REGISTRATION (PERMANENT ONCE CHOSEN) + ADMIN TEAM MANAGEMENT (PRINCIPAL ADMIN PROTECTED)
+      // ADMIN-CONTROLLED STAFF ROSTER & ROLE ASSIGNMENT (NO SELF-PROMOTION OR DIRECT ENTRY)
       match /staff/{staffId} {
         allow get: if isValidId(staffId) && isAuthorizedWorkspaceUser(workspaceId);
         allow list: if canListWorkspaceSubcollection(workspaceId);
         allow create: if isValidId(staffId) &&
-          (isAuthorizedWorkspaceUser(workspaceId) || isActiveWorkspaceMemberAfter(workspaceId)) &&
+          isWorkspaceAdmin(workspaceId) &&
           isValidStaffMember(incoming(), staffId) &&
           incoming().createdByUid == request.auth.uid &&
           incoming().ownerUid == getAfter(workspacePath(workspaceId)).data.ownerUid &&
           incoming().createdAt == request.time &&
-          incoming().updatedAt == request.time &&
-          (
-            isWorkspaceAdmin(workspaceId) ||
-            (
-              staffId == 'staff_' + request.auth.uid &&
-              incoming().role == 'mesero' &&
-              incoming().active == true &&
-              incoming().linkedUid == request.auth.uid &&
-              incoming().linkedEmail == request.auth.token.email
-            )
-          );
+          incoming().updatedAt == request.time;
         allow update: if isValidId(staffId) &&
           isValidStaffMember(incoming(), staffId) &&
           incoming().ownerUid == existing().ownerUid &&
@@ -861,7 +953,7 @@ service cloud.firestore {
               (
                 incoming().diff(existing()).affectedKeys().hasOnly(['items', 'subtotal', 'total', 'notes', 'reference', 'inventoryDeducted', 'customerId', 'customerDocument', 'customerName', 'customerPhone', 'customerEmail', 'waiterId', 'waiterName', 'updatedAt']) ||
                 incoming().diff(existing()).affectedKeys().hasOnly(['status', 'inventoryDeducted', 'waiterId', 'waiterName', 'updatedAt']) ||
-                incoming().diff(existing()).affectedKeys().hasOnly(['status', 'inventoryDeducted', 'voidReason', 'voidedByName', 'voidedAtMs', 'waiterId', 'waiterName', 'updatedAt']) ||
+                incoming().diff(existing()).affectedKeys().hasOnly(['status', 'inventoryDeducted', 'voidReason', 'voidedByName', 'voidedAtMs', 'refundMethod', 'refundAmount', 'waiterId', 'waiterName', 'updatedAt']) ||
                 incoming().diff(existing()).affectedKeys().hasOnly(['status', 'paymentStatus', 'paymentMethod', 'receiptCount', 'latestReceiptUrl', 'customerId', 'customerDocument', 'customerName', 'customerPhone', 'customerEmail', 'inventoryDeducted', 'waiterId', 'waiterName', 'updatedAt'])
               )
             )
@@ -1048,6 +1140,126 @@ service cloud.firestore {
           incoming().updatedAt == request.time &&
           incoming().diff(existing()).affectedKeys().hasOnly(['allowedEmails', 'updatedAt']);
         allow delete: if isValidId(invoiceId) && isWorkspaceAdmin(workspaceId);
+      }
+
+      // WAITING-SCREEN ACCESS REQUESTS (Pending users submit/view own request; Admins review & assign role)
+      match /accessRequests/{reqId} {
+        allow get: if isAuthenticatedEmailUser() && isValidId(reqId) && (
+          reqId == request.auth.uid || isWorkspaceAdmin(workspaceId)
+        );
+        allow list: if isWorkspaceAdmin(workspaceId);
+        allow create: if isAuthenticatedEmailUser() && isValidId(reqId) &&
+          reqId == request.auth.uid &&
+          isValidAccessRequest(incoming(), reqId) &&
+          incoming().status == 'pending' &&
+          incoming().email.lower() == request.auth.token.email.lower() &&
+          !('assignedRole' in incoming()) &&
+          !('reviewedByUid' in incoming()) &&
+          !('reviewedByName' in incoming()) &&
+          !('rejectionReason' in incoming()) &&
+          workspaceExists(workspaceId) &&
+          incoming().ownerUid == get(workspacePath(workspaceId)).data.ownerUid &&
+          (
+            (exists(directoryPath(workspaceId)) && get(directoryPath(workspaceId)).data.allowSelfRegistration == true) ||
+            (request.auth.token.email in get(workspacePath(workspaceId)).data.authorizedEmails)
+          ) &&
+          incoming().createdAt == request.time &&
+          incoming().updatedAt == request.time;
+        allow update: if isAuthenticatedEmailUser() && isValidId(reqId) &&
+          isValidAccessRequest(incoming(), reqId) &&
+          incoming().uid == existing().uid &&
+          incoming().email == existing().email &&
+          incoming().ownerUid == existing().ownerUid &&
+          incoming().updatedAt == request.time &&
+          (
+            (
+              isWorkspaceAdmin(workspaceId) &&
+              incoming().createdAt == existing().createdAt &&
+              incoming().diff(existing()).affectedKeys().hasOnly([
+                'status', 'requestedName', 'assignedRole',
+                'rejectionReason', 'reviewedByUid', 'reviewedByName', 'updatedAt'
+              ])
+            ) ||
+            (
+              reqId == request.auth.uid &&
+              existing().status == 'pending' &&
+              incoming().status == 'pending' &&
+              incoming().createdAt == existing().createdAt &&
+              incoming().diff(existing()).affectedKeys().hasOnly(['requestedName', 'updatedAt'])
+            ) ||
+            (
+              reqId == request.auth.uid &&
+              existing().status == 'approved' &&
+              !exists(memberPath(workspaceId, request.auth.uid)) &&
+              incoming().status == 'pending' &&
+              incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'requestedName', 'status', 'createdAt', 'updatedAt'])
+            )
+          );
+        allow delete: if isValidId(reqId) && isWorkspaceAdmin(workspaceId);
+      }
+
+      // BACKGROUND WEB PUSH SUBSCRIPTIONS (Strictly Active Approved Staff Accounts Only)
+      match /pushSubscriptions/{subId} {
+        allow get: if isAuthenticatedEmailUser() && isValidId(subId) && (
+          subId == 'sub_' + request.auth.uid || isWorkspaceAdmin(workspaceId)
+        );
+        allow list: if isWorkspaceAdmin(workspaceId) || (
+          isActiveWorkspaceMember(workspaceId) &&
+          resource.data.uid == request.auth.uid
+        );
+        allow create: if isAuthenticatedEmailUser() && isValidId(subId) &&
+          subId == 'sub_' + request.auth.uid &&
+          (isPrimaryAdmin(workspaceId) || isActiveWorkspaceMember(workspaceId)) &&
+          isValidPushSubscription(incoming(), subId) &&
+          incoming().uid == request.auth.uid &&
+          incoming().createdByUid == request.auth.uid &&
+          incoming().active == true &&
+          (
+            isPrimaryAdmin(workspaceId) ||
+            (
+              exists(staffPath(workspaceId, incoming().staffId)) &&
+              get(staffPath(workspaceId, incoming().staffId)).data.active == true
+            )
+          ) &&
+          workspaceExists(workspaceId) &&
+          incoming().ownerUid == get(workspacePath(workspaceId)).data.ownerUid &&
+          incoming().createdAt == request.time &&
+          incoming().updatedAt == request.time;
+        allow update: if isAuthenticatedEmailUser() && isValidId(subId) &&
+          subId == 'sub_' + request.auth.uid &&
+          (isPrimaryAdmin(workspaceId) || isActiveWorkspaceMember(workspaceId)) &&
+          isValidPushSubscription(incoming(), subId) &&
+          incoming().uid == existing().uid &&
+          incoming().ownerUid == existing().ownerUid &&
+          incoming().createdByUid == existing().createdByUid &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time;
+        allow delete: if isAuthenticatedEmailUser() && isValidId(subId) && (
+          isWorkspaceAdmin(workspaceId) || subId == 'sub_' + request.auth.uid
+        );
+      }
+
+      // ADMIN-ONLY PAYROLL MODULE (Companies, Employees, Hours, Deductions, Stubs)
+      match /payrollCompanies/{companyId} {
+        allow get: if isValidId(companyId) && isWorkspaceAdmin(workspaceId);
+        allow list: if isWorkspaceAdmin(workspaceId);
+        allow create: if isValidId(companyId) && isWorkspaceAdmin(workspaceId) &&
+          isValidPayrollCompany(incoming(), companyId) &&
+          incoming().createdByUid == request.auth.uid &&
+          incoming().ownerUid == getAfter(workspacePath(workspaceId)).data.ownerUid &&
+          incoming().createdAt == request.time &&
+          incoming().updatedAt == request.time;
+        allow update: if isValidId(companyId) && isWorkspaceAdmin(workspaceId) &&
+          isValidPayrollCompany(incoming(), companyId) &&
+          incoming().ownerUid == existing().ownerUid &&
+          incoming().createdByUid == existing().createdByUid &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time &&
+          incoming().diff(existing()).affectedKeys().hasOnly([
+            'name', 'nit', 'address', 'phone', 'email', 'rep', 'legal',
+            'logo', 'employees', 'stubs', 'allowedEmails', 'updatedAt'
+          ]);
+        allow delete: if isValidId(companyId) && isWorkspaceAdmin(workspaceId);
       }
     }
 

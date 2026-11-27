@@ -1,8 +1,9 @@
 import React, { useEffect, useState } from 'react';
-import { Lock, LogOut, MailCheck, Plus, Shield, Trash2, UserCheck, X } from 'lucide-react';
+import { Check, Lock, LogOut, MailCheck, Plus, Shield, Trash2, UserCheck, UserPlus, X } from 'lucide-react';
 import { ADMIN_BOOTSTRAP_EMAIL } from '../data/initialCatalog';
 import { usePosStore } from '../services/posStore';
 import type { StaffRole } from '../types/pos';
+import { assertSafeTextInput } from '../utils/inputSecurity';
 import { ALL_STAFF_ROLES, ROLE_DESCRIPTIONS, ROLE_LABELS } from '../utils/rolePermissions';
 
 interface Props {
@@ -22,6 +23,7 @@ export const WaiterSelectorModal: React.FC<Props> = ({
 }) => {
   const {
     staff,
+    accessRequests,
     activeWaiter,
     myLinkedStaff,
     firebaseUser,
@@ -32,6 +34,8 @@ export const WaiterSelectorModal: React.FC<Props> = ({
     saveStaffMember,
     updateStaffRole,
     deleteStaffMember,
+    approveAccessRequest,
+    rejectAccessRequest,
     signOutSession,
   } = usePosStore();
 
@@ -41,24 +45,14 @@ export const WaiterSelectorModal: React.FC<Props> = ({
   const [saving, setSaving] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
-
-  // One-time permanent name selection for registered users
-  const [selfName, setSelfName] = useState('');
+  const [pendingRoleDrafts, setPendingRoleDrafts] = useState<Record<string, StaffRole>>({});
 
   useEffect(() => {
     if (!open) {
       setConfirmDeleteId(null);
       setErrorMsg(null);
-      return;
     }
-    if (!isRealPrimaryAdmin) {
-      if (myLinkedStaff) {
-        setSelfName(myLinkedStaff.name);
-      } else {
-        setSelfName(firebaseUser?.displayName || '');
-      }
-    }
-  }, [open, isRealPrimaryAdmin, myLinkedStaff, firebaseUser]);
+  }, [open]);
 
   if (!open) return null;
 
@@ -71,16 +65,18 @@ export const WaiterSelectorModal: React.FC<Props> = ({
       !(Boolean(s.linkedUid) && s.linkedUid === s.ownerUid)
   );
 
+  const pendingAccessList = accessRequests.filter((r) => r.status === 'pending');
+
   const handlePrimaryAdminAdd = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newName.trim()) {
-      setErrorMsg('Escribe el nombre del mesero o encargado.');
-      return;
-    }
     setSaving(true);
     setErrorMsg(null);
     try {
-      await saveStaffMember(newName, newRole);
+      const clean = assertSafeTextInput(newName, 'Nombre del integrante', {
+        maxLen: 80,
+        required: true,
+      });
+      await saveStaffMember(clean, newRole);
       setNewName('');
       setNewRole('mesero');
       setShowAdd(false);
@@ -91,22 +87,26 @@ export const WaiterSelectorModal: React.FC<Props> = ({
     }
   };
 
-  const handleOneTimeAssociate = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!selfName.trim()) {
-      setErrorMsg('Escribe el nombre permanente con el que aparecerás en el sistema.');
-      return;
-    }
+  const handleApprovePending = async (uid: string) => {
+    const chosenRole = pendingRoleDrafts[uid] || 'mesero';
     setSaving(true);
     setErrorMsg(null);
     try {
-      await saveStaffMember(selfName, 'mesero');
-      onClose();
-      if (!emailVerified) {
-        onPermanentNameConfirmed?.();
-      }
+      await approveAccessRequest(uid, chosenRole);
     } catch (err) {
-      setErrorMsg(err instanceof Error ? err.message : 'No se pudo guardar tu usuario.');
+      setErrorMsg(err instanceof Error ? err.message : 'No se pudo aprobar la solicitud.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleRejectPending = async (uid: string) => {
+    setSaving(true);
+    setErrorMsg(null);
+    try {
+      await rejectAccessRequest(uid);
+    } catch (err) {
+      setErrorMsg(err instanceof Error ? err.message : 'No se pudo rechazar la solicitud.');
     } finally {
       setSaving(false);
     }
@@ -301,41 +301,14 @@ export const WaiterSelectorModal: React.FC<Props> = ({
               )}
 
               {!myLinkedStaff && (
-                <form onSubmit={handleOneTimeAssociate} className="border border-[#27272E] rounded-xl p-4 space-y-3 bg-[#101014]">
-                  <div>
-                    <label htmlFor="self-staff-name" className="block text-xs font-medium text-zinc-300 mb-1">
-                      Elige tu nombre permanente (solo se configura una vez)
-                    </label>
-                    <input
-                      id="self-staff-name"
-                      type="text"
-                      value={selfName}
-                      onChange={(e) => setSelfName(e.target.value)}
-                      placeholder="Ej. Gabriela Cárdenas"
-                      className="w-full min-h-[44px] rounded-xl border border-[#27272E] bg-[#0A0A0A] px-3 text-sm text-white focus:outline-none focus:ring-2 focus:ring-amber-500"
-                    />
-                  </div>
-
-                  <div className="rounded-xl border border-[#27272E] bg-[#0A0A0A] px-3 py-2.5 flex items-center justify-between text-xs">
-                    <span className="text-zinc-400">Rol inicial asignado</span>
-                    <span className="font-bold text-amber-400 flex items-center gap-1.5">
-                      <Lock className="w-3.5 h-3.5" />
-                      <span>Mesero</span>
-                    </span>
-                  </div>
-
-                  <p className="text-[11px] text-zinc-400 leading-relaxed">
-                    Al guardar, este nombre y tu rol quedarán vinculados de forma permanente a tu correo ({firebaseUser?.email || 'cuenta actual'}).
+                <div className="border border-[#27272E] rounded-xl p-4 space-y-3 bg-[#101014]">
+                  <p className="text-xs font-semibold text-amber-400 flex items-center gap-1.5">
+                    <Lock className="w-4 h-4 shrink-0" />
+                    <span>Perfil administrado por el encargado</span>
                   </p>
-
-                  <button
-                    type="submit"
-                    disabled={saving}
-                    className="w-full min-h-[44px] rounded-xl bg-amber-500 text-black text-sm font-bold hover:bg-amber-400 disabled:opacity-60"
-                  >
-                    {saving ? 'Guardando...' : 'Confirmar nombre permanente'}
-                  </button>
-
+                  <p className="text-xs text-zinc-300 leading-relaxed">
+                    Tu perfil de personal ({firebaseUser?.email || 'cuenta actual'}) solo puede ser creado o vinculado por un Administrador al asignarte un rol operativo.
+                  </p>
                   {required && (
                     <button
                       type="button"
@@ -346,9 +319,71 @@ export const WaiterSelectorModal: React.FC<Props> = ({
                       <span>Cambiar de cuenta</span>
                     </button>
                   )}
-                </form>
+                </div>
               )}
 
+            </div>
+          )}
+
+          {isAdmin && pendingAccessList.length > 0 && (
+            <div className="space-y-2 pt-2 border-t border-[#27272E]">
+              <p className="text-xs font-bold text-amber-400 uppercase tracking-wide flex items-center gap-1.5">
+                <UserPlus className="w-4 h-4" />
+                <span>Solicitudes pendientes ({pendingAccessList.length})</span>
+              </p>
+              <div className="space-y-2">
+                {pendingAccessList.map((req) => {
+                  const chosenRole = pendingRoleDrafts[req.uid] || 'mesero';
+                  return (
+                    <div
+                      key={req.uid}
+                      className="rounded-xl border border-amber-500/50 bg-amber-500/10 p-3 space-y-2"
+                    >
+                      <div className="min-w-0">
+                        <p className="text-sm font-bold text-white truncate">
+                          {req.requestedName || req.email}
+                        </p>
+                        <p className="text-[11px] font-mono text-zinc-300 truncate">{req.email}</p>
+                      </div>
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <select
+                          aria-label={`Asignar rol a ${req.requestedName || req.email}`}
+                          value={chosenRole}
+                          onChange={(e) =>
+                            setPendingRoleDrafts((prev) => ({
+                              ...prev,
+                              [req.uid]: e.target.value as StaffRole,
+                            }))
+                          }
+                          className="min-h-[36px] flex-1 rounded-lg border border-[#27272E] bg-[#0A0A0A] px-2 text-xs font-semibold text-zinc-200 focus:outline-none focus:ring-2 focus:ring-amber-500"
+                        >
+                          <option value="mesero">Mesero</option>
+                          <option value="cajero">Caja</option>
+                          <option value="cocina">Cocina</option>
+                          <option value="admin">Administrador</option>
+                        </select>
+                        <button
+                          type="button"
+                          disabled={saving}
+                          onClick={() => void handleApprovePending(req.uid)}
+                          className="min-h-[36px] px-3 rounded-lg bg-emerald-600 text-white text-xs font-bold hover:bg-emerald-500 inline-flex items-center gap-1"
+                        >
+                          <Check className="w-3.5 h-3.5" />
+                          <span>Aprobar</span>
+                        </button>
+                        <button
+                          type="button"
+                          disabled={saving}
+                          onClick={() => void handleRejectPending(req.uid)}
+                          className="min-h-[36px] px-2.5 rounded-lg border border-red-700 bg-red-950/60 text-red-200 text-xs font-semibold hover:bg-red-900/70"
+                        >
+                          Rechazar
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
             </div>
           )}
 

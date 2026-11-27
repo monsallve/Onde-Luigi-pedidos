@@ -1,10 +1,12 @@
 /* Isolated Service Worker exclusively for O'NDE LUIGI POS PWA (/pos/ scope) */
 
-const CACHE_VERSION = 'v3';
+const CACHE_VERSION = 'v5';
 const SHELL_CACHE = `ondeluigi-pos-shell-${CACHE_VERSION}`;
 const ASSET_CACHE = `ondeluigi-pos-assets-${CACHE_VERSION}`;
 const FONT_CACHE = `ondeluigi-pos-fonts-${CACHE_VERSION}`;
-const ACTIVE_CACHES = new Set([SHELL_CACHE, ASSET_CACHE, FONT_CACHE]);
+const MEDIA_CACHE = `ondeluigi-pos-media-${CACHE_VERSION}`;
+const MAX_MEDIA_CACHE_ENTRIES = 150;
+const ACTIVE_CACHES = new Set([SHELL_CACHE, ASSET_CACHE, FONT_CACHE, MEDIA_CACHE]);
 
 const BUILD_PRECACHE_ASSETS = /* @__POS_PRECACHE__ */ [];
 
@@ -17,8 +19,24 @@ const CORE_SHELL_PATHS = [
   './pwa-maskable-512x512.png',
   './apple-touch-icon.png',
   './icon.svg',
-  '../onde-luigi-logo.png',
+  '../onde-luigi-logo.webp',
+  '../onde-luigi-banner.webp',
+  '../menu/doble_todo.webp',
+  '../menu/especial.webp',
+  '../menu/mixta.webp',
+  '../menu/pollo.webp',
+  '../menu/queso.webp',
+  '../menu/sencilla.webp',
+  '../menu/tocineta.webp',
 ];
+
+function isFirebaseStorageMediaRequest(url, request) {
+  const isStorageHost =
+    url.hostname === 'firebasestorage.googleapis.com' ||
+    url.hostname.endsWith('.firebasestorage.app');
+  if (!isStorageHost) return false;
+  return url.searchParams.get('alt') === 'media' || request.destination === 'image';
+}
 
 function isBypassedFirebaseOrApiHost(hostname) {
   return (
@@ -110,6 +128,29 @@ async function cacheFirst(request, cacheName) {
   return response;
 }
 
+async function trimCache(cache, maxEntries) {
+  try {
+    const keys = await cache.keys();
+    if (keys.length <= maxEntries) return;
+    const excess = keys.length - maxEntries;
+    await Promise.all(keys.slice(0, excess).map((key) => cache.delete(key)));
+  } catch {
+    // ignore quota trim errors
+  }
+}
+
+async function cacheFirstBounded(request, cacheName, maxEntries = MAX_MEDIA_CACHE_ENTRIES) {
+  const cache = await caches.open(cacheName);
+  const cached = await cache.match(request);
+  if (cached) return cached;
+  const response = await fetch(request);
+  if (response && (response.ok || response.type === 'opaque')) {
+    await cache.put(request, response.clone());
+    await trimCache(cache, maxEntries);
+  }
+  return response;
+}
+
 async function staleWhileRevalidate(request, cacheName) {
   const cache = await caches.open(cacheName);
   const cached = await cache.match(request);
@@ -141,6 +182,12 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
+  // Cache immutable Firebase Storage images persistently on-device to save Spark egress
+  if (isFirebaseStorageMediaRequest(url, request)) {
+    event.respondWith(cacheFirstBounded(request, MEDIA_CACHE, MAX_MEDIA_CACHE_ENTRIES));
+    return;
+  }
+
   if (isBypassedFirebaseOrApiHost(url.hostname)) {
     return;
   }
@@ -169,15 +216,22 @@ self.addEventListener('fetch', (event) => {
   }
 
   if (
+    /\/menu\/.+\.(png|jpg|jpeg|webp|svg)$/i.test(url.pathname) ||
+    /\/onde-luigi-(?:logo|banner)\.(webp|png|jpg|jpeg)$/i.test(url.pathname)
+  ) {
+    event.respondWith(cacheFirstBounded(request, MEDIA_CACHE, MAX_MEDIA_CACHE_ENTRIES));
+    return;
+  }
+
+  if (
     url.pathname.startsWith(scopePath) ||
-    url.pathname.endsWith('/manifest-pos.webmanifest') ||
-    /\/menu\/.+\.(png|jpg|jpeg|webp|svg)$/i.test(url.pathname)
+    url.pathname.endsWith('/manifest-pos.webmanifest')
   ) {
     event.respondWith(staleWhileRevalidate(request, ASSET_CACHE));
   }
 });
 
-/* POS Real-Time Push & Notification Handlers */
+/* POS Real-Time Push & Notification Handlers (FCM + Web Push) */
 self.addEventListener('push', (event) => {
   if (!event.data) return;
   let payload = {};
@@ -187,16 +241,33 @@ self.addEventListener('push', (event) => {
     payload = { title: "O'NDE LUIGI · POS", body: event.data.text() };
   }
 
-  const title = payload.title || "O'NDE LUIGI · Alerta POS";
+  const notif = payload.notification || {};
+  const data = payload.data || {};
+  const title = notif.title || payload.title || data.title || "O'NDE LUIGI · Alerta POS";
+  const body =
+    notif.body ||
+    payload.body ||
+    payload.message ||
+    data.body ||
+    'Nueva actualización en tiempo real.';
+  const scopeUrl = self.registration.scope;
+  const iconUrl = new URL('./pwa-192x192.png', scopeUrl).toString();
+  const targetUrl =
+    (payload.fcmOptions && payload.fcmOptions.link) || data.url || './';
+
   const options = {
-    body: payload.body || payload.message || 'Nueva actualización en tiempo real.',
-    icon: './pwa-192x192.png',
-    badge: './pwa-192x192.png',
-    tag: payload.tag || payload.id || 'ondeluigi-push',
+    body,
+    icon: notif.icon || iconUrl,
+    badge: iconUrl,
+    tag: data.notificationId || payload.tag || payload.id || 'ondeluigi-push',
     renotify: true,
     silent: false,
-    vibrate: [180, 70, 180],
-    data: payload.data || { url: './' },
+    requireInteraction: data.type === 'nueva_comanda' || data.type === 'venta_anulada',
+    vibrate: data.type === 'venta_anulada' ? [220, 80, 220] : [180, 70, 180],
+    data: {
+      ...data,
+      url: targetUrl,
+    },
   };
 
   event.waitUntil(self.registration.showNotification(title, options));

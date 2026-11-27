@@ -45,6 +45,16 @@ service firebase.storage {
       );
     }
 
+    function isActiveMemberInFirestore(workspaceId) {
+      return isStaffSignedIn() &&
+        firestore.exists(/databases/ai-studio-fecee9a9-7631-4685-a974-37cd28b7a202/documents/workspaces/$(workspaceId)/members/$(request.auth.uid)) &&
+        firestore.get(/databases/ai-studio-fecee9a9-7631-4685-a974-37cd28b7a202/documents/workspaces/$(workspaceId)/members/$(request.auth.uid)).data.active == true;
+    }
+
+    function isActiveStaffStorage(workspaceId) {
+      return isWorkspaceAdminStorage(workspaceId) || isActiveMemberInFirestore(workspaceId);
+    }
+
     // Public self-service receipt upload:
     // - Allows customer uploads up to 5 MB of valid image/* files only into a unique order folder
     // - Prevents listing or overwriting existing customer receipts
@@ -58,7 +68,7 @@ service firebase.storage {
         request.resource.size <= 5 * 1024 * 1024 &&
         request.resource.contentType.matches('image/.*');
       allow update: if false;
-      allow delete: if isStaffSignedIn();
+      allow delete: if isValidId(workspaceId) && isActiveStaffStorage(workspaceId);
     }
 
     // Publicly readable QR image for Self-Service; strictly Admin-only create/update/delete
@@ -85,11 +95,11 @@ service firebase.storage {
       allow delete: if isValidId(workspaceId) && isWorkspaceAdminStorage(workspaceId);
     }
 
-    // Internal POS transfer receipts (staff uploads, admin deletes)
+    // Internal POS transfer receipts (active approved staff uploads/reads, admin deletes)
     match /workspaces/{workspaceId}/transfers/{fileName} {
-      allow read: if isValidId(workspaceId) && isStaffSignedIn();
+      allow read: if isValidId(workspaceId) && isActiveStaffStorage(workspaceId);
       allow create, update: if isValidId(workspaceId) &&
-        isStaffSignedIn() &&
+        isActiveStaffStorage(workspaceId) &&
         request.resource != null &&
         request.resource.size > 0 &&
         request.resource.size <= 10 * 1024 * 1024 &&

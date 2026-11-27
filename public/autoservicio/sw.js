@@ -1,10 +1,12 @@
 /* Isolated Service Worker exclusively for O'NDE LUIGI Autoservicio PWA (/autoservicio/ scope) */
 
-const CACHE_VERSION = 'v4';
+const CACHE_VERSION = 'v5';
 const SHELL_CACHE = `ondeluigi-autoservicio-shell-${CACHE_VERSION}`;
 const ASSET_CACHE = `ondeluigi-autoservicio-assets-${CACHE_VERSION}`;
 const FONT_CACHE = `ondeluigi-autoservicio-fonts-${CACHE_VERSION}`;
-const ACTIVE_CACHES = new Set([SHELL_CACHE, ASSET_CACHE, FONT_CACHE]);
+const MEDIA_CACHE = `ondeluigi-autoservicio-media-${CACHE_VERSION}`;
+const MAX_MEDIA_CACHE_ENTRIES = 150;
+const ACTIVE_CACHES = new Set([SHELL_CACHE, ASSET_CACHE, FONT_CACHE, MEDIA_CACHE]);
 
 const BUILD_PRECACHE_ASSETS = /* @__AUTOSERVICIO_PRECACHE__ */ [];
 
@@ -17,8 +19,23 @@ const CORE_SHELL_PATHS = [
   './pwa-maskable-512x512.png',
   './apple-touch-icon.png',
   './icon.svg',
-  '../onde-luigi-logo.png',
+  '../onde-luigi-logo.webp',
+  '../menu/doble_todo.webp',
+  '../menu/especial.webp',
+  '../menu/mixta.webp',
+  '../menu/pollo.webp',
+  '../menu/queso.webp',
+  '../menu/sencilla.webp',
+  '../menu/tocineta.webp',
 ];
+
+function isFirebaseStorageMediaRequest(url, request) {
+  const isStorageHost =
+    url.hostname === 'firebasestorage.googleapis.com' ||
+    url.hostname.endsWith('.firebasestorage.app');
+  if (!isStorageHost) return false;
+  return url.searchParams.get('alt') === 'media' || request.destination === 'image';
+}
 
 function isBypassedFirebaseOrApiHost(hostname) {
   return (
@@ -109,6 +126,29 @@ async function cacheFirst(request, cacheName) {
   return response;
 }
 
+async function trimCache(cache, maxEntries) {
+  try {
+    const keys = await cache.keys();
+    if (keys.length <= maxEntries) return;
+    const excess = keys.length - maxEntries;
+    await Promise.all(keys.slice(0, excess).map((key) => cache.delete(key)));
+  } catch {
+    // ignore quota trim errors
+  }
+}
+
+async function cacheFirstBounded(request, cacheName, maxEntries = MAX_MEDIA_CACHE_ENTRIES) {
+  const cache = await caches.open(cacheName);
+  const cached = await cache.match(request);
+  if (cached) return cached;
+  const response = await fetch(request);
+  if (response && (response.ok || response.type === 'opaque')) {
+    await cache.put(request, response.clone());
+    await trimCache(cache, maxEntries);
+  }
+  return response;
+}
+
 async function staleWhileRevalidate(request, cacheName) {
   const cache = await caches.open(cacheName);
   const cached = await cache.match(request);
@@ -141,7 +181,13 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  // Never intercept or cache Firestore, Firebase Storage, Auth, or external APIs
+  // Cache immutable Firebase Storage product/QR images on-device to minimize Spark egress
+  if (isFirebaseStorageMediaRequest(url, request)) {
+    event.respondWith(cacheFirstBounded(request, MEDIA_CACHE, MAX_MEDIA_CACHE_ENTRIES));
+    return;
+  }
+
+  // Never intercept or cache Firestore APIs, Auth, or Cloud Functions
   if (isBypassedFirebaseOrApiHost(url.hostname)) {
     return;
   }
@@ -180,11 +226,19 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  // Stale-while-revalidate for /autoservicio/ assets, manifest, and /menu/ product photos
+  // Cache built-in WebP menu and logo assets persistently without re-downloading on every visit
+  if (
+    /\/menu\/.+\.(png|jpg|jpeg|webp|svg)$/i.test(url.pathname) ||
+    /\/onde-luigi-(?:logo|banner)\.(webp|png|jpg|jpeg)$/i.test(url.pathname)
+  ) {
+    event.respondWith(cacheFirstBounded(request, MEDIA_CACHE, MAX_MEDIA_CACHE_ENTRIES));
+    return;
+  }
+
+  // Stale-while-revalidate for /autoservicio/ shell and manifest
   if (
     url.pathname.startsWith(scopePath) ||
-    url.pathname.endsWith('/manifest-autoservicio.webmanifest') ||
-    /\/menu\/.+\.(png|jpg|jpeg|webp|svg)$/i.test(url.pathname)
+    url.pathname.endsWith('/manifest-autoservicio.webmanifest')
   ) {
     event.respondWith(staleWhileRevalidate(request, ASSET_CACHE));
   }

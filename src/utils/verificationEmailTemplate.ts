@@ -1,3 +1,5 @@
+import { sanitizePlainText, sanitizeSafeUrl } from './inputSecurity';
+
 export const EMAIL_VERIFICATION_COMPANY_NAME = "O'NDE LUIGI";
 export const EMAIL_VERIFICATION_SUBJECT = "Verifica tu correo electrónico — O'NDE LUIGI";
 
@@ -23,10 +25,20 @@ export function buildBrandVerificationEmailHtml({
   logoUrl,
   actionUrl = '%LINK%',
 }: VerificationEmailTemplateParams): string {
-  const safeName = escapeHtml(recipientName.trim() || 'Integrante del equipo');
-  const safeEmail = escapeHtml(recipientEmail.trim());
-  const safeLogo = escapeHtml(logoUrl);
-  const safeActionUrl = escapeHtml(actionUrl);
+  const safeName = escapeHtml(
+    sanitizePlainText(recipientName, { maxLen: 80 }) || 'Integrante del equipo'
+  );
+  const safeEmail = escapeHtml(sanitizePlainText(recipientEmail, { maxLen: 160 }));
+  const safeLogo = escapeHtml(
+    sanitizeSafeUrl(logoUrl, { allowDataImage: false, allowRelative: true, maxLen: 500 }) ||
+      '/onde-luigi-logo.png'
+  );
+  const normalizedAction =
+    actionUrl === '%LINK%'
+      ? '%LINK%'
+      : sanitizeSafeUrl(actionUrl, { allowDataImage: false, allowRelative: false, maxLen: 500 }) ||
+        '#';
+  const safeActionUrl = escapeHtml(normalizedAction);
 
   return `<!DOCTYPE html>
 <html lang="es">

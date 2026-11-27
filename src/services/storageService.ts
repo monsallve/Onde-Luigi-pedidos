@@ -8,6 +8,8 @@ export interface CompressedImageResult {
   height: number;
   originalBytes: number;
   compressedBytes: number;
+  mimeType: 'image/webp' | 'image/jpeg';
+  extension: 'webp' | 'jpg';
 }
 
 export interface ReceiptUploadResult {
@@ -18,6 +20,23 @@ export interface ReceiptUploadResult {
   usedFallbackInline: boolean;
 }
 
+const IMMUTABLE_CACHE_CONTROL = 'public, max-age=31536000, immutable';
+
+let cachedWebpSupport: boolean | null = null;
+
+function supportsCanvasWebp(): boolean {
+  if (cachedWebpSupport !== null) return cachedWebpSupport;
+  try {
+    const probe = document.createElement('canvas');
+    probe.width = 2;
+    probe.height = 2;
+    cachedWebpSupport = probe.toDataURL('image/webp', 0.8).startsWith('data:image/webp');
+  } catch {
+    cachedWebpSupport = false;
+  }
+  return cachedWebpSupport;
+}
+
 export async function compressImageFile(
   file: File,
   maxDimension = 1200,
@@ -25,6 +44,10 @@ export async function compressImageFile(
   backgroundColor = '#FFFFFF'
 ): Promise<CompressedImageResult> {
   const originalBytes = file.size;
+  const targetMime: 'image/webp' | 'image/jpeg' = supportsCanvasWebp()
+    ? 'image/webp'
+    : 'image/jpeg';
+  const extension: 'webp' | 'jpg' = targetMime === 'image/webp' ? 'webp' : 'jpg';
 
   const dataUrlRaw = await new Promise<string>((resolve, reject) => {
     const reader = new FileReader();
@@ -58,8 +81,10 @@ export async function compressImageFile(
     if (!ctx) {
       throw new Error('No se pudo inicializar el compresor de imágenes.');
     }
-    ctx.fillStyle = backgroundColor;
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    if (backgroundColor && backgroundColor !== 'transparent') {
+      ctx.fillStyle = backgroundColor;
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+    }
     ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
     return canvas;
   };
@@ -67,18 +92,18 @@ export async function compressImageFile(
   let activeMaxDim = maxDimension;
   let canvas = drawScaled(activeMaxDim);
 
-  // Target <= ~220KB so fallback Firestore/localStorage stays strictly within 250KB limits
+  // Target <= ~140KB in WebP so both Storage bandwidth and Firestore inline fallbacks stay ultra-light
   let currentQuality = quality;
-  let dataUrl = canvas.toDataURL('image/jpeg', currentQuality);
-  while (dataUrl.length > 220000 && currentQuality > 0.42) {
-    currentQuality -= 0.1;
-    dataUrl = canvas.toDataURL('image/jpeg', currentQuality);
+  let dataUrl = canvas.toDataURL(targetMime, currentQuality);
+  while (dataUrl.length > 140000 && currentQuality > 0.44) {
+    currentQuality -= 0.08;
+    dataUrl = canvas.toDataURL(targetMime, currentQuality);
   }
 
-  while (dataUrl.length > 230000 && activeMaxDim > 360) {
+  while (dataUrl.length > 165000 && activeMaxDim > 360) {
     activeMaxDim = Math.round(activeMaxDim * 0.72);
     canvas = drawScaled(activeMaxDim);
-    dataUrl = canvas.toDataURL('image/jpeg', Math.max(0.45, currentQuality));
+    dataUrl = canvas.toDataURL(targetMime, Math.max(0.45, currentQuality));
   }
 
   const blob = await new Promise<Blob>((resolve, reject) => {
@@ -87,7 +112,7 @@ export async function compressImageFile(
         if (b) resolve(b);
         else reject(new Error('Error al comprimir la imagen.'));
       },
-      'image/jpeg',
+      targetMime,
       currentQuality
     );
   });
@@ -99,6 +124,8 @@ export async function compressImageFile(
     height: canvas.height,
     originalBytes,
     compressedBytes: blob.size,
+    mimeType: targetMime,
+    extension,
   };
 }
 
@@ -107,14 +134,15 @@ export async function uploadTransferReceiptImage(params: {
   transferId: string;
   file: File;
 }): Promise<ReceiptUploadResult> {
-  const compressed = await compressImageFile(params.file, 1200, 0.78, '#FFFFFF');
+  const compressed = await compressImageFile(params.file, 1200, 0.76, '#FFFFFF');
 
   if (storage) {
-    const storagePath = `workspaces/${params.workspaceId}/transfers/${params.transferId}.jpg`;
+    const storagePath = `workspaces/${params.workspaceId}/transfers/${params.transferId}.${compressed.extension}`;
     try {
       const storageRef = ref(storage, storagePath);
       await uploadBytes(storageRef, compressed.blob, {
-        contentType: 'image/jpeg',
+        contentType: compressed.mimeType,
+        cacheControl: IMMUTABLE_CACHE_CONTROL,
       });
       const downloadUrl = await getDownloadURL(storageRef);
       return {
@@ -131,7 +159,7 @@ export async function uploadTransferReceiptImage(params: {
 
   return {
     imageUrl: compressed.dataUrl,
-    storagePath: `inline/${params.transferId}.jpg`,
+    storagePath: `inline/${params.transferId}.${compressed.extension}`,
     compressedBytes: compressed.compressedBytes,
     originalBytes: compressed.originalBytes,
     usedFallbackInline: true,
@@ -143,14 +171,15 @@ export async function uploadProductImage(params: {
   productId: string;
   file: File;
 }): Promise<ReceiptUploadResult> {
-  const compressed = await compressImageFile(params.file, 900, 0.82, '#141418');
+  const compressed = await compressImageFile(params.file, 900, 0.78, '#141418');
 
   if (storage) {
-    const storagePath = `workspaces/${params.workspaceId}/products/${params.productId}_${Date.now()}.jpg`;
+    const storagePath = `workspaces/${params.workspaceId}/products/${params.productId}_${Date.now()}.${compressed.extension}`;
     try {
       const storageRef = ref(storage, storagePath);
       await uploadBytes(storageRef, compressed.blob, {
-        contentType: 'image/jpeg',
+        contentType: compressed.mimeType,
+        cacheControl: IMMUTABLE_CACHE_CONTROL,
       });
       const downloadUrl = await getDownloadURL(storageRef);
       return {
@@ -167,7 +196,7 @@ export async function uploadProductImage(params: {
 
   return {
     imageUrl: compressed.dataUrl,
-    storagePath: `inline/products/${params.productId}.jpg`,
+    storagePath: `inline/products/${params.productId}.${compressed.extension}`,
     compressedBytes: compressed.compressedBytes,
     originalBytes: compressed.originalBytes,
     usedFallbackInline: true,
@@ -179,14 +208,15 @@ export async function uploadSelfServiceReceiptImage(params: {
   orderId: string;
   file: File;
 }): Promise<ReceiptUploadResult> {
-  const compressed = await compressImageFile(params.file, 1200, 0.78, '#FFFFFF');
+  const compressed = await compressImageFile(params.file, 1200, 0.76, '#FFFFFF');
 
   if (storage) {
-    const storagePath = `selfOrders/${params.workspaceId}/${params.orderId}/receipt_${Date.now()}.jpg`;
+    const storagePath = `selfOrders/${params.workspaceId}/${params.orderId}/receipt_${Date.now()}.${compressed.extension}`;
     try {
       const storageRef = ref(storage, storagePath);
       await uploadBytes(storageRef, compressed.blob, {
-        contentType: 'image/jpeg',
+        contentType: compressed.mimeType,
+        cacheControl: IMMUTABLE_CACHE_CONTROL,
       });
       const downloadUrl = await getDownloadURL(storageRef);
       return {
@@ -203,7 +233,7 @@ export async function uploadSelfServiceReceiptImage(params: {
 
   return {
     imageUrl: compressed.dataUrl,
-    storagePath: `inline/selfOrders/${params.orderId}.jpg`,
+    storagePath: `inline/selfOrders/${params.orderId}.${compressed.extension}`,
     compressedBytes: compressed.compressedBytes,
     originalBytes: compressed.originalBytes,
     usedFallbackInline: true,
@@ -214,14 +244,15 @@ export async function uploadStorefrontQrImage(params: {
   workspaceId: string;
   file: File;
 }): Promise<ReceiptUploadResult> {
-  const compressed = await compressImageFile(params.file, 900, 0.85, '#FFFFFF');
+  const compressed = await compressImageFile(params.file, 900, 0.84, '#FFFFFF');
 
   if (storage) {
-    const storagePath = `workspaces/${params.workspaceId}/storefront/qr_${Date.now()}.jpg`;
+    const storagePath = `workspaces/${params.workspaceId}/storefront/qr_${Date.now()}.${compressed.extension}`;
     try {
       const storageRef = ref(storage, storagePath);
       await uploadBytes(storageRef, compressed.blob, {
-        contentType: 'image/jpeg',
+        contentType: compressed.mimeType,
+        cacheControl: IMMUTABLE_CACHE_CONTROL,
       });
       const downloadUrl = await getDownloadURL(storageRef);
       return {
@@ -247,7 +278,7 @@ export async function uploadStorefrontQrImage(params: {
 
   return {
     imageUrl: compressed.dataUrl,
-    storagePath: 'inline/storefront/qr.jpg',
+    storagePath: `inline/storefront/qr.${compressed.extension}`,
     compressedBytes: compressed.compressedBytes,
     originalBytes: compressed.originalBytes,
     usedFallbackInline: true,

@@ -15,6 +15,7 @@ import {
   Shield,
   Trash2,
   Upload,
+  UserPlus,
   Users,
   X,
 } from 'lucide-react';
@@ -22,6 +23,7 @@ import { usePosStore } from '../services/posStore';
 import { ADMIN_BOOTSTRAP_EMAIL } from '../data/initialCatalog';
 import type { BusinessBillingConfig, SelfServicePaymentConfig, StaffRole } from '../types/pos';
 import { buildPublicAutoservicioLink } from '../utils/autoservicioRouteGuard';
+import { assertSafeEmailInput, assertSafeTextInput } from '../utils/inputSecurity';
 import { resolveAssetUrl } from '../utils/orderMath';
 import { ROLE_DESCRIPTIONS, ROLE_LABELS } from '../utils/rolePermissions';
 import { buildBrandVerificationEmailHtml } from '../utils/verificationEmailTemplate';
@@ -59,10 +61,15 @@ export const SettingsModal: React.FC<Props> = ({
     updateAuthorizedEmails,
     updateAllowSelfRegistration,
     staff,
+    accessRequests,
+    pushSyncStatus,
     saveStaffMember,
     updateStaffRole,
     toggleStaffActive,
     deleteStaffMember,
+    approveAccessRequest,
+    rejectAccessRequest,
+    syncBackgroundPushNow,
     signOutSession,
   } = usePosStore();
 
@@ -76,6 +83,10 @@ export const SettingsModal: React.FC<Props> = ({
   const [staffError, setStaffError] = useState<string | null>(null);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [copiedHtml, setCopiedHtml] = useState(false);
+  const [approvalRoleDrafts, setApprovalRoleDrafts] = useState<Record<string, StaffRole>>({});
+  const [rejectReasonDrafts, setRejectReasonDrafts] = useState<Record<string, string>>({});
+  const [approvalBusyUid, setApprovalBusyUid] = useState<string | null>(null);
+  const [approvalError, setApprovalError] = useState<string | null>(null);
 
   const [billingDraft, setBillingDraft] = useState<BusinessBillingConfig>(billingConfig);
   const [savingBilling, setSavingBilling] = useState(false);
@@ -207,18 +218,14 @@ export const SettingsModal: React.FC<Props> = ({
 
   const handleAddAuthorizedEmail = async (e: React.FormEvent) => {
     e.preventDefault();
-    const clean = newWaiterEmail.trim().toLowerCase();
-    if (!clean || !clean.includes('@')) {
-      setEmailError('Ingresa un correo electrónico válido.');
-      return;
-    }
-    if (authorizedEmails.includes(clean)) {
-      setEmailError('Ese correo ya está autorizado.');
-      return;
-    }
     setSavingEmails(true);
     setEmailError(null);
     try {
+      const clean = assertSafeEmailInput(newWaiterEmail, 'Correo autorizado');
+      if (authorizedEmails.includes(clean)) {
+        setEmailError('Ese correo ya está autorizado.');
+        return;
+      }
       await updateAuthorizedEmails([...authorizedEmails, clean]);
       setNewWaiterEmail('');
     } catch (err) {
@@ -243,20 +250,47 @@ export const SettingsModal: React.FC<Props> = ({
 
   const handleAddStaff = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newStaffName.trim()) {
-      setStaffError('Escribe el nombre del mesero o integrante.');
-      return;
-    }
     setSavingStaff(true);
     setStaffError(null);
     try {
-      await saveStaffMember(newStaffName, newStaffRole);
+      const cleanName = assertSafeTextInput(newStaffName, 'Nombre del integrante', {
+        maxLen: 80,
+        required: true,
+      });
+      await saveStaffMember(cleanName, newStaffRole);
       setNewStaffName('');
       setNewStaffRole('mesero');
     } catch (err) {
       setStaffError(err instanceof Error ? err.message : 'No se pudo agregar el usuario.');
     } finally {
       setSavingStaff(false);
+    }
+  };
+
+  const handleApproveRequest = async (uid: string) => {
+    const chosenRole = approvalRoleDrafts[uid] || 'mesero';
+    setApprovalBusyUid(uid);
+    setApprovalError(null);
+    try {
+      await approveAccessRequest(uid, chosenRole);
+    } catch (err) {
+      setApprovalError(err instanceof Error ? err.message : 'No se pudo aprobar el usuario.');
+    } finally {
+      setApprovalBusyUid(null);
+    }
+  };
+
+  const handleRejectRequest = async (uid: string) => {
+    setApprovalBusyUid(uid);
+    setApprovalError(null);
+    try {
+      const rawReason = rejectReasonDrafts[uid] || '';
+      const cleanReason = assertSafeTextInput(rawReason, 'Motivo de rechazo', { maxLen: 240 });
+      await rejectAccessRequest(uid, cleanReason);
+    } catch (err) {
+      setApprovalError(err instanceof Error ? err.message : 'No se pudo rechazar la solicitud.');
+    } finally {
+      setApprovalBusyUid(null);
     }
   };
 
@@ -374,6 +408,37 @@ export const SettingsModal: React.FC<Props> = ({
                         )}
                       </div>
                     )}
+                  </div>
+                  <div className="flex items-center justify-between text-sm gap-2">
+                    <span className="text-zinc-400">Push segundo plano</span>
+                    <div className="flex items-center gap-2 min-w-0">
+                      <span
+                        className={`text-xs font-bold truncate ${
+                          pushSyncStatus.status === 'active'
+                            ? 'text-emerald-400'
+                            : pushSyncStatus.status === 'blocked' || pushSyncStatus.status === 'error'
+                              ? 'text-red-400'
+                              : 'text-amber-400'
+                        }`}
+                      >
+                        {pushSyncStatus.status === 'active'
+                          ? 'Activo'
+                          : pushSyncStatus.status === 'vapid_missing'
+                            ? 'Falta VAPID'
+                            : pushSyncStatus.status === 'ios_install_required'
+                              ? 'Instalar PWA iOS'
+                              : pushSyncStatus.status === 'permission_needed'
+                                ? 'Permiso pendiente'
+                                : 'En espera'}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => void syncBackgroundPushNow()}
+                        className="min-h-[28px] px-2 rounded-lg border border-[#27272E] bg-[#1C1C22] text-[11px] font-semibold text-zinc-200 hover:border-amber-500"
+                      >
+                        Sincronizar
+                      </button>
+                    </div>
                   </div>
                 </>
               )}
@@ -788,12 +853,12 @@ export const SettingsModal: React.FC<Props> = ({
               <div className="rounded-xl border border-[#27272E] bg-[#0A0A0A] p-3.5 flex items-center justify-between gap-3">
                 <div className="min-w-0">
                   <p className="text-xs font-bold text-white">
-                    Registro abierto con enlace
+                    Registro abierto con sala de espera
                   </p>
                   <p className="text-[11px] text-zinc-400 mt-0.5">
                     {allowSelfRegistration
-                      ? 'Activo: cualquier mesero que entre con Google o correo puede asociar su nombre (rol inicial Mesero).'
-                      : 'Cerrado: solo los correos agregados abajo pueden entrar.'}
+                      ? 'Activo: cualquier usuario nuevo queda en Pantalla de Espera hasta que un Administrador le apruebe el acceso y le asigne su rol.'
+                      : 'Cerrado: solo los correos agregados abajo podrán solicitar acceso.'}
                   </p>
                 </div>
                 <button
@@ -895,6 +960,130 @@ export const SettingsModal: React.FC<Props> = ({
                   Plantilla HTML personalizada con el logo oficial de O&apos;NDE LUIGI para configurar remitente o SMTP corporativo en Firebase Authentication.
                 </p>
               </div>
+            </section>
+          )}
+
+          {/* Admin-only Pending & Rejected Access Requests Queue */}
+          {isAdmin && (
+            <section className="space-y-2.5">
+              <div className="flex items-center justify-between gap-2">
+                <h3 className="text-xs font-bold text-amber-400 uppercase tracking-wide flex items-center gap-1.5">
+                  <UserPlus className="w-4 h-4" />
+                  <span>Solicitudes de acceso y asignación de roles</span>
+                </h3>
+                {accessRequests.filter((r) => r.status === 'pending').length > 0 && (
+                  <span className="font-mono text-[10px] font-extrabold bg-amber-500 text-black px-2 py-0.5 rounded-full">
+                    {accessRequests.filter((r) => r.status === 'pending').length} pendientes
+                  </span>
+                )}
+              </div>
+
+              {approvalError && (
+                <div className="rounded-xl bg-red-950/60 border border-red-700 px-3 py-2 text-xs font-medium text-red-200">
+                  {approvalError}
+                </div>
+              )}
+
+              {accessRequests.filter((r) => r.status === 'pending' || r.status === 'rejected').length === 0 ? (
+                <div className="rounded-xl border border-[#27272E] bg-[#0A0A0A] px-4 py-3 text-xs text-zinc-400">
+                  No hay solicitudes nuevas en espera. Cuando alguien se registre, aparecerá aquí para asignarle su rol.
+                </div>
+              ) : (
+                <div className="space-y-2.5">
+                  {accessRequests
+                    .filter((r) => r.status === 'pending' || r.status === 'rejected')
+                    .map((req) => {
+                      const chosenRole = approvalRoleDrafts[req.uid] || req.assignedRole || 'mesero';
+                      const busy = approvalBusyUid === req.uid;
+                      return (
+                        <div
+                          key={req.uid}
+                          className={`rounded-xl border p-3.5 space-y-2.5 ${
+                            req.status === 'pending'
+                              ? 'border-amber-500/60 bg-amber-500/10'
+                              : 'border-[#27272E] bg-[#0A0A0A]'
+                          }`}
+                        >
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="min-w-0">
+                              <p className="text-sm font-bold text-white truncate">
+                                {req.requestedName || req.email}
+                              </p>
+                              <p className="text-[11px] font-mono text-zinc-300 truncate">
+                                {req.email}
+                              </p>
+                            </div>
+                            <span
+                              className={`text-[10px] font-extrabold uppercase px-2 py-0.5 rounded border shrink-0 ${
+                                req.status === 'pending'
+                                  ? 'bg-amber-500 text-black border-amber-300'
+                                  : 'bg-red-950/70 text-red-300 border-red-700'
+                              }`}
+                            >
+                              {req.status === 'pending' ? 'En espera' : 'Rechazado'}
+                            </span>
+                          </div>
+
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                            <select
+                              aria-label={`Rol asignado para ${req.requestedName || req.email}`}
+                              value={chosenRole}
+                              onChange={(e) =>
+                                setApprovalRoleDrafts((prev) => ({
+                                  ...prev,
+                                  [req.uid]: e.target.value as StaffRole,
+                                }))
+                              }
+                              className="min-h-[38px] rounded-lg border border-[#27272E] bg-[#141418] px-2.5 text-xs font-semibold text-zinc-100 focus:outline-none focus:ring-2 focus:ring-amber-500"
+                            >
+                              <option value="mesero">Mesero</option>
+                              <option value="cajero">Caja</option>
+                              <option value="cocina">Cocina</option>
+                              <option value="admin">Administrador</option>
+                            </select>
+
+                            <input
+                              type="text"
+                              maxLength={240}
+                              value={rejectReasonDrafts[req.uid] || ''}
+                              onChange={(e) =>
+                                setRejectReasonDrafts((prev) => ({
+                                  ...prev,
+                                  [req.uid]: e.target.value,
+                                }))
+                              }
+                              placeholder="Motivo si rechazas (opcional)"
+                              className="min-h-[38px] rounded-lg border border-[#27272E] bg-[#141418] px-2.5 text-xs text-white placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-amber-500"
+                            />
+                          </div>
+
+                          <div className="flex flex-wrap items-center gap-2">
+                            <button
+                              type="button"
+                              disabled={busy}
+                              onClick={() => void handleApproveRequest(req.uid)}
+                              className="min-h-[36px] px-3.5 rounded-lg bg-emerald-600 text-white text-xs font-bold hover:bg-emerald-500 disabled:opacity-60 inline-flex items-center gap-1.5"
+                            >
+                              <Check className="w-3.5 h-3.5" />
+                              <span>{busy ? 'Procesando...' : 'Aprobar y asignar rol'}</span>
+                            </button>
+
+                            {req.status === 'pending' && (
+                              <button
+                                type="button"
+                                disabled={busy}
+                                onClick={() => void handleRejectRequest(req.uid)}
+                                className="min-h-[36px] px-3 rounded-lg border border-red-700 bg-red-950/60 text-red-200 text-xs font-semibold hover:bg-red-900/70 disabled:opacity-60"
+                              >
+                                Rechazar
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                </div>
+              )}
             </section>
           )}
 

@@ -5,6 +5,7 @@ import {
   findLinkedStaffMember,
   isStartupIdentityReady,
   resolveActiveWaiter,
+  resolveStartupAccessStatus,
   shouldPromptPermanentRegistration,
 } from './identityState';
 
@@ -77,6 +78,21 @@ test('isStartupIdentityReady stays false during cold cloud load until workspace 
     false
   );
 
+  // Pending / rejected / deactivated users do not load POS staff subcollections and are ready immediately
+  assert.equal(
+    isStartupIdentityReady({
+      authReady: true,
+      sessionMode: 'cloud',
+      cloudError: null,
+      firebaseUid: 'uid_new',
+      cloudReadyForUid: 'uid_new',
+      accessStatus: 'pending',
+      staffLoaded: false,
+      loadingData: false,
+    }),
+    true
+  );
+
   assert.equal(
     isStartupIdentityReady({
       authReady: true,
@@ -84,6 +100,7 @@ test('isStartupIdentityReady stays false during cold cloud load until workspace 
       cloudError: null,
       firebaseUid: 'uid_gaby',
       cloudReadyForUid: 'uid_gaby',
+      accessStatus: 'approved',
       staffLoaded: true,
       loadingData: false,
     }),
@@ -104,7 +121,79 @@ test('isStartupIdentityReady stays false during cold cloud load until workspace 
   );
 });
 
-test('shouldPromptPermanentRegistration never triggers for Principal Admin or linked staff', () => {
+test('resolveStartupAccessStatus keeps unapproved users on pending/rejected/deactivated and approves active members', () => {
+  assert.equal(
+    resolveStartupAccessStatus({
+      sessionMode: null,
+      cloudError: null,
+      isPrimaryAdmin: false,
+      memberExists: false,
+      memberActive: false,
+    }),
+    'unauthenticated'
+  );
+
+  assert.equal(
+    resolveStartupAccessStatus({
+      sessionMode: 'cloud',
+      cloudError: null,
+      isPrimaryAdmin: true,
+      memberExists: false,
+      memberActive: false,
+    }),
+    'approved'
+  );
+
+  assert.equal(
+    resolveStartupAccessStatus({
+      sessionMode: 'cloud',
+      cloudError: null,
+      isPrimaryAdmin: false,
+      memberExists: false,
+      memberActive: false,
+      requestStatus: 'pending',
+    }),
+    'pending'
+  );
+
+  assert.equal(
+    resolveStartupAccessStatus({
+      sessionMode: 'cloud',
+      cloudError: null,
+      isPrimaryAdmin: false,
+      memberExists: false,
+      memberActive: false,
+      requestStatus: 'rejected',
+    }),
+    'rejected'
+  );
+
+  assert.equal(
+    resolveStartupAccessStatus({
+      sessionMode: 'cloud',
+      cloudError: null,
+      isPrimaryAdmin: false,
+      memberExists: true,
+      memberActive: false,
+    }),
+    'deactivated'
+  );
+
+  assert.equal(
+    resolveStartupAccessStatus({
+      sessionMode: 'cloud',
+      cloudError: null,
+      isPrimaryAdmin: false,
+      memberExists: true,
+      memberActive: true,
+      staffLoaded: true,
+      myLinkedStaff: baseStaff[1],
+    }),
+    'approved'
+  );
+});
+
+test('shouldPromptPermanentRegistration never triggers for Principal Admin, pending users, or linked staff', () => {
   assert.equal(
     shouldPromptPermanentRegistration({
       sessionMode: 'cloud',
@@ -112,6 +201,20 @@ test('shouldPromptPermanentRegistration never triggers for Principal Admin or li
       loadingData: true,
       cloudError: null,
       isPrimaryAdmin: false,
+      accessStatus: 'approved',
+      myLinkedStaff: null,
+    }),
+    false
+  );
+
+  assert.equal(
+    shouldPromptPermanentRegistration({
+      sessionMode: 'cloud',
+      identityReady: true,
+      loadingData: false,
+      cloudError: null,
+      isPrimaryAdmin: false,
+      accessStatus: 'pending',
       myLinkedStaff: null,
     }),
     false
@@ -125,6 +228,7 @@ test('shouldPromptPermanentRegistration never triggers for Principal Admin or li
       loadingData: false,
       cloudError: null,
       isPrimaryAdmin: true,
+      accessStatus: 'approved',
       myLinkedStaff: null,
     }),
     false
@@ -138,12 +242,13 @@ test('shouldPromptPermanentRegistration never triggers for Principal Admin or li
       loadingData: false,
       cloudError: null,
       isPrimaryAdmin: false,
+      accessStatus: 'approved',
       myLinkedStaff: baseStaff[1],
     }),
     false
   );
 
-  // Brand-new unregistered user after cloud identity verified: prompts once
+  // Approved member missing a staff row once cloud identity verified: prompts once
   assert.equal(
     shouldPromptPermanentRegistration({
       sessionMode: 'cloud',
@@ -151,6 +256,7 @@ test('shouldPromptPermanentRegistration never triggers for Principal Admin or li
       loadingData: false,
       cloudError: null,
       isPrimaryAdmin: false,
+      accessStatus: 'approved',
       myLinkedStaff: null,
     }),
     true

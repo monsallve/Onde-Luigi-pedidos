@@ -20,8 +20,9 @@ import {
   X,
 } from 'lucide-react';
 import { CustomersModal } from '../components/CustomersModal';
+import { VoidOrderModal } from '../components/VoidOrderModal';
 import { usePosStore } from '../services/posStore';
-import type { MovementType, Order } from '../types/pos';
+import type { MovementType, Order, TrackedPaymentMethod } from '../types/pos';
 import { resolveOrderCustomerInfo } from '../utils/billingUtils';
 import {
   formatCurrency,
@@ -31,6 +32,7 @@ import {
 } from '../utils/orderMath';
 import { downloadOrderReceiptPdf } from '../utils/receiptPdf';
 import { ROLE_LABELS } from '../utils/rolePermissions';
+import { TRACKED_PAYMENT_METHOD_LABELS } from '../utils/shiftMath';
 
 const MOVEMENT_META: Record<MovementType, { label: string; icon: React.ReactNode; tint: string }> = {
   creacion: {
@@ -72,6 +74,7 @@ export const HistoryView: React.FC = () => {
     deleteOrderRecord,
   } = usePosStore();
   const [subTab, setSubTab] = useState<'pedidos' | 'bitacora'>('pedidos');
+  const [orderStatusFilter, setOrderStatusFilter] = useState<'todos' | 'activos' | 'cancelado'>('todos');
   const [typeFilter, setTypeFilter] = useState<'todos' | MovementType>('todos');
   const [searchTerm, setSearchTerm] = useState('');
   const [expandedOrderId, setExpandedOrderId] = useState<string | null>(null);
@@ -79,7 +82,6 @@ export const HistoryView: React.FC = () => {
   const [downloadingOrderId, setDownloadingOrderId] = useState<string | null>(null);
 
   const [voidTarget, setVoidTarget] = useState<Order | null>(null);
-  const [voidReason, setVoidReason] = useState('');
   const [deleteTarget, setDeleteTarget] = useState<Order | null>(null);
   const [actionBusy, setActionBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -92,18 +94,11 @@ export const HistoryView: React.FC = () => {
           setDeleteTarget(null);
           setActionError(null);
         }
-      } else if (voidTarget) {
-        e.preventDefault();
-        if (!actionBusy) {
-          setVoidTarget(null);
-          setVoidReason('');
-          setActionError(null);
-        }
       }
     };
     window.addEventListener('ondeluigi:back-intercept', handleBackIntercept);
     return () => window.removeEventListener('ondeluigi:back-intercept', handleBackIntercept);
-  }, [deleteTarget, voidTarget, actionBusy]);
+  }, [deleteTarget, actionBusy]);
 
   const filteredMovements = useMemo(() => {
     const q = searchTerm.trim().toLowerCase();
@@ -121,9 +116,23 @@ export const HistoryView: React.FC = () => {
     });
   }, [movements, typeFilter, searchTerm]);
 
+  const orderCounts = useMemo(() => {
+    let voided = 0;
+    for (const o of orders) {
+      if (o.status === 'cancelado') voided += 1;
+    }
+    return {
+      all: orders.length,
+      active: orders.length - voided,
+      voided,
+    };
+  }, [orders]);
+
   const filteredOrders = useMemo(() => {
     const q = searchTerm.trim().toLowerCase();
     return orders.filter((o) => {
+      if (orderStatusFilter === 'activos' && o.status === 'cancelado') return false;
+      if (orderStatusFilter === 'cancelado' && o.status !== 'cancelado') return false;
       if (!q) return true;
       return (
         String(o.orderNumber).includes(q) ||
@@ -136,7 +145,7 @@ export const HistoryView: React.FC = () => {
         (o.deliveryPhone || '').toLowerCase().includes(q)
       );
     });
-  }, [orders, searchTerm]);
+  }, [orders, orderStatusFilter, searchTerm]);
 
   const handleDownloadPdf = async (order: Order) => {
     setDownloadingOrderId(order.id);
@@ -147,17 +156,18 @@ export const HistoryView: React.FC = () => {
     }
   };
 
-  const handleConfirmVoid = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!voidTarget) return;
+  const handleConfirmVoid = async (params: {
+    orderId: string;
+    reason: string;
+    refundMethod?: TrackedPaymentMethod;
+  }) => {
     setActionBusy(true);
     setActionError(null);
     try {
-      await voidOrder(voidTarget.id, voidReason);
+      await voidOrder(params.orderId, params.reason, params.refundMethod);
       setVoidTarget(null);
-      setVoidReason('');
     } catch (err) {
-      setActionError(err instanceof Error ? err.message : 'No se pudo anular la venta.');
+      setActionError(err instanceof Error ? err.message : 'No se pudo anular la comanda.');
     } finally {
       setActionBusy(false);
     }
@@ -253,7 +263,32 @@ export const HistoryView: React.FC = () => {
           />
         </div>
 
-        {subTab === 'bitacora' && (
+        {subTab === 'pedidos' ? (
+          <div className="flex items-center gap-1.5 overflow-x-auto pb-0.5">
+            {(
+              [
+                { id: 'todos', label: `Todos (${orderCounts.all})` },
+                { id: 'activos', label: `Activos (${orderCounts.active})` },
+                { id: 'cancelado', label: `Anulados (${orderCounts.voided})` },
+              ] as const
+            ).map((f) => (
+              <button
+                key={f.id}
+                type="button"
+                onClick={() => setOrderStatusFilter(f.id)}
+                className={`min-h-[34px] px-3 rounded-lg text-xs font-semibold border whitespace-nowrap shrink-0 transition-colors ${
+                  orderStatusFilter === f.id
+                    ? f.id === 'cancelado'
+                      ? 'bg-red-600 text-white border-red-500 font-bold'
+                      : 'bg-amber-500 text-black border-amber-400 font-bold'
+                    : 'bg-[#1C1C22] text-zinc-300 border-[#27272E] hover:border-zinc-500'
+                }`}
+              >
+                {f.label}
+              </button>
+            ))}
+          </div>
+        ) : (
           <div className="flex items-center gap-1.5 overflow-x-auto pb-0.5">
             {(
               [
@@ -420,17 +455,23 @@ export const HistoryView: React.FC = () => {
                     </div>
                   </button>
 
-                  {isVoided && (order.voidReason || order.voidedByName) && (
-                    <div className="px-4 py-2 bg-red-950/30 border-t border-red-900/50 text-xs text-red-200 flex flex-wrap items-center gap-2">
-                      <Ban className="w-3.5 h-3.5 text-red-400 shrink-0" />
-                      <span>
-                        Anulada{order.voidedByName ? ` por ${order.voidedByName}` : ''}
-                        {order.voidReason ? ` · Motivo: ${order.voidReason}` : ''}
-                      </span>
-                    </div>
-                  )}
+                  {isVoided &&
+                    (order.voidReason ||
+                      order.voidedByName ||
+                      (order.paymentStatus === 'pagado' && order.refundMethod)) && (
+                      <div className="px-4 py-2 bg-red-950/30 border-t border-red-900/50 text-xs text-red-200 flex flex-wrap items-center gap-2">
+                        <Ban className="w-3.5 h-3.5 text-red-400 shrink-0" />
+                        <span>
+                          Anulada{order.voidedByName ? ` por ${order.voidedByName}` : ''}
+                          {order.voidReason ? ` · Motivo: ${order.voidReason}` : ''}
+                          {order.paymentStatus === 'pagado' && order.refundMethod
+                            ? ` · Devolución: ${TRACKED_PAYMENT_METHOD_LABELS[order.refundMethod]} (${formatCurrency(order.refundAmount ?? order.total)})`
+                            : ''}
+                        </span>
+                      </div>
+                    )}
 
-                  {/* Row Actions: Non-admin can Anular venta; ONLY Admin can Eliminar rastro */}
+                  {/* Row Actions: All roles except Cocina can Anular; ONLY Admin can Eliminar rastro */}
                   <div className="px-4 py-2.5 border-t border-[#27272E] bg-[#101014] flex flex-wrap items-center justify-between gap-2">
                     <button
                       type="button"
@@ -456,13 +497,12 @@ export const HistoryView: React.FC = () => {
                           type="button"
                           onClick={() => {
                             setActionError(null);
-                            setVoidReason('');
                             setVoidTarget(order);
                           }}
-                          className="min-h-[36px] px-3 rounded-lg border border-amber-700/80 bg-amber-950/40 text-amber-300 text-xs font-semibold hover:bg-amber-950 flex items-center gap-1.5"
+                          className="min-h-[36px] px-3 rounded-lg border border-red-800/80 bg-red-950/40 text-red-200 text-xs font-semibold hover:bg-red-950 flex items-center gap-1.5"
                         >
                           <Ban className="w-3.5 h-3.5" />
-                          <span>Anular venta</span>
+                          <span>Anular comanda</span>
                         </button>
                       )}
 
@@ -530,83 +570,20 @@ export const HistoryView: React.FC = () => {
         </div>
       )}
 
-      {/* Void Order Confirmation Modal */}
-      {voidTarget && permissions.canVoidOrders && (
-        <div
-          className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/75 backdrop-blur-sm sm:p-4"
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="void-order-modal-title"
-        >
-          <form
-            onSubmit={handleConfirmVoid}
-            className="w-full sm:max-w-md bg-[#141418] text-white rounded-t-3xl sm:rounded-2xl border border-[#27272E] shadow-2xl overflow-hidden"
-          >
-            <div className="px-5 py-4 border-b border-[#27272E] flex items-center justify-between bg-[#101014]">
-              <div className="flex items-center gap-2">
-                <Ban className="w-5 h-5 text-amber-400 shrink-0" />
-                <h2 id="void-order-modal-title" className="font-poster text-xl font-extrabold tracking-wide uppercase">
-                  ANULAR VENTA #{voidTarget.orderNumber}
-                </h2>
-              </div>
-              <button
-                type="button"
-                disabled={actionBusy}
-                onClick={() => setVoidTarget(null)}
-                aria-label="Cerrar"
-                className="min-h-[44px] min-w-[44px] flex items-center justify-center rounded-xl text-zinc-400 hover:bg-[#1C1C22]"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-
-            <div className="p-5 space-y-4">
-              {actionError && (
-                <div className="rounded-xl bg-red-950/60 border border-red-700 px-3 py-2 text-xs font-medium text-red-200">
-                  {actionError}
-                </div>
-              )}
-
-              <p className="text-xs text-zinc-300 leading-relaxed">
-                El pedido <strong>#{voidTarget.orderNumber} ({voidTarget.reference})</strong> por{' '}
-                <strong className="text-amber-400">{formatCurrency(voidTarget.total)}</strong> quedará registrado en el historial como <strong>Venta Anulada</strong> sin borrar su rastro de auditoría.
-              </p>
-
-              <div>
-                <label htmlFor="void-order-reason" className="block text-xs font-semibold text-zinc-300 mb-1">
-                  Motivo de anulación (opcional)
-                </label>
-                <input
-                  id="void-order-reason"
-                  type="text"
-                  maxLength={160}
-                  value={voidReason}
-                  onChange={(e) => setVoidReason(e.target.value)}
-                  placeholder="Ej. Cliente canceló, error al registrar..."
-                  className="w-full min-h-[42px] rounded-xl border border-[#27272E] bg-[#0A0A0A] px-3 text-sm text-white placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-amber-500"
-                />
-              </div>
-
-              <div className="grid grid-cols-2 gap-2.5">
-                <button
-                  type="button"
-                  disabled={actionBusy}
-                  onClick={() => setVoidTarget(null)}
-                  className="min-h-[44px] rounded-xl border border-[#27272E] bg-[#1C1C22] text-sm font-semibold text-zinc-200 hover:border-zinc-500"
-                >
-                  Cancelar
-                </button>
-                <button
-                  type="submit"
-                  disabled={actionBusy}
-                  className="min-h-[44px] rounded-xl bg-amber-500 text-black text-sm font-bold hover:bg-amber-400 disabled:opacity-50"
-                >
-                  {actionBusy ? 'Anulando...' : 'Confirmar anulación'}
-                </button>
-              </div>
-            </div>
-          </form>
-        </div>
+      {/* Shared Void Order Modal with Refund Method Selector */}
+      {permissions.canVoidOrders && (
+        <VoidOrderModal
+          order={voidTarget}
+          busy={actionBusy}
+          error={actionError}
+          onClose={() => {
+            if (!actionBusy) {
+              setVoidTarget(null);
+              setActionError(null);
+            }
+          }}
+          onConfirm={handleConfirmVoid}
+        />
       )}
 
       {/* Permanent Hard Delete Confirmation Modal (Admin Only) */}

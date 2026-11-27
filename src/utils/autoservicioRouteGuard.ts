@@ -152,8 +152,8 @@ export function buildIsolatedAutoservicioUrl(
 export function buildPublicAutoservicioLink(currentHref: string, orderId?: string): string {
   const parsed = new URL(currentHref, 'https://ondeluigi.local');
   let basePath = parsed.pathname || '/';
-  if (/\/admin\/pagos\/?$/i.test(basePath)) {
-    basePath = basePath.replace(/\/admin\/pagos\/?$/i, '/');
+  if (/\/admin\/(?:pagos|nomina)\/?$/i.test(basePath)) {
+    basePath = basePath.replace(/\/admin\/(?:pagos|nomina)\/?$/i, '/');
   } else if (/\/pos(?:\/index\.html|\/)?$/i.test(basePath)) {
     basePath = basePath.replace(/\/pos(?:\/index\.html|\/)?$/i, '/');
   } else if (/\/autoservicio(?:\/index\.html|\/)?$/i.test(basePath)) {

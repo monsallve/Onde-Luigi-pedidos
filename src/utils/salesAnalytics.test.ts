@@ -186,3 +186,28 @@ test('resolves yesterday and custom date ranges accurately', () => {
   assert.equal(combinedReport.orderCount, 3);
   assert.equal(combinedReport.totalSales, 136000);
 });
+
+test('tracks refundedTotal and refundedByMethod for paid cancelled orders', () => {
+  const withPaidVoid: Order[] = [
+    ...sampleOrders,
+    {
+      ...sampleOrders[0],
+      id: 'ord_5_paid_void',
+      orderNumber: 104,
+      status: 'cancelado',
+      paymentStatus: 'pagado',
+      paymentMethod: 'transferencia',
+      refundMethod: 'efectivo',
+      refundAmount: 28000,
+      total: 28000,
+      createdAtMs: fixedNow - 10 * 60 * 1000,
+    },
+  ];
+  const { startMs, endMs } = resolveDateRange('hoy', undefined, undefined, fixedNow);
+  const report = computeSalesReport(withPaidVoid, startMs, endMs);
+
+  assert.equal(report.cancelledCount, 2);
+  assert.equal(report.refundedTotal, 28000);
+  assert.equal(report.refundedByMethod.efectivo, 28000);
+});
+

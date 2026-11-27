@@ -161,3 +161,77 @@ test('formatShiftDuration formats minutes and hours cleanly', () => {
   assert.equal(formatShiftDuration(0, 45 * 60000), '45 min');
   assert.equal(formatShiftDuration(0, 135 * 60000), '2 h 15 min');
 });
+
+test('handles same-method refund of paid voided order as net zero without polluting usedPaymentMethods', () => {
+  const orders: Order[] = [
+    { ...baseOrder, id: 'o_valid', paymentMethod: 'efectivo', total: 30000, createdAtMs: 2000 },
+    {
+      ...baseOrder,
+      id: 'o_void_same',
+      status: 'cancelado',
+      paymentStatus: 'pagado',
+      paymentMethod: 'transferencia',
+      refundMethod: 'transferencia',
+      refundAmount: 25000,
+      total: 25000,
+      createdAtMs: 2500,
+      voidedAtMs: 3000,
+    },
+  ];
+
+  const summary = computeShiftExpectedSummary({
+    orders,
+    movements: [],
+    openedAtMs: 1000,
+    closedAtMs: 5000,
+    openingBaseAmount: 100000,
+  });
+
+  assert.deepEqual(summary.usedPaymentMethods, ['efectivo']);
+  assert.equal(summary.expectedByMethod.efectivo, 30000);
+  assert.equal(summary.expectedByMethod.transferencia, undefined);
+  assert.equal(summary.refundsTotal, 25000);
+  assert.equal(summary.refundsByMethod.transferencia, 25000);
+  assert.equal(summary.expectedTotal, 130000);
+});
+
+test('handles cross-method refund (paid transferencia, refunded efectivo) including base deduction safely', () => {
+  const orders: Order[] = [
+    {
+      ...baseOrder,
+      id: 'o_cross',
+      status: 'cancelado',
+      paymentStatus: 'pagado',
+      paymentMethod: 'transferencia',
+      refundMethod: 'efectivo',
+      refundAmount: 40000,
+      total: 40000,
+      createdAtMs: 2000,
+      voidedAtMs: 3000,
+    },
+    {
+      ...baseOrder,
+      id: 'o_cash_sale',
+      paymentMethod: 'efectivo',
+      total: 15000,
+      createdAtMs: 2200,
+    },
+  ];
+
+  const summary = computeShiftExpectedSummary({
+    orders,
+    movements: [],
+    openedAtMs: 1000,
+    closedAtMs: 5000,
+    openingBaseAmount: 100000,
+  });
+
+  // Transferencia received 40000; cash received 15000 but refunded 40000 -> -25000 deducted from opening base
+  assert.equal(summary.expectedByMethod.transferencia, 40000);
+  assert.equal(summary.expectedByMethod.efectivo, 0);
+  assert.equal(summary.expectedBaseAmount, 75000);
+  assert.equal(summary.expectedTotal, 115000);
+  assert.equal(summary.refundsTotal, 40000);
+  assert.equal(summary.refundsByMethod.efectivo, 40000);
+});
+

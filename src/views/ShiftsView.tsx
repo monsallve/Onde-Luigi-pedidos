@@ -409,6 +409,23 @@ export const ShiftsView: React.FC<{ embeddedInModal?: boolean }> = ({
                     </p>
                   </div>
                 </div>
+                {liveExpected.refundsTotal > 0 && (
+                  <p className="text-[11px] text-red-300 font-medium">
+                    Devoluciones descontadas en este turno:{' '}
+                    <strong className="font-mono tabular-nums">
+                      {formatCurrency(liveExpected.refundsTotal)}
+                    </strong>{' '}
+                    (
+                    {Object.entries(liveExpected.refundsByMethod)
+                      .filter(([, amt]) => (amt || 0) > 0)
+                      .map(
+                        ([m, amt]) =>
+                          `${TRACKED_PAYMENT_METHOD_LABELS[m as TrackedPaymentMethod]}: ${formatCurrency(amt || 0)}`
+                      )
+                      .join(' · ')}
+                    )
+                  </p>
+                )}
               </div>
             )}
 

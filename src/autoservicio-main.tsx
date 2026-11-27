@@ -1,7 +1,10 @@
 import { createRoot } from 'react-dom/client';
 import { SelfServiceApp } from './SelfServiceApp';
+import { installGlobalInputExecutionGuard } from './utils/inputSecurity';
 import { syncDynamicManifestLink } from './utils/pwaManifest';
 import './index.css';
+
+installGlobalInputExecutionGuard();
 
 window.addEventListener('vite:preloadError', () => {
   window.location.reload();

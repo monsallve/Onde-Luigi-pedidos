@@ -23,6 +23,7 @@ import {
   query,
   serverTimestamp,
   setDoc,
+  Timestamp,
   updateDoc,
   where,
   writeBatch,
@@ -64,11 +65,21 @@ import type {
   Shift,
   StaffMember,
   StaffRole,
+  StartupAccessStatus,
   TrackedPaymentMethod,
   TransferReceipt,
+  WorkspaceAccessRequest,
   WorkspaceNotification,
   WorkspaceNotificationType,
 } from '../types/pos';
+import type {
+  PayrollCompany,
+  PayrollCompanyInput,
+  PayrollEmployee,
+  PayrollEmployeeInput,
+  PayrollQuincenaRecord,
+  PayrollStubRecord,
+} from '../types/payroll';
 import {
   buildCustomerDocId,
   DEFAULT_BILLING_CONFIG,
@@ -78,6 +89,13 @@ import {
   normalizeCustomerDocument,
   normalizeCustomerName,
 } from '../utils/billingUtils';
+import {
+  assertSafeEmailInput,
+  assertSafeTextInput,
+  sanitizePlainText,
+  sanitizeSafeUrl,
+  sanitizeStringList,
+} from '../utils/inputSecurity';
 import {
   calculateOrderTotals,
   createSafeId,
@@ -93,6 +111,7 @@ import {
   findLinkedStaffMember,
   isStartupIdentityReady,
   resolveActiveWaiter,
+  resolveStartupAccessStatus,
 } from '../utils/identityState';
 import {
   getRolePermissions,
@@ -111,7 +130,7 @@ import {
   roundStockQty,
   splitProductRecipeFromSpecs,
 } from '../utils/inventoryMath';
-import { evaluateShiftClose } from '../utils/shiftMath';
+import { evaluateShiftClose, TRACKED_PAYMENT_METHOD_LABELS } from '../utils/shiftMath';
 import {
   aggregateInventoriablePurchases,
   buildNotificationCopy,
@@ -124,6 +143,14 @@ import {
   DEFAULT_SELF_SERVICE_CONFIG,
   normalizeSelfServiceConfig,
 } from '../utils/selfServiceMath';
+import { getNotificationPermissionState } from '../utils/notificationAlert';
+import { detectPushPlatform, isStandalonePwaMode } from '../utils/pushEligibility';
+import {
+  getConfiguredVapidKey,
+  type PushSyncStatusInfo,
+  revokeStaffBackgroundPush,
+  syncStaffBackgroundPush,
+} from './pushMessagingService';
 import {
   type ReceiptUploadResult,
   uploadProductImage,
@@ -131,12 +158,14 @@ import {
   uploadTransferReceiptImage,
 } from './storageService';
 import {
+  mapAccessRequestDoc,
   mapCustomerDoc,
   mapInventoryItemDoc,
   mapInventoryMovementDoc,
   mapMovementDoc,
   mapNotificationDoc,
   mapOrderDoc,
+  mapPayrollCompanyDoc,
   mapProductDoc,
   mapPurchaseInvoiceDoc,
   mapSauceDoc,
@@ -144,6 +173,7 @@ import {
   mapShiftDoc,
   mapStaffDoc,
   mapTransferDoc,
+  omitUndefinedFields,
   resolveOrBootstrapCloudWorkspace,
   SHARED_WORKSPACE_ID,
   stripClientTimestamps,
@@ -151,6 +181,7 @@ import {
   toPublicProductPayload,
   toPublicSaucePayload,
 } from './workspaceSync';
+import { sanitizePayrollDocId } from '../utils/payrollMath';
 
 const ACTIVE_WAITER_STORAGE_KEY = 'ondeluigi_active_waiter_v2';
 const CYCLIC_REF_COUNTER_KEY = 'ondeluigi_cyclic_ref_counter_v1';
@@ -217,6 +248,11 @@ interface PosContextValue {
   cloudError: string | null;
   loadingData: boolean;
   identityReady: boolean;
+  accessStatus: StartupAccessStatus;
+  accessRequest: WorkspaceAccessRequest | null;
+  accessRequests: WorkspaceAccessRequest[];
+  pendingAccessRequestsCount: number;
+  pushSyncStatus: PushSyncStatusInfo;
 
   effectiveRole: StaffRole;
   permissions: RolePermissions;
@@ -242,6 +278,8 @@ interface PosContextValue {
   notifications: WorkspaceNotification[];
   notificationsLoaded: boolean;
   purchaseInvoices: PurchaseInvoice[];
+  payrollCompanies: PayrollCompany[];
+  payrollLoaded: boolean;
 
   activeWaiter: StaffMember | null;
   myLinkedStaff: StaffMember | null;
@@ -257,6 +295,11 @@ interface PosContextValue {
   sendVerificationEmail: () => Promise<void>;
   refreshEmailVerification: () => Promise<boolean>;
   signOutSession: () => Promise<void>;
+  approveAccessRequest: (uid: string, role: StaffRole, nameOverride?: string) => Promise<void>;
+  rejectAccessRequest: (uid: string, reason?: string) => Promise<void>;
+  updatePendingRequestedName: (name: string) => Promise<void>;
+  refreshAccessApprovalStatus: () => void;
+  syncBackgroundPushNow: () => Promise<PushSyncStatusInfo>;
 
   createOrder: (input: CreateOrderInput) => Promise<Order>;
   updateOrderItems: (
@@ -266,7 +309,11 @@ interface PosContextValue {
     nextNotes: string
   ) => Promise<void>;
   updateOrderStatus: (orderId: string, nextStatus: OrderStatus) => Promise<void>;
-  voidOrder: (orderId: string, reason?: string) => Promise<void>;
+  voidOrder: (
+    orderId: string,
+    reason?: string,
+    refundMethod?: TrackedPaymentMethod
+  ) => Promise<void>;
   deleteOrderRecord: (orderId: string) => Promise<void>;
   updateOrderPayment: (params: {
     orderId: string;
@@ -345,6 +392,20 @@ interface PosContextValue {
   registerBulkPurchaseInvoice: (input: RegisterBulkPurchaseInput) => Promise<PurchaseInvoice>;
   deletePurchaseInvoice: (invoiceId: string) => Promise<void>;
   deleteWorkspaceNotification: (notifId: string) => Promise<void>;
+
+  savePayrollCompany: (input: PayrollCompanyInput) => Promise<PayrollCompany>;
+  deletePayrollCompany: (companyId: string) => Promise<void>;
+  savePayrollEmployee: (companyId: string, input: PayrollEmployeeInput) => Promise<PayrollEmployee>;
+  deletePayrollEmployee: (companyId: string, employeeId: string) => Promise<void>;
+  savePayrollEmployeeQuincena: (
+    companyId: string,
+    employeeId: string,
+    periodKey: string,
+    record: PayrollQuincenaRecord
+  ) => Promise<void>;
+  savePayrollStub: (companyId: string, stub: PayrollStubRecord) => Promise<void>;
+  deletePayrollStub: (companyId: string, stubId: string) => Promise<void>;
+  importPayrollCompanies: (companies: PayrollCompany[]) => Promise<void>;
 }
 
 const PosContext = createContext<PosContextValue | null>(null);
@@ -398,6 +459,18 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [authorizedEmails, setAuthorizedEmails] = useState<string[]>([ADMIN_BOOTSTRAP_EMAIL]);
   const [allowSelfRegistration, setAllowSelfRegistration] = useState(true);
   const [cloudMemberRole, setCloudMemberRole] = useState<AccountRole>('mesero');
+  const [memberExistsState, setMemberExistsState] = useState(false);
+  const [memberActiveState, setMemberActiveState] = useState(true);
+  const [myAccessRequest, setMyAccessRequest] = useState<WorkspaceAccessRequest | null>(null);
+  const [accessRequests, setAccessRequests] = useState<WorkspaceAccessRequest[]>([]);
+  const [accessReloadTick, setAccessReloadTick] = useState(0);
+  const [pushSyncStatus, setPushSyncStatus] = useState<PushSyncStatusInfo>(() => ({
+    status: 'ineligible',
+    platform: detectPushPlatform(),
+    isStandalone: isStandalonePwaMode(),
+    hasVapidKey: Boolean(getConfiguredVapidKey()),
+    message: 'Esperando cuenta activa para vincular notificaciones en segundo plano.',
+  }));
 
   const [staff, setStaff] = useState<StaffMember[]>([]);
   const [sauces, setSauces] = useState<Sauce[]>([]);
@@ -423,6 +496,8 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [posNotifications, setPosNotifications] = useState<WorkspaceNotification[]>([]);
   const [posNotificationsLoaded, setPosNotificationsLoaded] = useState(false);
   const [purchaseInvoices, setPurchaseInvoices] = useState<PurchaseInvoice[]>([]);
+  const [payrollCompanies, setPayrollCompanies] = useState<PayrollCompany[]>([]);
+  const [payrollLoaded, setPayrollLoaded] = useState(false);
   const autoUnifyTriggeredRef = useRef(false);
   const autoStorefrontSyncRef = useRef(false);
 
@@ -448,6 +523,10 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         waiterName: s.deliveryType === 'domicilio' ? 'Autoservicio · Domicilio' : 'Autoservicio · Local',
         paymentStatus: s.paymentStatus,
         notes: s.notes || (s.deliveryType === 'domicilio' ? `Domicilio: ${s.deliveryAddress}` : 'Recoger en local'),
+        annulled: s.status === 'cancelado',
+        ...(s.voidedByName ? { annulledByName: s.voidedByName } : {}),
+        ...(s.voidReason ? { annulledReason: s.voidReason } : {}),
+        ...(s.voidedAtMs ? { annulledAtMs: s.voidedAtMs } : {}),
         ownerUid: s.ownerUid,
         createdByUid: s.createdByUid || 'autoservicio_public',
         allowedEmails: authorizedEmails,
@@ -457,21 +536,6 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       (a, b) => (b.createdAtMs || 0) - (a.createdAtMs || 0)
     );
   }, [posTransfers, selfServiceOrders, authorizedEmails]);
-
-  const notifications = useMemo(
-    () =>
-      mergeWorkspaceNotifications({
-        persistedNotifications: posNotifications,
-        posOrders,
-        selfServiceOrders,
-        shifts,
-        authorizedEmails,
-      }),
-    [posNotifications, posOrders, selfServiceOrders, shifts, authorizedEmails]
-  );
-
-  const notificationsLoaded =
-    posNotificationsLoaded && selfOrdersLoaded && posOrdersLoaded && shiftsLoaded;
 
   const openShift = useMemo(
     () => shifts.find((s) => s.status === 'abierto') || null,
@@ -513,6 +577,86 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const isAdmin = effectiveRole === 'admin';
   const isPrimaryAdmin = isRealPrimaryAdmin && effectiveRole === 'admin';
 
+  const accessStatus: StartupAccessStatus = useMemo(
+    () =>
+      resolveStartupAccessStatus({
+        sessionMode,
+        cloudError,
+        isPrimaryAdmin: isRealPrimaryAdmin,
+        memberExists: memberExistsState,
+        memberActive: memberActiveState,
+        requestStatus: myAccessRequest?.status ?? null,
+        staffLoaded,
+        myLinkedStaff,
+      }),
+    [
+      sessionMode,
+      cloudError,
+      isRealPrimaryAdmin,
+      memberExistsState,
+      memberActiveState,
+      myAccessRequest?.status,
+      staffLoaded,
+      myLinkedStaff,
+    ]
+  );
+
+  const pendingAccessRequestsCount = useMemo(
+    () => (isAdmin ? accessRequests.filter((r) => r.status === 'pending').length : 0),
+    [isAdmin, accessRequests]
+  );
+
+  const notifications = useMemo(() => {
+    const base = mergeWorkspaceNotifications({
+      persistedNotifications: posNotifications,
+      posOrders,
+      selfServiceOrders,
+      shifts,
+      authorizedEmails,
+    });
+    if (!isAdmin || accessStatus !== 'approved') return base;
+    const pendingReqs = accessRequests.filter((r) => r.status === 'pending');
+    if (pendingReqs.length === 0) return base;
+    const accessNotifs: WorkspaceNotification[] = pendingReqs.map((req) => {
+      const copy = buildNotificationCopy({
+        type: 'solicitud_acceso',
+        actorName: req.requestedName || req.displayName || req.email,
+        requesterEmail: req.email,
+      });
+      return {
+        id: `notif_access_req_${req.uid}`,
+        type: 'solicitud_acceso',
+        title: copy.title,
+        message: copy.message,
+        orderId: '',
+        orderNumber: 0,
+        shiftId: '',
+        actorName: req.requestedName || req.displayName || 'Nuevo usuario',
+        actorUid: req.uid,
+        ownerUid: workspaceOwnerUid,
+        createdByUid: req.uid,
+        allowedEmails: authorizedEmails,
+        createdAtMs: req.createdAtMs || req.updatedAtMs || Date.now(),
+      };
+    });
+    return [...accessNotifs, ...base]
+      .sort((a, b) => (b.createdAtMs || 0) - (a.createdAtMs || 0))
+      .slice(0, 80);
+  }, [
+    posNotifications,
+    posOrders,
+    selfServiceOrders,
+    shifts,
+    authorizedEmails,
+    isAdmin,
+    accessStatus,
+    accessRequests,
+    workspaceOwnerUid,
+  ]);
+
+  const notificationsLoaded =
+    posNotificationsLoaded && selfOrdersLoaded && posOrdersLoaded && shiftsLoaded;
+
   const activeWaiter = useMemo(
     () =>
       resolveActiveWaiter({
@@ -535,10 +679,20 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         cloudError,
         firebaseUid: firebaseUser?.uid || null,
         cloudReadyForUid,
+        accessStatus,
         staffLoaded,
         loadingData,
       }),
-    [authReady, sessionMode, cloudError, firebaseUser, cloudReadyForUid, staffLoaded, loadingData]
+    [
+      authReady,
+      sessionMode,
+      cloudError,
+      firebaseUser,
+      cloudReadyForUid,
+      accessStatus,
+      staffLoaded,
+      loadingData,
+    ]
   );
 
   // Clean legacy local keys on mount
@@ -664,7 +818,7 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     };
   }, [activateCloudSession]);
 
-  // Real-time Firestore listeners
+  // Real-time Firestore listeners (strictly gated by Admin approval & active membership)
   useEffect(() => {
     if (sessionMode !== 'cloud' || !db || !firebaseUser) return;
 
@@ -688,13 +842,84 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const REQUIRED_COLLECTIONS = ['staff', 'sauces', 'products', 'orders'];
 
     resolveOrBootstrapCloudWorkspace(firebaseUser)
-      .then((wsInfo) => {
-        if (cancelled || !db || !wsInfo) return;
+      .then((resolution) => {
+        if (cancelled || !db || !resolution) return;
 
+        if (resolution.status !== 'approved') {
+          setWorkspaceOwnerUid(resolution.ownerUid);
+          setAllowSelfRegistration(resolution.allowSelfRegistration);
+          setMemberExistsState(resolution.status === 'deactivated');
+          setMemberActiveState(false);
+          setMyAccessRequest(resolution.accessRequest);
+          setAccessRequests([]);
+          setStaff([]);
+          setSauces([]);
+          setProducts([]);
+          setPosOrders([]);
+          setSelfServiceOrders([]);
+          setMovements([]);
+          setPosTransfers([]);
+          setShifts([]);
+          setCustomers([]);
+          setInventory([]);
+          setInventoryMovements([]);
+          setPosNotifications([]);
+          setPurchaseInvoices([]);
+          setCloudReadyForUid(firebaseUser.uid);
+          setStaffLoaded(true);
+          setLoadingData(false);
+
+          // Listen strictly to own member & accessRequest docs so Admin approval activates POS immediately
+          unsubs.push(
+            onSnapshot(
+              doc(db, 'workspaces', SHARED_WORKSPACE_ID, 'members', firebaseUser.uid),
+              (snap) => {
+                if (cancelled) return;
+                if (snap.exists()) {
+                  const d = snap.data() as { active?: boolean };
+                  setMemberExistsState(true);
+                  setMemberActiveState(d.active !== false);
+                  if (d.active !== false) {
+                    setAccessReloadTick((t) => t + 1);
+                  }
+                } else {
+                  setMemberExistsState(false);
+                  setMemberActiveState(false);
+                }
+              },
+              () => undefined
+            ),
+            onSnapshot(
+              doc(db, 'workspaces', SHARED_WORKSPACE_ID, 'accessRequests', firebaseUser.uid),
+              (snap) => {
+                if (cancelled) return;
+                if (!snap.exists()) {
+                  setMyAccessRequest(null);
+                  return;
+                }
+                const mapped = mapAccessRequestDoc(
+                  snap.data() as Record<string, unknown>,
+                  firebaseUser.uid
+                );
+                setMyAccessRequest(mapped);
+                if (mapped.status === 'approved') {
+                  setAccessReloadTick((t) => t + 1);
+                }
+              },
+              () => undefined
+            )
+          );
+          return;
+        }
+
+        const wsInfo = resolution.workspaceInfo;
         setWorkspaceOwnerUid(wsInfo.ownerUid);
         setAuthorizedEmails(wsInfo.authorizedEmails);
         setAllowSelfRegistration(wsInfo.allowSelfRegistration);
         setCloudMemberRole(wsInfo.memberRole);
+        setMemberExistsState(true);
+        setMemberActiveState(true);
+        setMyAccessRequest(null);
         setBillingConfig(wsInfo.billingConfig);
         setSelfServiceConfig(wsInfo.selfServiceConfig);
         setCloudReadyForUid(firebaseUser.uid);
@@ -738,7 +963,9 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             doc(db, 'workspaceDirectory', SHARED_WORKSPACE_ID),
             (snap) => {
               if (snap.exists()) {
-                setAllowSelfRegistration(Boolean((snap.data() as { allowSelfRegistration?: boolean }).allowSelfRegistration));
+                setAllowSelfRegistration(
+                  Boolean((snap.data() as { allowSelfRegistration?: boolean }).allowSelfRegistration)
+                );
               }
             },
             () => undefined
@@ -748,17 +975,22 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             (snap) => {
               if (!snap.exists()) {
                 if (!isBootstrapAdmin && firebaseUser.uid !== wsInfo.ownerUid) {
+                  setMemberExistsState(false);
+                  setMemberActiveState(false);
                   setCloudError('Tu usuario fue eliminado del equipo por el administrador.');
                   setLoadingData(false);
                 }
                 return;
               }
               const d = snap.data() as { active?: boolean; role?: string };
+              setMemberExistsState(true);
               if (d.active === false && !isBootstrapAdmin && firebaseUser.uid !== wsInfo.ownerUid) {
+                setMemberActiveState(false);
                 setCloudError('Tu acceso fue desactivado por el administrador.');
                 setLoadingData(false);
                 return;
               }
+              setMemberActiveState(true);
               setCloudMemberRole(d.role === 'admin' ? 'admin' : 'mesero');
             },
             () => undefined
@@ -832,6 +1064,28 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           true
         );
 
+        if (isBootstrapAdmin || wsInfo.ownerUid === firebaseUser.uid || wsInfo.memberRole === 'admin') {
+          unsubs.push(
+            onSnapshot(
+              query(
+                collection(db!, `workspaces/${SHARED_WORKSPACE_ID}/accessRequests`),
+                where('ownerUid', '==', wsInfo.ownerUid)
+              ),
+              (snapshot) => {
+                if (cancelled) return;
+                const list = snapshot.docs.map((d) =>
+                  mapAccessRequestDoc(d.data() as Record<string, unknown>, d.id)
+                );
+                list.sort((a, b) => (b.createdAtMs || 0) - (a.createdAtMs || 0));
+                setAccessRequests(list);
+              },
+              () => undefined
+            )
+          );
+        } else {
+          setAccessRequests([]);
+        }
+
         unsubs.push(
           onSnapshot(
             query(
@@ -861,7 +1115,96 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       cancelled = true;
       unsubs.forEach((u) => u());
     };
-  }, [sessionMode, firebaseUser]);
+  }, [sessionMode, firebaseUser, accessReloadTick]);
+
+  // Admin-only real-time listener for Payroll Companies
+  useEffect(() => {
+    if (
+      sessionMode !== 'cloud' ||
+      !db ||
+      !firebaseUser ||
+      !workspaceOwnerUid ||
+      accessStatus !== 'approved' ||
+      !isAdmin
+    ) {
+      setPayrollCompanies([]);
+      setPayrollLoaded(false);
+      return;
+    }
+
+    const path = `workspaces/${SHARED_WORKSPACE_ID}/payrollCompanies`;
+    const q = query(collection(db, path), where('ownerUid', '==', workspaceOwnerUid));
+    const unsub = onSnapshot(
+      q,
+      (snapshot) => {
+        const list = snapshot.docs
+          .map((d) => mapPayrollCompanyDoc(d.data() as Record<string, unknown>, d.id))
+          .sort((a, b) => a.name.localeCompare(b.name, 'es', { sensitivity: 'base' }));
+        setPayrollCompanies(list);
+        setPayrollLoaded(true);
+      },
+      (err) => {
+        setPayrollLoaded(true);
+        handleFirestoreError(err, OperationType.LIST, path);
+      }
+    );
+
+    return () => unsub();
+  }, [sessionMode, firebaseUser, workspaceOwnerUid, accessStatus, isAdmin]);
+
+  // Staff background FCM registration & synchronization (strictly approved active staff only)
+  const syncBackgroundPushNow = useCallback(async (): Promise<PushSyncStatusInfo> => {
+    const res = await syncStaffBackgroundPush({
+      accessStatus,
+      firebaseUid: firebaseUser?.uid || '',
+      email: actorEmail,
+      staffProfile: activeWaiter,
+      effectiveRole,
+      ownerUid: workspaceOwnerUid,
+      authorizedEmails,
+      notificationPermission: getNotificationPermissionState(),
+    });
+    setPushSyncStatus(res);
+    return res;
+  }, [
+    accessStatus,
+    firebaseUser?.uid,
+    actorEmail,
+    activeWaiter,
+    effectiveRole,
+    workspaceOwnerUid,
+    authorizedEmails,
+  ]);
+
+  useEffect(() => {
+    if (
+      sessionMode !== 'cloud' ||
+      accessStatus !== 'approved' ||
+      !identityReady ||
+      !firebaseUser?.uid ||
+      !activeWaiter?.active
+    ) {
+      setPushSyncStatus({
+        status: 'ineligible',
+        platform: detectPushPlatform(),
+        isStandalone: isStandalonePwaMode(),
+        hasVapidKey: Boolean(getConfiguredVapidKey()),
+        message: 'Las alertas en segundo plano se activan al iniciar sesión con un rol activo.',
+      });
+      return;
+    }
+
+    void syncBackgroundPushNow();
+  }, [
+    sessionMode,
+    accessStatus,
+    identityReady,
+    firebaseUser?.uid,
+    activeWaiter?.id,
+    activeWaiter?.active,
+    effectiveRole,
+    syncBackgroundPushNow,
+  ]);
 
   // Auth actions
   const signInWithGoogle = useCallback(async () => {
@@ -884,9 +1227,12 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const registerWithEmail = useCallback(
     async (name: string, email: string, password: string) => {
       if (!auth) throw new Error('El registro no está disponible.');
-      const cleanName = name.trim().slice(0, 80);
-      if (!cleanName) throw new Error('Ingresa tu nombre completo.');
-      const cred = await createUserWithEmailAndPassword(auth, email.trim(), password);
+      const cleanName = assertSafeTextInput(name, 'Nombre completo', {
+        maxLen: 80,
+        required: true,
+      });
+      const cleanEmail = assertSafeEmailInput(email, 'Correo electrónico');
+      const cred = await createUserWithEmailAndPassword(auth, cleanEmail, password);
       if (cred.user) {
         await updateProfile(cred.user, { displayName: cleanName }).catch(() => undefined);
         await cred.user.reload().catch(() => undefined);
@@ -898,8 +1244,7 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const resetPassword = useCallback(async (email: string) => {
     if (!auth) throw new Error('La recuperación de contraseña no está disponible.');
-    const cleanEmail = email.trim();
-    if (!cleanEmail) throw new Error('Ingresa tu correo electrónico.');
+    const cleanEmail = assertSafeEmailInput(email, 'Correo electrónico');
     await sendPasswordResetEmail(auth, cleanEmail);
   }, []);
 
@@ -932,6 +1277,7 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const signOutSession = useCallback(async () => {
     safeStorageRemove(ACTIVE_WAITER_STORAGE_KEY);
+    await revokeStaffBackgroundPush(firebaseUser?.uid).catch(() => undefined);
     if (auth && firebaseUser) await signOut(auth);
     setActiveWaiterIdState('');
     setSessionMode(null);
@@ -942,6 +1288,10 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setEmailVerifiedState(false);
     setVerificationNotice(null);
     setCloudMemberRole('mesero');
+    setMemberExistsState(false);
+    setMemberActiveState(true);
+    setMyAccessRequest(null);
+    setAccessRequests([]);
     setWorkspaceOwnerUid('');
     setStaff([]);
     setSauces([]);
@@ -961,6 +1311,8 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setPosNotifications([]);
     setPosNotificationsLoaded(false);
     setPurchaseInvoices([]);
+    setPayrollCompanies([]);
+    setPayrollLoaded(false);
     setPublicStorefrontExists(false);
     setPublicStorefrontChecked(false);
     autoUnifyTriggeredRef.current = false;
@@ -968,6 +1320,36 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setBillingConfig(DEFAULT_BILLING_CONFIG);
     setSelfServiceConfig(DEFAULT_SELF_SERVICE_CONFIG);
   }, [firebaseUser]);
+
+  const refreshAccessApprovalStatus = useCallback(() => {
+    setAccessReloadTick((t) => t + 1);
+  }, []);
+
+  const updatePendingRequestedName = useCallback(
+    async (name: string) => {
+      if (!db || !firebaseUser) {
+        throw new Error('Debes iniciar sesión para actualizar tu nombre.');
+      }
+      const cleanName = assertSafeTextInput(name, 'Nombre completo', {
+        maxLen: 80,
+        required: true,
+      });
+      const reqPath = `workspaces/${SHARED_WORKSPACE_ID}/accessRequests/${firebaseUser.uid}`;
+      try {
+        await updateDoc(doc(db, reqPath), {
+          requestedName: cleanName,
+          updatedAt: serverTimestamp(),
+        });
+        await updateProfile(firebaseUser, { displayName: cleanName }).catch(() => undefined);
+        setMyAccessRequest((prev) =>
+          prev ? { ...prev, requestedName: cleanName, updatedAtMs: Date.now() } : prev
+        );
+      } catch (err) {
+        handleFirestoreError(err, OperationType.UPDATE, reqPath);
+      }
+    },
+    [firebaseUser]
+  );
 
   // Guard & shared record builders
   const requireCloud = useCallback(() => {
@@ -1106,6 +1488,7 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         openingBaseAmount?: number;
         paidOrdersCount?: number;
         wasPaidOrder?: boolean;
+        refundMethod?: TrackedPaymentMethod;
         reason?: string;
       }
     ) => {
@@ -1122,6 +1505,7 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         openingBaseAmount: params.openingBaseAmount,
         paidOrdersCount: params.paidOrdersCount,
         wasPaidOrder: params.wasPaidOrder,
+        refundMethod: params.refundMethod,
         reason: params.reason,
       });
       const notifId = createSafeId('notif');
@@ -1153,11 +1537,25 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       customerPhone: string;
       customerEmail: string;
     }> => {
-      const customerDocument = normalizeCustomerDocument(customer?.documentNumber);
-      const customerName = normalizeCustomerName(customer?.name, customerDocument);
-      const customerPhone = (customer?.phone || '').trim().slice(0, 40);
-      const customerEmail = (customer?.email || '').trim().slice(0, 160);
-      const customerNotes = (customer?.notes || '').trim().slice(0, 300);
+      const rawDoc = assertSafeTextInput(customer?.documentNumber || '', 'Documento', {
+        maxLen: 40,
+      });
+      const rawName = assertSafeTextInput(customer?.name || '', 'Nombre del cliente', {
+        maxLen: 120,
+      });
+      const customerDocument = normalizeCustomerDocument(rawDoc);
+      const customerName = normalizeCustomerName(rawName, customerDocument);
+      const customerPhone = assertSafeTextInput(customer?.phone || '', 'Teléfono', {
+        maxLen: 40,
+      });
+      const rawCustomerEmail = (customer?.email || '').trim();
+      const customerEmail = rawCustomerEmail
+        ? assertSafeEmailInput(rawCustomerEmail, 'Correo del cliente')
+        : '';
+      const customerNotes = assertSafeTextInput(customer?.notes || '', 'Notas del cliente', {
+        maxLen: 300,
+        allowNewlines: true,
+      });
 
       if (isDefaultFinalConsumer(customerDocument)) {
         return {
@@ -1231,12 +1629,38 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         );
       }
 
+      const rawRefInput = assertSafeTextInput(input.reference, 'Mesa o referencia', {
+        maxLen: 100,
+      });
+      const safeOrderNotes = assertSafeTextInput(input.notes, 'Notas del pedido', {
+        maxLen: 400,
+        allowNewlines: true,
+      });
+      const safeReceiptNotes = assertSafeTextInput(
+        input.receiptNotes || '',
+        'Notas del comprobante',
+        { maxLen: 300, allowNewlines: true }
+      );
+      const safeItems: OrderItem[] = input.items.map((item) => ({
+        ...item,
+        productName: sanitizePlainText(item.productName, { maxLen: 100 }) || 'Producto',
+        removedIngredients: sanitizeStringList(item.removedIngredients, 30, 80),
+        selectedSauces: sanitizeStringList(item.selectedSauces, 10, 60),
+        addedExtras: (item.addedExtras || []).slice(0, 20).map((ex) => ({
+          ...ex,
+          name: sanitizePlainText(ex.name, { maxLen: 80 }),
+        })),
+        customNote: assertSafeTextInput(item.customNote || '', 'Nota del producto', {
+          maxLen: 200,
+        }),
+      }));
+
       const resolvedCustomer = await syncCustomCustomerRecord(input.customer);
       const now = Date.now();
       const orderId = createSafeId('ord');
       const orderNumber = orders.reduce((m, o) => Math.max(m, o.orderNumber), 100) + 1;
-      const resolvedReference = input.reference.trim().slice(0, 100) || claimNextAutoReference();
-      const { subtotal, total } = calculateOrderTotals(input.items);
+      const resolvedReference = rawRefInput || claimNextAutoReference();
+      const { subtotal, total } = calculateOrderTotals(safeItems);
 
       let receiptUrl = '';
       let receiptCount = 0;
@@ -1262,7 +1686,7 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           waiterId: waiter.id,
           waiterName: waiter.name,
           paymentStatus: input.paymentStatus,
-          notes: (input.receiptNotes || '').trim().slice(0, 300),
+          notes: safeReceiptNotes,
           ownerUid: workspaceOwnerUid,
           createdByUid: actorUid,
           allowedEmails: authorizedEmails,
@@ -1270,7 +1694,7 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         };
       }
 
-      const rawConsumed = computeOrderInventoryConsumption(input.items, products);
+      const rawConsumed = computeOrderInventoryConsumption(safeItems, products);
       const existingInvIds = new Set(inventory.map((i) => i.id));
       const inventoryDeducted: Record<string, number> = {};
       for (const [invId, qty] of Object.entries(rawConsumed)) {
@@ -1289,10 +1713,10 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         paymentStatus: input.paymentStatus,
         paymentMethod:
           input.paymentStatus === 'pagado' ? input.paymentMethod || 'efectivo' : input.paymentMethod,
-        items: input.items,
+        items: safeItems,
         subtotal,
         total,
-        notes: input.notes.trim().slice(0, 400),
+        notes: safeOrderNotes,
         receiptCount,
         latestReceiptUrl: receiptUrl,
         customerId: resolvedCustomer.customerId,
@@ -1412,7 +1836,7 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         return;
       }
 
-      const promotedPayload = {
+      const promotedPayload = omitUndefinedFields({
         ...stripClientTimestamps(target),
         waiterId: waiter.id,
         waiterName: waiter.name,
@@ -1422,7 +1846,7 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         ...patch,
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
-      };
+      });
       batch.set(orderRef, promotedPayload);
 
       if (
@@ -1436,6 +1860,7 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           patch.paymentStatus === 'pagado' || target.paymentStatus === 'pagado'
             ? 'pagado'
             : 'pendiente';
+        const isVoidingNow = patch.status === 'cancelado';
         batch.set(doc(db!, `workspaces/${SHARED_WORKSPACE_ID}/transfers/${transferId}`), {
           id: transferId,
           orderId: target.id,
@@ -1454,6 +1879,14 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
               ? `Domicilio: ${target.deliveryAddress || ''}`
               : 'Recoger en local')
           ).slice(0, 300),
+          ...(isVoidingNow
+            ? {
+                annulled: true,
+                annulledByName: waiter.name.slice(0, 80),
+                annulledReason: String(patch.voidReason || 'Comanda anulada').slice(0, 240),
+                annulledAtMs: Number(patch.voidedAtMs) || Date.now(),
+              }
+            : {}),
           ownerUid: workspaceOwnerUid,
           createdByUid: actorUid,
           allowedEmails: authorizedEmails,
@@ -1481,6 +1914,8 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         voidReason?: string;
         voidedByName?: string;
         voidedAtMs?: number;
+        refundMethod?: TrackedPaymentMethod;
+        refundAmount?: number;
       }
     ) => {
       if (!selfServiceOrders.some((s) => s.id === target.id)) return;
@@ -1505,6 +1940,8 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       if (overrides.voidReason !== undefined) selfUpdate.voidReason = overrides.voidReason;
       if (overrides.voidedByName !== undefined) selfUpdate.voidedByName = overrides.voidedByName;
       if (overrides.voidedAtMs !== undefined) selfUpdate.voidedAtMs = overrides.voidedAtMs;
+      if (overrides.refundMethod !== undefined) selfUpdate.refundMethod = overrides.refundMethod;
+      if (overrides.refundAmount !== undefined) selfUpdate.refundAmount = overrides.refundAmount;
 
       batch.update(selfRef, selfUpdate);
       batch.update(queueRef, {
@@ -1524,11 +1961,31 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       const waiter = requireWaiter();
       const target = orders.find((o) => o.id === orderId);
       if (!target) throw new Error('Pedido no encontrado.');
+      if (target.status === 'cancelado') throw new Error('Este pedido ya fue anulado.');
       if (nextItems.length === 0) throw new Error('El pedido debe tener al menos un producto.');
 
-      const { subtotal, total } = calculateOrderTotals(nextItems);
-      const cleanRef = nextReference.trim().slice(0, 100) || target.reference;
-      const cleanNotes = nextNotes.trim().slice(0, 400);
+      const safeNextItems: OrderItem[] = nextItems.map((item) => ({
+        ...item,
+        productName: sanitizePlainText(item.productName, { maxLen: 100 }) || 'Producto',
+        removedIngredients: sanitizeStringList(item.removedIngredients, 30, 80),
+        selectedSauces: sanitizeStringList(item.selectedSauces, 10, 60),
+        addedExtras: (item.addedExtras || []).slice(0, 20).map((ex) => ({
+          ...ex,
+          name: sanitizePlainText(ex.name, { maxLen: 80 }),
+        })),
+        customNote: assertSafeTextInput(item.customNote || '', 'Nota del producto', {
+          maxLen: 200,
+        }),
+      }));
+
+      const { subtotal, total } = calculateOrderTotals(safeNextItems);
+      const cleanRef =
+        assertSafeTextInput(nextReference, 'Referencia del pedido', { maxLen: 100 }) ||
+        target.reference;
+      const cleanNotes = assertSafeTextInput(nextNotes, 'Notas del pedido', {
+        maxLen: 400,
+        allowNewlines: true,
+      });
       const unDeductedSelfOrder =
         target.source === 'autoservicio' &&
         target.status === 'pendiente_validacion' &&
@@ -1536,7 +1993,7 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       const prevDeducted = unDeductedSelfOrder
         ? {}
         : target.inventoryDeducted ?? computeOrderInventoryConsumption(target.items, products);
-      const rawNextDeducted = computeOrderInventoryConsumption(nextItems, products);
+      const rawNextDeducted = computeOrderInventoryConsumption(safeNextItems, products);
       const existingInvIds = new Set(inventory.map((i) => i.id));
       const nextDeducted: Record<string, number> = {};
       if (!unDeductedSelfOrder) {
@@ -1551,7 +2008,7 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       const mov = buildMovementRecord({
         order: { id: target.id, orderNumber: target.orderNumber, reference: cleanRef },
         type: 'edicion_items',
-        description: diffOrderItems(target.items, nextItems),
+        description: diffOrderItems(target.items, safeNextItems),
         waiter,
         details: { prevTotal: target.total, nextTotal: total },
       });
@@ -1563,7 +2020,7 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           batch,
           target,
           {
-            items: nextItems,
+            items: safeNextItems,
             subtotal,
             total,
             reference: cleanRef,
@@ -1576,7 +2033,7 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           waiter
         );
         appendSelfOrderMirrorOps(batch, target, {
-          items: nextItems,
+          items: safeNextItems,
           subtotal,
           total,
           reference: cleanRef,
@@ -1632,12 +2089,13 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       requireCloud();
       const waiter = requireWaiter();
       if (!target) throw new Error('Pedido no encontrado.');
+      if (target.status === 'cancelado') throw new Error('Este pedido ya fue anulado.');
+      if (nextStatus === 'cancelado') throw new Error('Usa la acción Anular para cancelar pedidos.');
       if (target.status === nextStatus) return;
 
       const shouldDeductNow =
         target.source === 'autoservicio' &&
         target.status === 'pendiente_validacion' &&
-        nextStatus !== 'cancelado' &&
         !target.inventoryDeducted;
 
       let nextDeducted: Record<string, number> | undefined;
@@ -1714,7 +2172,7 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   );
 
   const voidOrder = useCallback(
-    async (orderId: string, reason = '') => {
+    async (orderId: string, reason = '', refundMethod?: TrackedPaymentMethod) => {
       if (!permissions.canVoidOrders) {
         throw new Error('Tu rol actual no tiene permiso para anular pedidos.');
       }
@@ -1724,8 +2182,26 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       if (!target) throw new Error('Pedido no encontrado.');
       if (target.status === 'cancelado') return;
 
+      const wasPaidOrder = target.paymentStatus === 'pagado';
+      const validRefundMethod =
+        refundMethod === 'efectivo' ||
+        refundMethod === 'transferencia' ||
+        refundMethod === 'tarjeta' ||
+        refundMethod === 'otro'
+          ? refundMethod
+          : undefined;
+      if (wasPaidOrder && !validRefundMethod) {
+        throw new Error('Selecciona el método en que se devolverá el dinero.');
+      }
+
       const now = Date.now();
-      const cleanReason = reason.trim().slice(0, 240);
+      const cleanReason = assertSafeTextInput(reason, 'Motivo de anulación', {
+        maxLen: 240,
+        allowNewlines: true,
+      });
+      const resolvedRefundAmount = wasPaidOrder
+        ? Math.max(0, Math.round(target.total || 0))
+        : undefined;
       const wasUndeductedSelf =
         target.source === 'autoservicio' &&
         target.status === 'pendiente_validacion' &&
@@ -1735,12 +2211,24 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         : target.inventoryDeducted ?? computeOrderInventoryConsumption(target.items, products);
       const restoreDeltas = computeInventoryDeltas(prevDeducted, {});
 
+      const refundDesc =
+        wasPaidOrder && validRefundMethod
+          ? ` · Devolución en ${TRACKED_PAYMENT_METHOD_LABELS[validRefundMethod]} ($${(resolvedRefundAmount || 0).toLocaleString('es-CO')})`
+          : '';
+
       const mov = buildMovementRecord({
         order: target,
         type: 'estado_pedido',
-        description: `Anuló venta #${target.orderNumber}${cleanReason ? ` · Motivo: ${cleanReason}` : ''}`,
+        description: `Anuló ${wasPaidOrder ? 'venta' : 'comanda'} #${target.orderNumber}${refundDesc}${cleanReason ? ` · Motivo: ${cleanReason}` : ''}`,
         waiter,
-        details: { from: target.status, to: 'cancelado', voided: true },
+        details: {
+          from: target.status,
+          to: 'cancelado',
+          voided: true,
+          ...(wasPaidOrder && validRefundMethod
+            ? { refundMethod: validRefundMethod, refundAmount: resolvedRefundAmount || 0 }
+            : {}),
+        },
         createdAtMs: now,
       });
 
@@ -1756,6 +2244,9 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             voidReason: cleanReason,
             voidedByName: waiter.name.slice(0, 80),
             voidedAtMs: now,
+            ...(wasPaidOrder && validRefundMethod
+              ? { refundMethod: validRefundMethod, refundAmount: resolvedRefundAmount }
+              : {}),
             waiterId: waiter.id,
             waiterName: waiter.name,
             updatedAt: serverTimestamp(),
@@ -1768,7 +2259,20 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           voidReason: cleanReason,
           voidedByName: waiter.name.slice(0, 80),
           voidedAtMs: now,
+          ...(wasPaidOrder && validRefundMethod
+            ? { refundMethod: validRefundMethod, refundAmount: resolvedRefundAmount }
+            : {}),
         });
+        for (const tr of posTransfers) {
+          if (tr.orderId === target.id && !tr.annulled) {
+            batch.update(doc(db!, `workspaces/${SHARED_WORKSPACE_ID}/transfers/${tr.id}`), {
+              annulled: true,
+              annulledByName: waiter.name.slice(0, 80),
+              annulledReason: cleanReason || 'Comanda anulada',
+              annulledAtMs: now,
+            });
+          }
+        }
         batch.set(doc(db!, `workspaces/${SHARED_WORKSPACE_ID}/movements/${mov.id}`), {
           ...stripClientTimestamps(mov),
           createdAt: serverTimestamp(),
@@ -1786,7 +2290,9 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           orderId: target.id,
           orderNumber: target.orderNumber,
           orderReference: target.reference,
-          wasPaidOrder: target.paymentStatus === 'pagado',
+          wasPaidOrder,
+          refundMethod: validRefundMethod,
+          total: resolvedRefundAmount,
           reason: cleanReason,
         });
         await batch.commit();
@@ -1800,6 +2306,7 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       requireWaiter,
       orders,
       products,
+      posTransfers,
       buildMovementRecord,
       appendOrderInventoryBatchOps,
       appendWorkspaceNotification,
@@ -1892,6 +2399,7 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       const waiter = requireWaiter();
       const target = orders.find((o) => o.id === orderId);
       if (!target) throw new Error('Pedido no encontrado.');
+      if (target.status === 'cancelado') throw new Error('Este pedido ya fue anulado.');
 
       if (paymentStatus === 'pagado' && !openShift) {
         throw new Error(
@@ -1923,7 +2431,10 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           waiterId: waiter.id,
           waiterName: waiter.name,
           paymentStatus,
-          notes: (receiptNotes || '').trim().slice(0, 300),
+          notes: assertSafeTextInput(receiptNotes || '', 'Notas del comprobante', {
+            maxLen: 300,
+            allowNewlines: true,
+          }),
           ownerUid: workspaceOwnerUid,
           createdByUid: actorUid,
           allowedEmails: authorizedEmails,
@@ -2075,6 +2586,7 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       }
       const target = orders.find((o) => o.id === orderId);
       if (!target) throw new Error('Pedido no encontrado.');
+      if (target.status === 'cancelado') throw new Error('Este pedido ya fue anulado.');
 
       const transferId = createSafeId('tr');
       const uploadRes = await uploadTransferReceiptImage({
@@ -2095,7 +2607,10 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         waiterId: waiter.id,
         waiterName: waiter.name,
         paymentStatus: 'pagado',
-        notes: (notes || '').trim().slice(0, 300),
+        notes: assertSafeTextInput(notes || '', 'Notas del comprobante', {
+          maxLen: 300,
+          allowNewlines: true,
+        }),
         ownerUid: workspaceOwnerUid,
         createdByUid: actorUid,
         allowedEmails: authorizedEmails,
@@ -2210,7 +2725,10 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       if (!target || target.annulled) return;
 
       const now = Date.now();
-      const cleanReason = reason.trim().slice(0, 240);
+      const cleanReason = assertSafeTextInput(reason, 'Motivo de anulación', {
+        maxLen: 240,
+        allowNewlines: true,
+      });
       const parentOrder = orders.find((o) => o.id === target.orderId);
       const remainingActive = transfers.filter(
         (t) => t.orderId === target.orderId && t.id !== transferId && !t.annulled
@@ -2399,8 +2917,12 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     async (input: SaveProductInput) => {
       requireAdmin();
       requireCloud();
-      const cleanName = input.name.trim().replace(/\s+/g, ' ').slice(0, 100);
-      if (!cleanName) throw new Error('El nombre del producto es obligatorio.');
+      const cleanName = assertSafeTextInput(input.name, 'Nombre del producto', {
+        maxLen: 100,
+        required: true,
+      });
+      const cleanCategory =
+        assertSafeTextInput(input.category, 'Categoría', { maxLen: 60 }) || 'General';
       if (hasDuplicateProductName(cleanName, products, input.id)) {
         throw new Error(
           `Ya existe un producto llamado "${cleanName}". No pueden haber dos productos con el mismo nombre.`
@@ -2415,23 +2937,36 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       const minS = input.allowSauces ? Math.max(0, Math.min(4, Math.round(input.minSauces))) : 0;
       const maxS = input.allowSauces ? Math.max(minS, Math.min(4, Math.round(input.maxSauces))) : 0;
 
-      let resolvedImageUrl = normalizeProductImageUrl(input.imageUrl, existing?.imageUrl);
+      let resolvedImageUrl = sanitizeSafeUrl(
+        normalizeProductImageUrl(input.imageUrl, existing?.imageUrl),
+        { allowDataImage: true, allowRelative: true, maxLen: 250000 }
+      );
       if (input.imageFile) {
         const uploaded = await uploadProductImage({
           workspaceId: SHARED_WORKSPACE_ID,
           productId: prodId,
           file: input.imageFile,
         });
-        resolvedImageUrl = normalizeProductImageUrl(uploaded.imageUrl, existing?.imageUrl);
+        resolvedImageUrl = sanitizeSafeUrl(
+          normalizeProductImageUrl(uploaded.imageUrl, existing?.imageUrl),
+          { allowDataImage: true, allowRelative: true, maxLen: 250000 }
+        );
       }
 
-      const resolvedSpecs = Array.isArray(input.recipeIngredients)
-        ? splitProductRecipeFromSpecs(input.recipeIngredients)
+      const safeSpecsInput = Array.isArray(input.recipeIngredients)
+        ? input.recipeIngredients.map((spec) => ({
+            ...spec,
+            name: assertSafeTextInput(spec.name, 'Ingrediente de receta', { maxLen: 80 }),
+          }))
         : null;
+      const resolvedSpecs = safeSpecsInput ? splitProductRecipeFromSpecs(safeSpecsInput) : null;
 
       const cleanAddons: AddonOption[] = input.addonOptions.slice(0, 30).map((ex) => ({
         id: ex.id,
-        name: ex.name.trim().slice(0, 80),
+        name: assertSafeTextInput(ex.name, 'Nombre de adicional', {
+          maxLen: 80,
+          required: true,
+        }),
         price: Math.max(0, Math.round(ex.price || 0)),
         allowMultiple: ex.allowMultiple !== false,
         ...(ex.inventoryItemId
@@ -2445,17 +2980,26 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           : {}),
       }));
 
+      const cleanBaseRecipe = resolvedSpecs
+        ? resolvedSpecs.baseRecipe
+        : input.baseRecipe
+            .map((s) => assertSafeTextInput(s, 'Ingrediente', { maxLen: 80 }))
+            .filter(Boolean)
+            .slice(0, 30);
+      const cleanRemovable = resolvedSpecs
+        ? resolvedSpecs.removableOptions
+        : input.removableOptions
+            .map((s) => assertSafeTextInput(s, 'Opción removible', { maxLen: 80 }))
+            .filter(Boolean)
+            .slice(0, 30);
+
       const payload = {
         name: cleanName,
-        category: input.category.trim().replace(/\s+/g, ' ').slice(0, 60) || 'General',
+        category: cleanCategory,
         basePrice: Math.round(input.basePrice),
         imageUrl: resolvedImageUrl,
-        baseRecipe: resolvedSpecs
-          ? resolvedSpecs.baseRecipe
-          : input.baseRecipe.map((s) => s.trim()).filter(Boolean).slice(0, 30),
-        removableOptions: resolvedSpecs
-          ? resolvedSpecs.removableOptions
-          : input.removableOptions.map((s) => s.trim()).filter(Boolean).slice(0, 30),
+        baseRecipe: cleanBaseRecipe,
+        removableOptions: cleanRemovable,
         recipeIngredients: resolvedSpecs
           ? resolvedSpecs.recipeIngredients
           : existing?.recipeIngredients || [],
@@ -2530,8 +3074,10 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     async (name: string, id?: string, active = true) => {
       requireAdmin();
       requireCloud();
-      const cleanName = name.trim().slice(0, 60);
-      if (!cleanName) throw new Error('Escribe el nombre de la salsa.');
+      const cleanName = assertSafeTextInput(name, 'Nombre de la salsa', {
+        maxLen: 60,
+        required: true,
+      });
       const sauceId = id || createSafeId('sauce');
       const existing = sauces.find((s) => s.id === sauceId);
       const path = `workspaces/${SHARED_WORKSPACE_ID}/sauces/${sauceId}`;
@@ -2587,48 +3133,222 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     [deleteSubDoc]
   );
 
-  // Team & Role mutations
-  const saveStaffMember = useCallback(
-    async (name: string, role: StaffRole = 'mesero') => {
-      requireCloud();
-      const cleanName = name.trim().slice(0, 80);
-      if (!cleanName) throw new Error('Escribe el nombre del integrante del equipo.');
-
-      if (!isAdmin) {
-        const ownId = `staff_${actorUid}`;
-        const existingOwn = staff.find(
-          (s) =>
-            s.id === ownId ||
-            s.linkedUid === actorUid ||
-            (s.linkedEmail && actorEmail && s.linkedEmail.toLowerCase() === actorEmail)
+  // Team, Access Approvals & Role mutations
+  const revokePushSubscriptionsForUid = useCallback(
+    async (targetUid: string) => {
+      if (!db || !targetUid || !workspaceOwnerUid) return;
+      try {
+        const snap = await getDocs(
+          query(
+            collection(db, `workspaces/${SHARED_WORKSPACE_ID}/pushSubscriptions`),
+            where('ownerUid', '==', workspaceOwnerUid)
+          )
         );
-        if (existingOwn) {
-          throw new Error(
-            'Tu nombre y rol ya están asignados permanentemente. Solo un administrador puede modificarlos.'
-          );
+        const toDelete = snap.docs.filter((d) => String(d.data()?.uid || '') === targetUid);
+        if (toDelete.length === 0) return;
+        const batch = writeBatch(db);
+        toDelete.forEach((d) => batch.delete(d.ref));
+        await batch.commit();
+      } catch {
+        // Ignore if subscription doesn't exist yet
+      }
+    },
+    [workspaceOwnerUid]
+  );
+
+  const approveAccessRequest = useCallback(
+    async (uid: string, role: StaffRole, nameOverride?: string) => {
+      requireAdmin();
+      requireCloud();
+      if (!isValidStaffRole(role)) throw new Error('Selecciona un rol válido.');
+      const cleanUid = assertSafeTextInput(uid, 'Identificador de usuario', {
+        maxLen: 128,
+        required: true,
+      });
+
+      const reqRef = doc(db!, `workspaces/${SHARED_WORKSPACE_ID}/accessRequests/${cleanUid}`);
+      const existingReq = accessRequests.find((r) => r.uid === cleanUid);
+      const reqSnap = existingReq ? null : await getDoc(reqRef);
+      const reqRecord = existingReq || (reqSnap?.exists() ? mapAccessRequestDoc(reqSnap.data(), cleanUid) : null);
+      if (!reqRecord) {
+        throw new Error('No se encontró la solicitud de acceso.');
+      }
+
+      const fallbackName = reqRecord.requestedName || reqRecord.email.split('@')[0] || 'Integrante';
+      const cleanName = assertSafeTextInput(
+        nameOverride !== undefined ? nameOverride : fallbackName,
+        'Nombre del integrante',
+        { maxLen: 80, required: true }
+      );
+      const cleanEmail = reqRecord.email ? reqRecord.email.trim().toLowerCase() : '';
+      const nextAuthorizedEmails = cleanEmail
+        ? Array.from(new Set([ADMIN_BOOTSTRAP_EMAIL, ...authorizedEmails, cleanEmail])).slice(0, 25)
+        : authorizedEmails;
+
+      const memberRef = doc(db!, `workspaces/${SHARED_WORKSPACE_ID}/members/${cleanUid}`);
+      const staffId = `staff_${cleanUid}`;
+      const staffRef = doc(db!, `workspaces/${SHARED_WORKSPACE_ID}/staff/${staffId}`);
+      const [memberSnap, staffSnap] = await Promise.all([getDoc(memberRef), getDoc(staffRef)]);
+
+      const reviewerName =
+        sanitizePlainText(activeWaiter?.name || firebaseUser?.displayName || actorEmail || 'Administrador', {
+          maxLen: 80,
+        }) || 'Administrador';
+      const memberRole: AccountRole = role === 'admin' ? 'admin' : 'mesero';
+
+      const path = `workspaces/${SHARED_WORKSPACE_ID}/accessRequests/${cleanUid}`;
+      try {
+        const batch = writeBatch(db!);
+        if (memberSnap.exists()) {
+          batch.update(memberRef, {
+            displayName: cleanName,
+            role: memberRole,
+            active: true,
+          });
+        } else {
+          batch.set(memberRef, {
+            uid: cleanUid,
+            displayName: cleanName,
+            role: memberRole,
+            active: true,
+            ownerUid: workspaceOwnerUid,
+            createdAt: serverTimestamp(),
+          });
         }
 
-        const path = `workspaces/${SHARED_WORKSPACE_ID}/staff/${ownId}`;
-        try {
-          await setDoc(doc(db!, path), {
-            id: ownId,
+        if (staffSnap.exists()) {
+          batch.update(staffRef, {
             name: cleanName,
-            role: 'mesero',
+            role,
             active: true,
-            linkedUid: actorUid,
-            linkedEmail: actorEmail || (firebaseUser?.email || '').toLowerCase(),
+            linkedUid: cleanUid,
+            linkedEmail: cleanEmail,
+            allowedEmails: nextAuthorizedEmails,
+            updatedAt: serverTimestamp(),
+          });
+        } else {
+          batch.set(staffRef, {
+            id: staffId,
+            name: cleanName,
+            role,
+            active: true,
+            linkedUid: cleanUid,
+            linkedEmail: cleanEmail,
             ownerUid: workspaceOwnerUid,
             createdByUid: actorUid,
-            allowedEmails: authorizedEmails,
+            allowedEmails: nextAuthorizedEmails,
             createdAt: serverTimestamp(),
             updatedAt: serverTimestamp(),
           });
-        } catch (err) {
-          handleFirestoreError(err, OperationType.CREATE, path);
         }
-        setActiveWaiterId(ownId);
-        return;
+
+        batch.update(reqRef, {
+          status: 'approved',
+          requestedName: cleanName,
+          assignedRole: role,
+          rejectionReason: '',
+          reviewedByUid: actorUid,
+          reviewedByName: reviewerName,
+          updatedAt: serverTimestamp(),
+        });
+
+        if (nextAuthorizedEmails.length !== authorizedEmails.length || (cleanEmail && !authorizedEmails.includes(cleanEmail))) {
+          batch.update(doc(db!, `workspaces/${SHARED_WORKSPACE_ID}`), {
+            authorizedEmails: nextAuthorizedEmails,
+            updatedAt: serverTimestamp(),
+          });
+        }
+
+        await batch.commit();
+      } catch (err) {
+        handleFirestoreError(err, OperationType.UPDATE, path);
       }
+    },
+    [
+      requireAdmin,
+      requireCloud,
+      accessRequests,
+      authorizedEmails,
+      activeWaiter?.name,
+      firebaseUser?.displayName,
+      actorEmail,
+      workspaceOwnerUid,
+      actorUid,
+    ]
+  );
+
+  const rejectAccessRequest = useCallback(
+    async (uid: string, reason = '') => {
+      requireAdmin();
+      requireCloud();
+      const cleanUid = assertSafeTextInput(uid, 'Identificador de usuario', {
+        maxLen: 128,
+        required: true,
+      });
+      if (cleanUid === workspaceOwnerUid) {
+        throw new Error('No puedes rechazar la cuenta del administrador principal.');
+      }
+      const cleanReason = assertSafeTextInput(reason, 'Motivo de rechazo', {
+        maxLen: 240,
+        allowNewlines: true,
+      });
+
+      const reqRef = doc(db!, `workspaces/${SHARED_WORKSPACE_ID}/accessRequests/${cleanUid}`);
+      const memberRef = doc(db!, `workspaces/${SHARED_WORKSPACE_ID}/members/${cleanUid}`);
+      const staffRef = doc(db!, `workspaces/${SHARED_WORKSPACE_ID}/staff/staff_${cleanUid}`);
+      const [memberSnap, staffSnap] = await Promise.all([getDoc(memberRef), getDoc(staffRef)]);
+
+      const reviewerName =
+        sanitizePlainText(activeWaiter?.name || firebaseUser?.displayName || actorEmail || 'Administrador', {
+          maxLen: 80,
+        }) || 'Administrador';
+
+      const path = `workspaces/${SHARED_WORKSPACE_ID}/accessRequests/${cleanUid}`;
+      try {
+        const batch = writeBatch(db!);
+        batch.update(reqRef, {
+          status: 'rejected',
+          rejectionReason: cleanReason,
+          reviewedByUid: actorUid,
+          reviewedByName: reviewerName,
+          updatedAt: serverTimestamp(),
+        });
+        if (memberSnap.exists()) {
+          batch.update(memberRef, { active: false });
+        }
+        if (staffSnap.exists()) {
+          batch.update(staffRef, {
+            active: false,
+            updatedAt: serverTimestamp(),
+          });
+        }
+        await batch.commit();
+        await revokePushSubscriptionsForUid(cleanUid);
+      } catch (err) {
+        handleFirestoreError(err, OperationType.UPDATE, path);
+      }
+    },
+    [
+      requireAdmin,
+      requireCloud,
+      workspaceOwnerUid,
+      activeWaiter?.name,
+      firebaseUser?.displayName,
+      actorEmail,
+      actorUid,
+      revokePushSubscriptionsForUid,
+    ]
+  );
+
+  const saveStaffMember = useCallback(
+    async (name: string, role: StaffRole = 'mesero') => {
+      requireAdmin();
+      requireCloud();
+      const cleanName = assertSafeTextInput(name, 'Nombre del integrante', {
+        maxLen: 80,
+        required: true,
+      });
+      if (!isValidStaffRole(role)) throw new Error('Rol inválido.');
 
       const id = createSafeId('staff');
       const path = `workspaces/${SHARED_WORKSPACE_ID}/staff/${id}`;
@@ -2650,7 +3370,7 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         handleFirestoreError(err, OperationType.CREATE, path);
       }
     },
-    [requireCloud, isAdmin, staff, workspaceOwnerUid, actorUid, actorEmail, authorizedEmails, firebaseUser, setActiveWaiterId]
+    [requireAdmin, requireCloud, workspaceOwnerUid, actorUid, authorizedEmails]
   );
 
   const updateStaffRole = useCallback(
@@ -2694,6 +3414,13 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
               active: target.active,
               ownerUid: workspaceOwnerUid,
               createdAt: serverTimestamp(),
+            });
+          }
+          const reqRef = doc(db!, `workspaces/${SHARED_WORKSPACE_ID}/accessRequests/${target.linkedUid}`);
+          if ((await getDoc(reqRef)).exists()) {
+            await updateDoc(reqRef, {
+              assignedRole: role,
+              updatedAt: serverTimestamp(),
             });
           }
         }
@@ -2740,12 +3467,15 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
               createdAt: serverTimestamp(),
             });
           }
+          if (!active) {
+            await revokePushSubscriptionsForUid(target.linkedUid);
+          }
         }
       } catch (err) {
         handleFirestoreError(err, OperationType.UPDATE, path);
       }
     },
-    [requireAdmin, requireCloud, staff, workspaceOwnerUid]
+    [requireAdmin, requireCloud, staff, workspaceOwnerUid, revokePushSubscriptionsForUid]
   );
 
   const deleteStaffMember = useCallback(
@@ -2769,6 +3499,11 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           if ((await getDoc(memberRef)).exists()) {
             await deleteDoc(memberRef);
           }
+          const reqRef = doc(db!, `workspaces/${SHARED_WORKSPACE_ID}/accessRequests/${target.linkedUid}`);
+          if ((await getDoc(reqRef)).exists()) {
+            await deleteDoc(reqRef);
+          }
+          await revokePushSubscriptionsForUid(target.linkedUid);
         }
       } catch (err) {
         handleFirestoreError(err, OperationType.DELETE, path);
@@ -2779,19 +3514,19 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         setActiveWaiterId(nextActive ? nextActive.id : '');
       }
     },
-    [requireAdmin, requireCloud, workspaceOwnerUid, activeWaiterId, staff, setActiveWaiterId]
+    [requireAdmin, requireCloud, workspaceOwnerUid, activeWaiterId, staff, setActiveWaiterId, revokePushSubscriptionsForUid]
   );
 
   const updateAuthorizedEmails = useCallback(
     async (emails: string[]) => {
       requireAdmin();
       requireCloud();
+      const validated = emails
+        .map((e) => e.trim())
+        .filter(Boolean)
+        .map((e) => assertSafeEmailInput(e, 'Correo autorizado'));
       const cleanList = Array.from(
-        new Set(
-          [ADMIN_BOOTSTRAP_EMAIL, ...emails]
-            .map((e) => e.trim().toLowerCase())
-            .filter((e) => e.includes('@'))
-        )
+        new Set([ADMIN_BOOTSTRAP_EMAIL, ...validated])
       ).slice(0, 25);
 
       const wsPath = `workspaces/${SHARED_WORKSPACE_ID}`;
@@ -2883,7 +3618,30 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     async (config: BusinessBillingConfig) => {
       requireAdmin();
       requireCloud();
-      const normalized = normalizeBillingConfig(config);
+      const checkedConfig: BusinessBillingConfig = {
+        ...config,
+        businessName: assertSafeTextInput(config.businessName, 'Nombre del negocio', {
+          maxLen: 120,
+          required: true,
+        }),
+        legalName: assertSafeTextInput(config.legalName, 'Razón social', { maxLen: 120 }),
+        nit: assertSafeTextInput(config.nit, 'NIT / RUT', { maxLen: 40 }),
+        regime: assertSafeTextInput(config.regime, 'Régimen tributario', { maxLen: 80 }),
+        address: assertSafeTextInput(config.address, 'Dirección', { maxLen: 160 }),
+        city: assertSafeTextInput(config.city, 'Ciudad', { maxLen: 80 }),
+        phone: assertSafeTextInput(config.phone, 'Teléfono', { maxLen: 40 }),
+        email: config.email.trim()
+          ? assertSafeEmailInput(config.email, 'Correo de facturación')
+          : '',
+        receiptPrefix: assertSafeTextInput(config.receiptPrefix, 'Prefijo de recibo', {
+          maxLen: 12,
+        }),
+        footerNote: assertSafeTextInput(config.footerNote, 'Pie de recibo', {
+          maxLen: 280,
+          allowNewlines: true,
+        }),
+      };
+      const normalized = normalizeBillingConfig(checkedConfig);
       const wsPath = `workspaces/${SHARED_WORKSPACE_ID}`;
       try {
         const batch = writeBatch(db!);
@@ -2922,16 +3680,45 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     async (config: SelfServicePaymentConfig) => {
       requireAdmin();
       requireCloud();
-      if (!config.brebKey.trim()) {
-        throw new Error('Ingresa la llave de Bre-B / cuenta antes de guardar.');
+      const cleanBrebKey = assertSafeTextInput(config.brebKey, 'Llave Bre-B / cuenta', {
+        maxLen: 120,
+        required: true,
+      });
+      const cleanAccountHolder = assertSafeTextInput(config.accountHolder, 'Titular de la cuenta', {
+        maxLen: 120,
+        required: true,
+      });
+      const cleanBankName = assertSafeTextInput(config.bankName, 'Banco o billetera', {
+        maxLen: 80,
+        required: true,
+      });
+      const cleanPaymentInstructions = assertSafeTextInput(
+        config.paymentInstructions,
+        'Instrucciones de pago',
+        { maxLen: 400, allowNewlines: true }
+      );
+      const cleanDeliveryInstructions = assertSafeTextInput(
+        config.deliveryInstructions,
+        'Instrucciones de entrega',
+        { maxLen: 400, allowNewlines: true }
+      );
+      const cleanQrUrl = sanitizeSafeUrl(config.qrImageUrl, {
+        allowDataImage: true,
+        allowRelative: false,
+        maxLen: 250000,
+      });
+      if (config.qrImageUrl.trim() && !cleanQrUrl) {
+        throw new Error('La URL de la imagen QR no es segura o no es válida.');
       }
-      if (!config.accountHolder.trim()) {
-        throw new Error('Ingresa el nombre del titular de la cuenta.');
-      }
-      if (!config.bankName.trim()) {
-        throw new Error('Ingresa el banco o billetera digital.');
-      }
-      const normalized = normalizeSelfServiceConfig(config);
+      const normalized = normalizeSelfServiceConfig({
+        ...config,
+        brebKey: cleanBrebKey,
+        accountHolder: cleanAccountHolder,
+        bankName: cleanBankName,
+        paymentInstructions: cleanPaymentInstructions,
+        deliveryInstructions: cleanDeliveryInstructions,
+        qrImageUrl: cleanQrUrl,
+      });
       const wsPath = `workspaces/${SHARED_WORKSPACE_ID}`;
       try {
         if (publicStorefrontExists) {
@@ -2988,14 +3775,22 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       notes?: string;
     }): Promise<Customer | null> => {
       requireCloud();
-      const cleanDoc = normalizeCustomerDocument(input.documentNumber);
+      const rawDoc = assertSafeTextInput(input.documentNumber, 'Documento', { maxLen: 40 });
+      const cleanDoc = normalizeCustomerDocument(rawDoc);
       if (isDefaultFinalConsumer(cleanDoc)) {
         return null;
       }
-      const cleanName = normalizeCustomerName(input.name, cleanDoc);
-      const cleanPhone = (input.phone || '').trim().slice(0, 40);
-      const cleanEmail = (input.email || '').trim().slice(0, 160);
-      const cleanNotes = (input.notes || '').trim().slice(0, 300);
+      const rawName = assertSafeTextInput(input.name, 'Nombre completo', { maxLen: 120 });
+      const cleanName = normalizeCustomerName(rawName, cleanDoc);
+      const cleanPhone = assertSafeTextInput(input.phone || '', 'Teléfono', { maxLen: 40 });
+      const rawCustomerEmail = (input.email || '').trim();
+      const cleanEmail = rawCustomerEmail
+        ? assertSafeEmailInput(rawCustomerEmail, 'Correo electrónico')
+        : '';
+      const cleanNotes = assertSafeTextInput(input.notes || '', 'Notas', {
+        maxLen: 300,
+        allowNewlines: true,
+      });
 
       const custId = (input.id || buildCustomerDocId(cleanDoc)).slice(0, 128);
       const path = `workspaces/${SHARED_WORKSPACE_ID}/customers/${custId}`;
@@ -3084,7 +3879,10 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       const safeBase = Math.round(openingBaseAmount);
       const shiftId = createSafeId('shift');
       const now = Date.now();
-      const cleanNote = openingNote.trim().slice(0, 300);
+      const cleanNote = assertSafeTextInput(openingNote, 'Nota de apertura', {
+        maxLen: 300,
+        allowNewlines: true,
+      });
 
       const newShift: Shift = {
         id: shiftId,
@@ -3208,6 +4006,11 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         declaredByMethod,
       });
 
+      const cleanClosingNote = assertSafeTextInput(closingNote, 'Nota de cierre', {
+        maxLen: 300,
+        allowNewlines: true,
+      });
+
       const path = `workspaces/${SHARED_WORKSPACE_ID}/shifts/${shiftId}`;
       try {
         const batch = writeBatch(db!);
@@ -3216,7 +4019,7 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           closedByStaffId: waiter.id,
           closedByName: waiter.name.slice(0, 80),
           closedByUid: actorUid,
-          closingNote: closingNote.trim().slice(0, 300),
+          closingNote: cleanClosingNote,
           usedPaymentMethods: evaluation.usedPaymentMethods,
           declaredClosingBase: evaluation.declaredClosingBase,
           declaredByMethod: evaluation.declaredByMethod,
@@ -3279,8 +4082,10 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }): Promise<InventoryItem> => {
       requireAdmin();
       requireCloud();
-      const cleanName = input.name.trim().replace(/\s+/g, ' ').slice(0, 80);
-      if (!cleanName) throw new Error('El nombre del ingrediente es obligatorio.');
+      const cleanName = assertSafeTextInput(input.name, 'Nombre del ingrediente', {
+        maxLen: 80,
+        required: true,
+      });
       const nameKey = normalizeIngredientKey(cleanName);
       if (!nameKey) throw new Error('El nombre del ingrediente es obligatorio.');
       if (hasDuplicateInventoryName(cleanName, inventory, input.id)) {
@@ -3454,6 +4259,10 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         throw new Error('Ingresa un costo total válido.');
       }
 
+      const safePurchaseNote = assertSafeTextInput(notes, 'Notas de compra', {
+        maxLen: 300,
+        allowNewlines: true,
+      });
       const safeCost = Math.round(totalCost);
       const calculatedUnitCost = calculatePurchaseUnitCost(qty, safeCost);
       const mov = buildInventoryMovementRecord({
@@ -3465,7 +4274,7 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         purchaseTotalCost: safeCost,
         calculatedUnitCost,
         notes:
-          notes.trim().slice(0, 300) ||
+          safePurchaseNote ||
           `Compra de ${qty} ${target.unit} por $${safeCost.toLocaleString('es-CO')}`,
       });
 
@@ -3510,6 +4319,10 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         throw new Error('Ingresa una cantidad válida para el inventario.');
       }
 
+      const safeAdjustNote = assertSafeTextInput(notes, 'Notas de ajuste', {
+        maxLen: 300,
+        allowNewlines: true,
+      });
       const targetStock = roundStockQty(newStock);
       const delta = roundStockQty(targetStock - target.currentStock);
       const mov = buildInventoryMovementRecord({
@@ -3519,7 +4332,7 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         type: 'ajuste_manual',
         quantityDelta: delta,
         notes:
-          notes.trim().slice(0, 300) ||
+          safeAdjustNote ||
           `Ajuste manual de ${target.currentStock} a ${targetStock} ${target.unit}`,
       });
 
@@ -3879,15 +4692,30 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       requireAdmin();
       requireCloud();
 
+      const safeReceiptCode = assertSafeTextInput(input.receiptCode, 'Código de colilla', {
+        maxLen: 60,
+        required: true,
+      });
+      const safeBulkPaymentMethod =
+        assertSafeTextInput(input.paymentMethod || 'efectivo', 'Método de pago', { maxLen: 40 }) ||
+        'efectivo';
+      const safeBulkNotes = assertSafeTextInput(input.notes || '', 'Notas de la colilla', {
+        maxLen: 300,
+        allowNewlines: true,
+      });
+
       const normalizedLines: PurchaseInvoiceLine[] = input.lines.map((l, idx) =>
         normalizeInvoiceLine({
           ...l,
           id: l.id || createSafeId(`pl_${idx}`),
+          description: assertSafeTextInput(l.description, 'Descripción de línea', {
+            maxLen: 160,
+          }),
         })
       );
 
       const validation = validatePurchaseInvoiceDraft({
-        receiptCode: input.receiptCode,
+        receiptCode: safeReceiptCode,
         lines: normalizedLines,
       });
       if (!validation.valid) {
@@ -3929,8 +4757,8 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         supplierName: resolvedSupplier.customerName,
         supplierPhone: resolvedSupplier.customerPhone,
         supplierEmail: resolvedSupplier.customerEmail,
-        paymentMethod: (input.paymentMethod || 'efectivo').trim().slice(0, 40),
-        notes: (input.notes || '').trim().slice(0, 300),
+        paymentMethod: safeBulkPaymentMethod,
+        notes: safeBulkNotes,
         lines: normalizedLines,
         inventoriableTotal: totals.inventoriableTotal,
         expensesTotal: totals.expensesTotal,
@@ -4034,7 +4862,11 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     async (notifId: string) => {
       requireAdmin();
       requireCloud();
-      if (notifId.startsWith('notif_self_') || notifId.startsWith('notif_sync_')) {
+      if (
+        notifId.startsWith('notif_self_') ||
+        notifId.startsWith('notif_sync_') ||
+        notifId.startsWith('notif_access_req_')
+      ) {
         return;
       }
       const path = `workspaces/${SHARED_WORKSPACE_ID}/notifications/${notifId}`;
@@ -4047,6 +4879,383 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     [requireAdmin, requireCloud]
   );
 
+  // Admin-only Payroll CRUD
+  const savePayrollCompany = useCallback(
+    async (input: PayrollCompanyInput): Promise<PayrollCompany> => {
+      requireAdmin();
+      requireCloud();
+
+      const name = assertSafeTextInput(input.name, 'Nombre / Razón social', {
+        maxLen: 140,
+        required: true,
+      });
+      const nit = assertSafeTextInput(input.nit, 'NIT', {
+        maxLen: 40,
+        required: true,
+      });
+      const address = assertSafeTextInput(input.address, 'Dirección', { maxLen: 160 });
+      const phone = assertSafeTextInput(input.phone, 'Teléfono', { maxLen: 40 });
+      const rawEmail = (input.email || '').trim();
+      const email = rawEmail ? assertSafeEmailInput(rawEmail, 'Correo de la empresa') : '';
+      const rep = assertSafeTextInput(input.rep, 'Representante legal', { maxLen: 120 });
+      const legal = assertSafeTextInput(input.legal, 'Información legal adicional', {
+        maxLen: 400,
+        allowNewlines: true,
+      });
+      const logo = sanitizeSafeUrl(input.logo, {
+        allowDataImage: true,
+        allowRelative: false,
+        maxLen: 250000,
+      });
+
+      const now = Date.now();
+      const existing = input.id ? payrollCompanies.find((c) => c.id === input.id) : undefined;
+      const companyId = existing ? existing.id : sanitizePayrollDocId(input.id, 'pcomp');
+      const path = `workspaces/${SHARED_WORKSPACE_ID}/payrollCompanies/${companyId}`;
+
+      const nextCompany: PayrollCompany = {
+        id: companyId,
+        name,
+        nit,
+        address,
+        phone,
+        email,
+        rep,
+        legal,
+        logo: logo || (existing ? existing.logo : ''),
+        employees: existing ? existing.employees : [],
+        stubs: existing ? existing.stubs : [],
+        ownerUid: workspaceOwnerUid,
+        createdByUid: existing ? existing.createdByUid : actorUid,
+        allowedEmails: authorizedEmails,
+        createdAtMs: existing ? existing.createdAtMs : now,
+        updatedAtMs: now,
+      };
+
+      try {
+        if (existing) {
+          await updateDoc(doc(db!, path), {
+            name: nextCompany.name,
+            nit: nextCompany.nit,
+            address: nextCompany.address,
+            phone: nextCompany.phone,
+            email: nextCompany.email,
+            rep: nextCompany.rep,
+            legal: nextCompany.legal,
+            logo: nextCompany.logo,
+            allowedEmails: authorizedEmails,
+            updatedAt: serverTimestamp(),
+          });
+        } else {
+          await setDoc(doc(db!, path), {
+            ...stripClientTimestamps(nextCompany),
+            createdAt: serverTimestamp(),
+            updatedAt: serverTimestamp(),
+          });
+        }
+      } catch (err) {
+        handleFirestoreError(err, existing ? OperationType.UPDATE : OperationType.CREATE, path);
+      }
+
+      return nextCompany;
+    },
+    [requireAdmin, requireCloud, payrollCompanies, workspaceOwnerUid, actorUid, authorizedEmails]
+  );
+
+  const deletePayrollCompany = useCallback(
+    async (companyId: string) => {
+      requireAdmin();
+      requireCloud();
+      const path = `workspaces/${SHARED_WORKSPACE_ID}/payrollCompanies/${companyId}`;
+      try {
+        await deleteDoc(doc(db!, path));
+      } catch (err) {
+        handleFirestoreError(err, OperationType.DELETE, path);
+      }
+    },
+    [requireAdmin, requireCloud]
+  );
+
+  const savePayrollEmployee = useCallback(
+    async (companyId: string, input: PayrollEmployeeInput): Promise<PayrollEmployee> => {
+      requireAdmin();
+      requireCloud();
+      const company = payrollCompanies.find((c) => c.id === companyId);
+      if (!company) throw new Error('Empresa de nómina no encontrada.');
+
+      const name = assertSafeTextInput(input.name, 'Nombre completo', {
+        maxLen: 120,
+        required: true,
+      });
+      const document = assertSafeTextInput(input.document, 'Documento (Cédula)', {
+        maxLen: 40,
+        required: true,
+      });
+      const hourlyRate = Number(input.hourlyRate);
+      if (!Number.isFinite(hourlyRate) || hourlyRate <= 0) {
+        throw new Error('El valor por hora debe ser mayor a 0.');
+      }
+
+      const position = assertSafeTextInput(input.position, 'Cargo', { maxLen: 80 });
+      const paymentMethod = input.paymentMethod === 'banco' ? 'banco' : 'efectivo';
+      const bank =
+        paymentMethod === 'banco'
+          ? assertSafeTextInput(input.bank, 'Cuenta bancaria / Entidad', { maxLen: 120 })
+          : '';
+      const phone = assertSafeTextInput(input.phone, 'Teléfono', { maxLen: 40 });
+      const applyNight = Boolean(input.applyNight);
+      const nightPercent =
+        Number.isFinite(Number(input.nightPercent)) && Number(input.nightPercent) >= 0
+          ? Math.min(300, Number(input.nightPercent))
+          : 35;
+      const applyHoliday = Boolean(input.applyHoliday);
+      const holidayPercent =
+        Number.isFinite(Number(input.holidayPercent)) && Number(input.holidayPercent) >= 0
+          ? Math.min(300, Number(input.holidayPercent))
+          : 75;
+      const notes = assertSafeTextInput(input.notes, 'Observaciones', {
+        maxLen: 400,
+        allowNewlines: true,
+      });
+
+      const existingEmp = input.id
+        ? company.employees.find((e) => e.id === input.id)
+        : undefined;
+
+      const employeeRecord: PayrollEmployee = {
+        id: existingEmp ? existingEmp.id : sanitizePayrollDocId(input.id, 'emp'),
+        name,
+        document,
+        position,
+        hourlyRate,
+        paymentMethod,
+        bank,
+        phone,
+        applyNight,
+        nightPercent,
+        applyHoliday,
+        holidayPercent,
+        notes,
+        hours: existingEmp ? existingEmp.hours : {},
+      };
+
+      const nextEmployees = existingEmp
+        ? company.employees.map((e) => (e.id === existingEmp.id ? employeeRecord : e))
+        : [...company.employees, employeeRecord];
+
+      const path = `workspaces/${SHARED_WORKSPACE_ID}/payrollCompanies/${companyId}`;
+      try {
+        await updateDoc(doc(db!, path), {
+          employees: nextEmployees,
+          allowedEmails: authorizedEmails,
+          updatedAt: serverTimestamp(),
+        });
+      } catch (err) {
+        handleFirestoreError(err, OperationType.UPDATE, path);
+      }
+
+      return employeeRecord;
+    },
+    [requireAdmin, requireCloud, payrollCompanies, authorizedEmails]
+  );
+
+  const deletePayrollEmployee = useCallback(
+    async (companyId: string, employeeId: string) => {
+      requireAdmin();
+      requireCloud();
+      const company = payrollCompanies.find((c) => c.id === companyId);
+      if (!company) throw new Error('Empresa de nómina no encontrada.');
+
+      const nextEmployees = company.employees.filter((e) => e.id !== employeeId);
+      const nextStubs = company.stubs.filter((s) => s.employeeId !== employeeId);
+
+      const path = `workspaces/${SHARED_WORKSPACE_ID}/payrollCompanies/${companyId}`;
+      try {
+        await updateDoc(doc(db!, path), {
+          employees: nextEmployees,
+          stubs: nextStubs,
+          allowedEmails: authorizedEmails,
+          updatedAt: serverTimestamp(),
+        });
+      } catch (err) {
+        handleFirestoreError(err, OperationType.UPDATE, path);
+      }
+    },
+    [requireAdmin, requireCloud, payrollCompanies, authorizedEmails]
+  );
+
+  const savePayrollEmployeeQuincena = useCallback(
+    async (
+      companyId: string,
+      employeeId: string,
+      periodKey: string,
+      record: PayrollQuincenaRecord
+    ) => {
+      requireAdmin();
+      requireCloud();
+      const company = payrollCompanies.find((c) => c.id === companyId);
+      if (!company) throw new Error('Empresa de nómina no encontrada.');
+      const cleanPeriodKey = assertSafeTextInput(periodKey, 'Periodo', {
+        maxLen: 20,
+        required: true,
+      });
+
+      const cleanRecord: PayrollQuincenaRecord = {
+        ...record,
+        deductionList: record.deductionList.map((d) => ({
+          name: assertSafeTextInput(d.name, 'Deducción', { maxLen: 80 }) || 'Otra deducción',
+          amount: Math.max(0, Number(d.amount) || 0),
+        })),
+        deductions: {
+          ...(record.deductions.salud != null ? { salud: Math.max(0, record.deductions.salud) } : {}),
+          ...(record.deductions.pension != null
+            ? { pension: Math.max(0, record.deductions.pension) }
+            : {}),
+          ...(record.deductions.retefuente != null
+            ? { retefuente: Math.max(0, record.deductions.retefuente) }
+            : {}),
+          ...(record.deductions.otra1
+            ? {
+                otra1: {
+                  name:
+                    assertSafeTextInput(record.deductions.otra1.name, 'Otra deducción 1', {
+                      maxLen: 80,
+                    }) || 'Otra deducción',
+                  amount: Math.max(0, Number(record.deductions.otra1.amount) || 0),
+                },
+              }
+            : {}),
+          ...(record.deductions.otra2
+            ? {
+                otra2: {
+                  name:
+                    assertSafeTextInput(record.deductions.otra2.name, 'Otra deducción 2', {
+                      maxLen: 80,
+                    }) || 'Otra deducción',
+                  amount: Math.max(0, Number(record.deductions.otra2.amount) || 0),
+                },
+              }
+            : {}),
+        },
+      };
+
+      const nextEmployees = company.employees.map((e) =>
+        e.id === employeeId
+          ? {
+              ...e,
+              hours: {
+                ...(e.hours || {}),
+                [cleanPeriodKey]: cleanRecord,
+              },
+            }
+          : e
+      );
+
+      const path = `workspaces/${SHARED_WORKSPACE_ID}/payrollCompanies/${companyId}`;
+      try {
+        await updateDoc(doc(db!, path), {
+          employees: nextEmployees,
+          allowedEmails: authorizedEmails,
+          updatedAt: serverTimestamp(),
+        });
+      } catch (err) {
+        handleFirestoreError(err, OperationType.UPDATE, path);
+      }
+    },
+    [requireAdmin, requireCloud, payrollCompanies, authorizedEmails]
+  );
+
+  const savePayrollStub = useCallback(
+    async (companyId: string, stub: PayrollStubRecord) => {
+      requireAdmin();
+      requireCloud();
+      const company = payrollCompanies.find((c) => c.id === companyId);
+      if (!company) throw new Error('Empresa de nómina no encontrada.');
+
+      const idx = company.stubs.findIndex(
+        (s) => s.employeeId === stub.employeeId && s.periodKey === stub.periodKey
+      );
+      const nextStub: PayrollStubRecord = {
+        ...stub,
+        id: idx >= 0 ? company.stubs[idx].id : sanitizePayrollDocId(stub.id, 'stub'),
+      };
+      const nextStubs =
+        idx >= 0
+          ? company.stubs.map((s, i) => (i === idx ? nextStub : s))
+          : [...company.stubs, nextStub];
+
+      const path = `workspaces/${SHARED_WORKSPACE_ID}/payrollCompanies/${companyId}`;
+      try {
+        await updateDoc(doc(db!, path), {
+          stubs: nextStubs,
+          allowedEmails: authorizedEmails,
+          updatedAt: serverTimestamp(),
+        });
+      } catch (err) {
+        handleFirestoreError(err, OperationType.UPDATE, path);
+      }
+    },
+    [requireAdmin, requireCloud, payrollCompanies, authorizedEmails]
+  );
+
+  const deletePayrollStub = useCallback(
+    async (companyId: string, stubId: string) => {
+      requireAdmin();
+      requireCloud();
+      const company = payrollCompanies.find((c) => c.id === companyId);
+      if (!company) throw new Error('Empresa de nómina no encontrada.');
+
+      const nextStubs = company.stubs.filter((s) => s.id !== stubId);
+      const path = `workspaces/${SHARED_WORKSPACE_ID}/payrollCompanies/${companyId}`;
+      try {
+        await updateDoc(doc(db!, path), {
+          stubs: nextStubs,
+          allowedEmails: authorizedEmails,
+          updatedAt: serverTimestamp(),
+        });
+      } catch (err) {
+        handleFirestoreError(err, OperationType.UPDATE, path);
+      }
+    },
+    [requireAdmin, requireCloud, payrollCompanies, authorizedEmails]
+  );
+
+  const importPayrollCompanies = useCallback(
+    async (imported: PayrollCompany[]) => {
+      requireAdmin();
+      requireCloud();
+
+      const basePath = `workspaces/${SHARED_WORKSPACE_ID}/payrollCompanies`;
+      try {
+        const batch = writeBatch(db!);
+        const importedIds = new Set(imported.map((c) => c.id));
+        for (const existingComp of payrollCompanies) {
+          if (!importedIds.has(existingComp.id)) {
+            batch.delete(doc(db!, `${basePath}/${existingComp.id}`));
+          }
+        }
+        for (const comp of imported) {
+          const prev = payrollCompanies.find((c) => c.id === comp.id);
+          const payload = {
+            ...stripClientTimestamps({
+              ...comp,
+              ownerUid: workspaceOwnerUid,
+              createdByUid: prev ? prev.createdByUid : actorUid,
+              allowedEmails: authorizedEmails,
+            }),
+            createdAt: prev ? Timestamp.fromMillis(prev.createdAtMs || Date.now()) : serverTimestamp(),
+            updatedAt: serverTimestamp(),
+          };
+          batch.set(doc(db!, `${basePath}/${comp.id}`), payload);
+        }
+        await batch.commit();
+      } catch (err) {
+        handleFirestoreError(err, OperationType.WRITE, basePath);
+      }
+    },
+    [requireAdmin, requireCloud, payrollCompanies, workspaceOwnerUid, actorUid, authorizedEmails]
+  );
+
   const value: PosContextValue = {
     sessionMode,
     authReady,
@@ -4056,6 +5265,11 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     cloudError,
     loadingData,
     identityReady,
+    accessStatus,
+    accessRequest: myAccessRequest,
+    accessRequests,
+    pendingAccessRequestsCount,
+    pushSyncStatus,
 
     effectiveRole,
     permissions,
@@ -4081,6 +5295,8 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     notifications,
     notificationsLoaded,
     purchaseInvoices,
+    payrollCompanies,
+    payrollLoaded,
 
     activeWaiter,
     myLinkedStaff,
@@ -4096,6 +5312,11 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     sendVerificationEmail,
     refreshEmailVerification,
     signOutSession,
+    approveAccessRequest,
+    rejectAccessRequest,
+    updatePendingRequestedName,
+    refreshAccessApprovalStatus,
+    syncBackgroundPushNow,
 
     createOrder,
     updateOrderItems,
@@ -4135,6 +5356,15 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     registerBulkPurchaseInvoice,
     deletePurchaseInvoice,
     deleteWorkspaceNotification,
+
+    savePayrollCompany,
+    deletePayrollCompany,
+    savePayrollEmployee,
+    deletePayrollEmployee,
+    savePayrollEmployeeQuincena,
+    savePayrollStub,
+    deletePayrollStub,
+    importPayrollCompanies,
   };
 
   return <PosContext.Provider value={value}>{children}</PosContext.Provider>;

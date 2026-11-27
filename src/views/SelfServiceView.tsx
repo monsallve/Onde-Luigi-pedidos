@@ -1104,7 +1104,7 @@ export const SelfServiceView: React.FC<Props> = ({ initialOrderId }) => {
         <div className="max-w-7xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between gap-3">
           <div className="flex items-center gap-2.5 min-w-0">
             <img
-              src={resolveAssetUrl('/onde-luigi-logo.png')}
+              src={resolveAssetUrl('/onde-luigi-logo.webp')}
               alt={businessTitle}
               className="w-9 h-9 rounded-full border border-red-600 object-cover shrink-0"
             />

@@ -20,6 +20,7 @@ import {
   mergeProductIngredientsForEditor,
   normalizeProductImageUrl,
   rankProductsByInteraction,
+  resolveAssetUrl,
   splitCartLineUnit,
   splitProductIngredientsFromEditor,
   suggestCopyProductName,
@@ -427,6 +428,17 @@ test('merges and splits unified recipe ingredients with per-ingredient removable
 
   assert.equal(formatWithoutIngredientLabel('papa ripio'), 'Sin papa ripio');
   assert.equal(formatWithoutIngredientLabel('Sin cebolla'), 'Sin cebolla');
+});
+
+test('resolves built-in menu and banner legacy jpg paths transparently to webp without mutating external URLs', () => {
+  assert.equal(resolveAssetUrl('/menu/mixta.jpg'), '/menu/mixta.webp');
+  assert.equal(resolveAssetUrl('/menu/DOBLE_TODO.JPG'), '/menu/doble_todo.webp');
+  assert.equal(resolveAssetUrl('/onde-luigi-banner.jpg'), '/onde-luigi-banner.webp');
+  assert.equal(resolveAssetUrl('/onde-luigi-logo.webp'), '/onde-luigi-logo.webp');
+  assert.equal(
+    resolveAssetUrl('https://firebasestorage.googleapis.com/v0/b/app/o/prod.jpg?alt=media'),
+    'https://firebasestorage.googleapis.com/v0/b/app/o/prod.jpg?alt=media'
+  );
 });
 
 

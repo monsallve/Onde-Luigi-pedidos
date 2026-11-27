@@ -15,6 +15,7 @@ import {
 import { db, handleFirestoreError, OperationType } from '../firebase/config';
 import { ADMIN_BOOTSTRAP_EMAIL, buildInitialCatalogSeed } from '../data/initialCatalog';
 import type {
+  AccessRequestStatus,
   AccountRole,
   AddonOption,
   BusinessBillingConfig,
@@ -44,11 +45,15 @@ import type {
   StaffMember,
   TrackedPaymentMethod,
   TransferReceipt,
+  WorkspaceAccessRequest,
   WorkspaceNotification,
   WorkspaceNotificationType,
 } from '../types/pos';
+import type { PayrollCompany } from '../types/payroll';
 import { DEFAULT_BILLING_CONFIG, normalizeBillingConfig } from '../utils/billingUtils';
 import { findLinkedStaffMember } from '../utils/identityState';
+import { sanitizePlainText, sanitizeSafeUrl, sanitizeStringList } from '../utils/inputSecurity';
+import { normalizePayrollCompanyRecord } from '../utils/payrollMath';
 import { isValidStaffRole } from '../utils/rolePermissions';
 import {
   DEFAULT_SELF_SERVICE_CONFIG,
@@ -71,24 +76,37 @@ export function toMillis(val: unknown): number {
   return Date.now();
 }
 
+export function omitUndefinedFields<T extends Record<string, unknown>>(obj: T): T {
+  const clean: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(obj)) {
+    if (v !== undefined) {
+      clean[k] = v;
+    }
+  }
+  return clean as T;
+}
+
 export function stripClientTimestamps<T extends { createdAtMs?: number; updatedAtMs?: number }>(
   obj: T
 ): Omit<T, 'createdAtMs' | 'updatedAtMs'> {
   const { createdAtMs: _c, updatedAtMs: _u, ...rest } = obj;
-  return rest;
+  return omitUndefinedFields(rest as Record<string, unknown>) as Omit<
+    T,
+    'createdAtMs' | 'updatedAtMs'
+  >;
 }
 
 export function mapStaffDoc(d: Record<string, unknown>, fallbackId = ''): StaffMember {
   return {
-    id: String(d.id || fallbackId),
-    name: String(d.name || ''),
+    id: sanitizePlainText(d.id || fallbackId, { maxLen: 128 }),
+    name: sanitizePlainText(d.name, { maxLen: 80 }),
     role: isValidStaffRole(d.role) ? d.role : 'mesero',
     active: Boolean(d.active),
-    linkedUid: String(d.linkedUid || ''),
-    linkedEmail: String(d.linkedEmail || ''),
-    ownerUid: String(d.ownerUid || ''),
-    createdByUid: String(d.createdByUid || ''),
-    allowedEmails: Array.isArray(d.allowedEmails) ? (d.allowedEmails as string[]) : [],
+    linkedUid: sanitizePlainText(d.linkedUid, { maxLen: 128 }),
+    linkedEmail: sanitizePlainText(d.linkedEmail, { maxLen: 160 }).toLowerCase(),
+    ownerUid: sanitizePlainText(d.ownerUid, { maxLen: 128 }),
+    createdByUid: sanitizePlainText(d.createdByUid, { maxLen: 128 }),
+    allowedEmails: sanitizeStringList(d.allowedEmails, 25, 160).map((e) => e.toLowerCase()),
     createdAtMs: toMillis(d.createdAt),
     updatedAtMs: toMillis(d.updatedAt),
   };
@@ -96,12 +114,12 @@ export function mapStaffDoc(d: Record<string, unknown>, fallbackId = ''): StaffM
 
 export function mapSauceDoc(d: Record<string, unknown>): Sauce {
   return {
-    id: String(d.id),
-    name: String(d.name),
+    id: sanitizePlainText(d.id, { maxLen: 128 }),
+    name: sanitizePlainText(d.name, { maxLen: 60 }),
     active: Boolean(d.active),
-    ownerUid: String(d.ownerUid),
-    createdByUid: String(d.createdByUid),
-    allowedEmails: Array.isArray(d.allowedEmails) ? (d.allowedEmails as string[]) : [],
+    ownerUid: sanitizePlainText(d.ownerUid, { maxLen: 128 }),
+    createdByUid: sanitizePlainText(d.createdByUid, { maxLen: 128 }),
+    allowedEmails: sanitizeStringList(d.allowedEmails, 25, 160).map((e) => e.toLowerCase()),
     createdAtMs: toMillis(d.createdAt),
     updatedAtMs: toMillis(d.updatedAt),
   };
@@ -112,8 +130,8 @@ export function mapProductDoc(d: Record<string, unknown>): Product {
     ? (d.recipeIngredients as Record<string, unknown>[]).map((r) => {
         const inventoriable = r.inventoriable !== false && Boolean(r.inventoryItemId);
         return {
-          inventoryItemId: inventoriable ? String(r.inventoryItemId || '') : '',
-          name: String(r.name || ''),
+          inventoryItemId: inventoriable ? sanitizePlainText(r.inventoryItemId, { maxLen: 128 }) : '',
+          name: sanitizePlainText(r.name, { maxLen: 80 }),
           quantity: inventoriable ? Number(r.quantity) || 0 : 0,
           unit: r.unit === 'ud' ? 'ud' : 'g',
           removable: Boolean(r.removable),
@@ -123,19 +141,23 @@ export function mapProductDoc(d: Record<string, unknown>): Product {
     : [];
 
   return {
-    id: String(d.id),
-    name: String(d.name),
-    category: String(d.category),
+    id: sanitizePlainText(d.id, { maxLen: 128 }),
+    name: sanitizePlainText(d.name, { maxLen: 100 }),
+    category: sanitizePlainText(d.category, { maxLen: 60 }) || 'General',
     basePrice: Number(d.basePrice) || 0,
-    imageUrl: String(d.imageUrl || ''),
-    baseRecipe: Array.isArray(d.baseRecipe) ? (d.baseRecipe as string[]) : [],
-    removableOptions: Array.isArray(d.removableOptions) ? (d.removableOptions as string[]) : [],
+    imageUrl: sanitizeSafeUrl(d.imageUrl, { allowDataImage: true, allowRelative: true, maxLen: 250000 }),
+    baseRecipe: sanitizeStringList(d.baseRecipe, 30, 80),
+    removableOptions: sanitizeStringList(d.removableOptions, 30, 80),
     recipeIngredients,
     addonOptions: Array.isArray(d.addonOptions)
       ? (d.addonOptions as AddonOption[]).map((ex) => ({
-          ...ex,
+          id: sanitizePlainText(ex.id, { maxLen: 128 }),
+          name: sanitizePlainText(ex.name, { maxLen: 80 }),
+          price: Math.max(0, Math.round(Number(ex.price) || 0)),
           allowMultiple: ex.allowMultiple !== false,
-          ...(ex.inventoryItemId ? { inventoryItemId: String(ex.inventoryItemId) } : {}),
+          ...(ex.inventoryItemId
+            ? { inventoryItemId: sanitizePlainText(ex.inventoryItemId, { maxLen: 128 }) }
+            : {}),
           ...(ex.inventoryQuantity !== undefined
             ? { inventoryQuantity: Number(ex.inventoryQuantity) || 0 }
             : {}),
@@ -145,9 +167,9 @@ export function mapProductDoc(d: Record<string, unknown>): Product {
     minSauces: d.minSauces !== undefined ? Number(d.minSauces) : 1,
     maxSauces: d.maxSauces !== undefined ? Number(d.maxSauces) : 4,
     active: Boolean(d.active),
-    ownerUid: String(d.ownerUid),
-    createdByUid: String(d.createdByUid),
-    allowedEmails: Array.isArray(d.allowedEmails) ? (d.allowedEmails as string[]) : [],
+    ownerUid: sanitizePlainText(d.ownerUid, { maxLen: 128 }),
+    createdByUid: sanitizePlainText(d.createdByUid, { maxLen: 128 }),
+    allowedEmails: sanitizeStringList(d.allowedEmails, 25, 160).map((e) => e.toLowerCase()),
     createdAtMs: toMillis(d.createdAt),
     updatedAtMs: toMillis(d.updatedAt),
   };
@@ -165,28 +187,54 @@ function parseInventoryDeducted(raw: unknown): Record<string, number> | undefine
   return out;
 }
 
+function sanitizeOrderItemsList(raw: unknown): OrderItem[] {
+  if (!Array.isArray(raw)) return [];
+  return (raw as OrderItem[]).map((it) => ({
+    lineId: sanitizePlainText(it.lineId, { maxLen: 128 }),
+    productId: sanitizePlainText(it.productId, { maxLen: 128 }),
+    productName: sanitizePlainText(it.productName, { maxLen: 100 }),
+    category: sanitizePlainText(it.category, { maxLen: 60 }),
+    quantity: Math.max(1, Number(it.quantity) || 1),
+    basePrice: Math.max(0, Number(it.basePrice) || 0),
+    removedIngredients: sanitizeStringList(it.removedIngredients, 30, 80),
+    addedExtras: Array.isArray(it.addedExtras)
+      ? it.addedExtras.map((ex) => ({
+          id: sanitizePlainText(ex.id, { maxLen: 128 }),
+          name: sanitizePlainText(ex.name, { maxLen: 80 }),
+          price: Math.max(0, Number(ex.price) || 0),
+          ...(ex.quantity !== undefined ? { quantity: Math.max(1, Number(ex.quantity) || 1) } : {}),
+        }))
+      : [],
+    selectedSauces: sanitizeStringList(it.selectedSauces, 10, 60),
+    customNote: sanitizePlainText(it.customNote, { maxLen: 200 }),
+    unitPrice: Math.max(0, Number(it.unitPrice) || 0),
+    lineTotal: Math.max(0, Number(it.lineTotal) || 0),
+  }));
+}
+
 export function mapOrderDoc(d: Record<string, unknown>): Order {
   return {
-    id: String(d.id),
+    id: sanitizePlainText(d.id, { maxLen: 128 }),
     orderNumber: Number(d.orderNumber) || 1,
-    reference: String(d.reference),
-    waiterId: String(d.waiterId),
-    waiterName: String(d.waiterName),
+    reference: sanitizePlainText(d.reference, { maxLen: 100 }),
+    waiterId: sanitizePlainText(d.waiterId, { maxLen: 128 }),
+    waiterName: sanitizePlainText(d.waiterName, { maxLen: 80 }),
     status: d.status as OrderStatus,
     paymentStatus: d.paymentStatus as PaymentStatus,
     paymentMethod: (d.paymentMethod || '') as PaymentMethod,
-    items: Array.isArray(d.items)
-      ? (d.items as OrderItem[]).map((it) => ({
-          ...it,
-          selectedSauces: Array.isArray(it.selectedSauces) ? it.selectedSauces : [],
-        }))
-      : [],
+    items: sanitizeOrderItemsList(d.items),
     subtotal: Number(d.subtotal) || 0,
     total: Number(d.total) || 0,
-    notes: String(d.notes || ''),
+    notes: sanitizePlainText(d.notes, { maxLen: 400, allowNewlines: true }),
     receiptCount: Number(d.receiptCount) || 0,
-    latestReceiptUrl: String(d.latestReceiptUrl || ''),
-    receiptStoragePath: d.receiptStoragePath ? String(d.receiptStoragePath) : undefined,
+    latestReceiptUrl: sanitizeSafeUrl(d.latestReceiptUrl, {
+      allowDataImage: true,
+      allowRelative: false,
+      maxLen: 250000,
+    }),
+    receiptStoragePath: d.receiptStoragePath
+      ? sanitizePlainText(d.receiptStoragePath, { maxLen: 500 })
+      : undefined,
     source: d.source === 'autoservicio' ? 'autoservicio' : d.source === 'pos' ? 'pos' : undefined,
     deliveryType:
       d.deliveryType === 'domicilio'
@@ -194,22 +242,49 @@ export function mapOrderDoc(d: Record<string, unknown>): Order {
         : d.deliveryType === 'local'
           ? 'local'
           : undefined,
-    deliveryAddress: d.deliveryAddress ? String(d.deliveryAddress) : undefined,
-    deliveryNeighborhood: d.deliveryNeighborhood ? String(d.deliveryNeighborhood) : undefined,
-    deliveryPhone: d.deliveryPhone ? String(d.deliveryPhone) : undefined,
-    deliveryNotes: d.deliveryNotes ? String(d.deliveryNotes) : undefined,
-    customerId: d.customerId ? String(d.customerId) : undefined,
-    customerDocument: d.customerDocument ? String(d.customerDocument) : undefined,
-    customerName: d.customerName ? String(d.customerName) : undefined,
-    customerPhone: d.customerPhone ? String(d.customerPhone) : undefined,
-    customerEmail: d.customerEmail ? String(d.customerEmail) : undefined,
+    deliveryAddress: d.deliveryAddress
+      ? sanitizePlainText(d.deliveryAddress, { maxLen: 220 })
+      : undefined,
+    deliveryNeighborhood: d.deliveryNeighborhood
+      ? sanitizePlainText(d.deliveryNeighborhood, { maxLen: 100 })
+      : undefined,
+    deliveryPhone: d.deliveryPhone
+      ? sanitizePlainText(d.deliveryPhone, { maxLen: 40 })
+      : undefined,
+    deliveryNotes: d.deliveryNotes
+      ? sanitizePlainText(d.deliveryNotes, { maxLen: 240, allowNewlines: true })
+      : undefined,
+    customerId: d.customerId ? sanitizePlainText(d.customerId, { maxLen: 128 }) : undefined,
+    customerDocument: d.customerDocument
+      ? sanitizePlainText(d.customerDocument, { maxLen: 40 })
+      : undefined,
+    customerName: d.customerName
+      ? sanitizePlainText(d.customerName, { maxLen: 120 })
+      : undefined,
+    customerPhone: d.customerPhone
+      ? sanitizePlainText(d.customerPhone, { maxLen: 40 })
+      : undefined,
+    customerEmail: d.customerEmail
+      ? sanitizePlainText(d.customerEmail, { maxLen: 160 })
+      : undefined,
     inventoryDeducted: parseInventoryDeducted(d.inventoryDeducted),
-    voidReason: d.voidReason ? String(d.voidReason) : undefined,
-    voidedByName: d.voidedByName ? String(d.voidedByName) : undefined,
+    voidReason: d.voidReason ? sanitizePlainText(d.voidReason, { maxLen: 240 }) : undefined,
+    voidedByName: d.voidedByName ? sanitizePlainText(d.voidedByName, { maxLen: 80 }) : undefined,
     voidedAtMs: d.voidedAtMs ? Number(d.voidedAtMs) : undefined,
-    ownerUid: String(d.ownerUid),
-    createdByUid: String(d.createdByUid),
-    allowedEmails: Array.isArray(d.allowedEmails) ? (d.allowedEmails as string[]) : [],
+    refundMethod:
+      d.refundMethod === 'efectivo' ||
+      d.refundMethod === 'transferencia' ||
+      d.refundMethod === 'tarjeta' ||
+      d.refundMethod === 'otro'
+        ? d.refundMethod
+        : undefined,
+    refundAmount:
+      d.refundAmount !== undefined && Number.isFinite(Number(d.refundAmount))
+        ? Number(d.refundAmount)
+        : undefined,
+    ownerUid: sanitizePlainText(d.ownerUid, { maxLen: 128 }),
+    createdByUid: sanitizePlainText(d.createdByUid, { maxLen: 128 }),
+    allowedEmails: sanitizeStringList(d.allowedEmails, 25, 160).map((e) => e.toLowerCase()),
     createdAtMs: toMillis(d.createdAt),
     updatedAtMs: toMillis(d.updatedAt),
   };
@@ -221,29 +296,29 @@ export function mapPublicStorefrontDoc(
 ): PublicStorefrontConfig {
   const cfg = normalizeSelfServiceConfig(d as Partial<SelfServicePaymentConfig>);
   return {
-    id: String(d.id || fallbackId),
-    businessName: String(d.businessName || "O'NDE LUIGI"),
+    id: sanitizePlainText(d.id || fallbackId, { maxLen: 128 }),
+    businessName: sanitizePlainText(d.businessName, { maxLen: 120 }) || "O'NDE LUIGI",
     ...cfg,
-    ownerUid: String(d.ownerUid || ''),
+    ownerUid: sanitizePlainText(d.ownerUid, { maxLen: 128 }),
     updatedAtMs: toMillis(d.updatedAt),
   };
 }
 
 export function mapPublicProductDoc(d: Record<string, unknown>, fallbackId = ''): Product {
   return {
-    id: String(d.id || fallbackId),
-    name: String(d.name || ''),
-    category: String(d.category || 'General'),
+    id: sanitizePlainText(d.id || fallbackId, { maxLen: 128 }),
+    name: sanitizePlainText(d.name, { maxLen: 100 }),
+    category: sanitizePlainText(d.category, { maxLen: 60 }) || 'General',
     basePrice: Number(d.basePrice) || 0,
-    imageUrl: String(d.imageUrl || ''),
-    baseRecipe: Array.isArray(d.baseRecipe) ? (d.baseRecipe as string[]) : [],
-    removableOptions: Array.isArray(d.removableOptions) ? (d.removableOptions as string[]) : [],
+    imageUrl: sanitizeSafeUrl(d.imageUrl, { allowDataImage: true, allowRelative: true, maxLen: 250000 }),
+    baseRecipe: sanitizeStringList(d.baseRecipe, 30, 80),
+    removableOptions: sanitizeStringList(d.removableOptions, 30, 80),
     recipeIngredients: [],
     addonOptions: Array.isArray(d.addonOptions)
       ? (d.addonOptions as AddonOption[]).map((ex) => ({
-          id: String(ex.id || ''),
-          name: String(ex.name || ''),
-          price: Number(ex.price) || 0,
+          id: sanitizePlainText(ex.id, { maxLen: 128 }),
+          name: sanitizePlainText(ex.name, { maxLen: 80 }),
+          price: Math.max(0, Number(ex.price) || 0),
           allowMultiple: ex.allowMultiple !== false,
         }))
       : [],
@@ -261,8 +336,8 @@ export function mapPublicProductDoc(d: Record<string, unknown>, fallbackId = '')
 
 export function mapPublicSauceDoc(d: Record<string, unknown>, fallbackId = ''): Sauce {
   return {
-    id: String(d.id || fallbackId),
-    name: String(d.name || ''),
+    id: sanitizePlainText(d.id || fallbackId, { maxLen: 128 }),
+    name: sanitizePlainText(d.name, { maxLen: 60 }),
     active: Boolean(d.active),
     ownerUid: '',
     createdByUid: '',
@@ -278,7 +353,7 @@ export function mapQueueTicketDoc(
 ): PublicQueueTicket {
   const deliveryType: DeliveryType = d.deliveryType === 'domicilio' ? 'domicilio' : 'local';
   return {
-    id: String(d.id || fallbackId),
+    id: sanitizePlainText(d.id || fallbackId, { maxLen: 128 }),
     orderNumber: Number(d.orderNumber) || 501,
     status: (d.status || 'pendiente_validacion') as OrderStatus,
     deliveryType,
@@ -289,42 +364,53 @@ export function mapQueueTicketDoc(
 
 export function mapSelfOrderDoc(d: Record<string, unknown>, fallbackId = ''): Order {
   const deliveryType: DeliveryType = d.deliveryType === 'domicilio' ? 'domicilio' : 'local';
-  const customerName = String(d.customerName || 'Cliente Autoservicio');
-  const deliveryPhone = String(d.deliveryPhone || '');
+  const customerName = sanitizePlainText(d.customerName, { maxLen: 120 }) || 'Cliente Autoservicio';
+  const deliveryPhone = sanitizePlainText(d.deliveryPhone, { maxLen: 40 });
   return {
-    id: String(d.id || fallbackId),
+    id: sanitizePlainText(d.id || fallbackId, { maxLen: 128 }),
     orderNumber: Number(d.orderNumber) || 501,
-    reference: String(d.reference || `Autoservicio · ${customerName}`),
+    reference:
+      sanitizePlainText(d.reference, { maxLen: 100 }) || `Autoservicio · ${customerName}`,
     waiterId: 'autoservicio',
     waiterName: deliveryType === 'domicilio' ? 'Autoservicio · Domicilio' : 'Autoservicio · Local',
     status: (d.status || 'pendiente_validacion') as OrderStatus,
     paymentStatus: d.paymentStatus === 'pagado' ? 'pagado' : 'pendiente',
     paymentMethod: 'transferencia',
-    items: Array.isArray(d.items)
-      ? (d.items as OrderItem[]).map((it) => ({
-          ...it,
-          selectedSauces: Array.isArray(it.selectedSauces) ? it.selectedSauces : [],
-        }))
-      : [],
+    items: sanitizeOrderItemsList(d.items),
     subtotal: Number(d.subtotal) || 0,
     total: Number(d.total) || 0,
-    notes: String(d.notes || ''),
+    notes: sanitizePlainText(d.notes, { maxLen: 400, allowNewlines: true }),
     receiptCount: Number(d.receiptCount) || 0,
-    latestReceiptUrl: String(d.latestReceiptUrl || ''),
-    receiptStoragePath: String(d.receiptStoragePath || ''),
+    latestReceiptUrl: sanitizeSafeUrl(d.latestReceiptUrl, {
+      allowDataImage: true,
+      allowRelative: false,
+      maxLen: 250000,
+    }),
+    receiptStoragePath: sanitizePlainText(d.receiptStoragePath, { maxLen: 500 }),
     source: 'autoservicio',
     deliveryType,
-    deliveryAddress: String(d.deliveryAddress || ''),
-    deliveryNeighborhood: String(d.deliveryNeighborhood || ''),
+    deliveryAddress: sanitizePlainText(d.deliveryAddress, { maxLen: 220 }),
+    deliveryNeighborhood: sanitizePlainText(d.deliveryNeighborhood, { maxLen: 100 }),
     deliveryPhone,
-    deliveryNotes: String(d.deliveryNotes || ''),
+    deliveryNotes: sanitizePlainText(d.deliveryNotes, { maxLen: 240, allowNewlines: true }),
     customerName,
     customerPhone: deliveryPhone || undefined,
-    voidReason: d.voidReason ? String(d.voidReason) : undefined,
-    voidedByName: d.voidedByName ? String(d.voidedByName) : undefined,
+    voidReason: d.voidReason ? sanitizePlainText(d.voidReason, { maxLen: 240 }) : undefined,
+    voidedByName: d.voidedByName ? sanitizePlainText(d.voidedByName, { maxLen: 80 }) : undefined,
     voidedAtMs: d.voidedAtMs ? Number(d.voidedAtMs) : undefined,
-    ownerUid: String(d.ownerUid || ''),
-    createdByUid: String(d.createdByUid || 'autoservicio'),
+    refundMethod:
+      d.refundMethod === 'efectivo' ||
+      d.refundMethod === 'transferencia' ||
+      d.refundMethod === 'tarjeta' ||
+      d.refundMethod === 'otro'
+        ? d.refundMethod
+        : undefined,
+    refundAmount:
+      d.refundAmount !== undefined && Number.isFinite(Number(d.refundAmount))
+        ? Number(d.refundAmount)
+        : undefined,
+    ownerUid: sanitizePlainText(d.ownerUid, { maxLen: 128 }),
+    createdByUid: sanitizePlainText(d.createdByUid, { maxLen: 128 }) || 'autoservicio',
     allowedEmails: [],
     createdAtMs: Number(d.createdAtMs) || toMillis(d.createdAt),
     updatedAtMs: toMillis(d.updatedAt),
@@ -347,16 +433,20 @@ export function toPublicProductPayload(product: Pick<
   | 'active'
 >) {
   return {
-    id: product.id,
-    name: product.name.trim().slice(0, 100),
-    category: product.category.trim().slice(0, 60) || 'General',
+    id: sanitizePlainText(product.id, { maxLen: 128 }),
+    name: sanitizePlainText(product.name, { maxLen: 100 }),
+    category: sanitizePlainText(product.category, { maxLen: 60 }) || 'General',
     basePrice: Math.max(0, Math.round(product.basePrice || 0)),
-    imageUrl: String(product.imageUrl || '').slice(0, 250000),
-    baseRecipe: (product.baseRecipe || []).slice(0, 30),
-    removableOptions: (product.removableOptions || []).slice(0, 30),
+    imageUrl: sanitizeSafeUrl(product.imageUrl, {
+      allowDataImage: true,
+      allowRelative: true,
+      maxLen: 250000,
+    }),
+    baseRecipe: sanitizeStringList(product.baseRecipe, 30, 80),
+    removableOptions: sanitizeStringList(product.removableOptions, 30, 80),
     addonOptions: (product.addonOptions || []).slice(0, 30).map((ex) => ({
-      id: ex.id,
-      name: ex.name.trim().slice(0, 80),
+      id: sanitizePlainText(ex.id, { maxLen: 128 }),
+      name: sanitizePlainText(ex.name, { maxLen: 80 }),
       price: Math.max(0, Math.round(ex.price || 0)),
       allowMultiple: ex.allowMultiple !== false,
     })),
@@ -370,8 +460,8 @@ export function toPublicProductPayload(product: Pick<
 
 export function toPublicSaucePayload(sauce: Pick<Sauce, 'id' | 'name' | 'active'>) {
   return {
-    id: sauce.id,
-    name: sauce.name.trim().slice(0, 60),
+    id: sanitizePlainText(sauce.id, { maxLen: 128 }),
+    name: sanitizePlainText(sauce.name, { maxLen: 60 }),
     active: Boolean(sauce.active),
     updatedAt: serverTimestamp(),
   };
@@ -389,7 +479,7 @@ export async function syncPublicStorefrontCatalog(params: {
   const normalized = normalizeSelfServiceConfig(params.selfServiceConfig);
   batch.set(doc(db, 'publicStorefronts', SHARED_WORKSPACE_ID), {
     id: SHARED_WORKSPACE_ID,
-    businessName: params.businessName.trim().slice(0, 120) || "O'NDE LUIGI",
+    businessName: sanitizePlainText(params.businessName, { maxLen: 120 }) || "O'NDE LUIGI",
     ...normalized,
     ownerUid: params.ownerUid,
     updatedAt: serverTimestamp(),
@@ -411,15 +501,15 @@ export async function syncPublicStorefrontCatalog(params: {
 
 export function mapCustomerDoc(d: Record<string, unknown>, fallbackId = ''): Customer {
   return {
-    id: String(d.id || fallbackId),
-    documentNumber: String(d.documentNumber || ''),
-    name: String(d.name || ''),
-    phone: String(d.phone || ''),
-    email: String(d.email || ''),
-    notes: String(d.notes || ''),
-    ownerUid: String(d.ownerUid || ''),
-    createdByUid: String(d.createdByUid || ''),
-    allowedEmails: Array.isArray(d.allowedEmails) ? (d.allowedEmails as string[]) : [],
+    id: sanitizePlainText(d.id || fallbackId, { maxLen: 128 }),
+    documentNumber: sanitizePlainText(d.documentNumber, { maxLen: 40 }),
+    name: sanitizePlainText(d.name, { maxLen: 120 }),
+    phone: sanitizePlainText(d.phone, { maxLen: 40 }),
+    email: sanitizePlainText(d.email, { maxLen: 160 }),
+    notes: sanitizePlainText(d.notes, { maxLen: 300, allowNewlines: true }),
+    ownerUid: sanitizePlainText(d.ownerUid, { maxLen: 128 }),
+    createdByUid: sanitizePlainText(d.createdByUid, { maxLen: 128 }),
+    allowedEmails: sanitizeStringList(d.allowedEmails, 25, 160).map((e) => e.toLowerCase()),
     createdAtMs: toMillis(d.createdAt),
     updatedAtMs: toMillis(d.updatedAt),
   };
@@ -428,9 +518,9 @@ export function mapCustomerDoc(d: Record<string, unknown>, fallbackId = ''): Cus
 export function mapInventoryItemDoc(d: Record<string, unknown>, fallbackId = ''): InventoryItem {
   const unit: InventoryUnit = d.unit === 'ud' ? 'ud' : 'g';
   return {
-    id: String(d.id || fallbackId),
-    name: String(d.name || ''),
-    nameKey: String(d.nameKey || ''),
+    id: sanitizePlainText(d.id || fallbackId, { maxLen: 128 }),
+    name: sanitizePlainText(d.name, { maxLen: 80 }),
+    nameKey: sanitizePlainText(d.nameKey, { maxLen: 80 }),
     unit,
     currentStock: Number(d.currentStock) || 0,
     minStock: Number(d.minStock) || 0,
@@ -438,9 +528,9 @@ export function mapInventoryItemDoc(d: Record<string, unknown>, fallbackId = '')
     lastPurchaseQuantity: Number(d.lastPurchaseQuantity) || 0,
     lastPurchaseTotalCost: Number(d.lastPurchaseTotalCost) || 0,
     active: d.active !== undefined ? Boolean(d.active) : true,
-    ownerUid: String(d.ownerUid || ''),
-    createdByUid: String(d.createdByUid || ''),
-    allowedEmails: Array.isArray(d.allowedEmails) ? (d.allowedEmails as string[]) : [],
+    ownerUid: sanitizePlainText(d.ownerUid, { maxLen: 128 }),
+    createdByUid: sanitizePlainText(d.createdByUid, { maxLen: 128 }),
+    allowedEmails: sanitizeStringList(d.allowedEmails, 25, 160).map((e) => e.toLowerCase()),
     createdAtMs: toMillis(d.createdAt),
     updatedAtMs: toMillis(d.updatedAt),
   };
@@ -452,22 +542,22 @@ export function mapInventoryMovementDoc(
 ): InventoryMovement {
   const unit: InventoryUnit = d.unit === 'ud' ? 'ud' : 'g';
   return {
-    id: String(d.id || fallbackId),
-    inventoryItemId: String(d.inventoryItemId || ''),
-    ingredientName: String(d.ingredientName || ''),
+    id: sanitizePlainText(d.id || fallbackId, { maxLen: 128 }),
+    inventoryItemId: sanitizePlainText(d.inventoryItemId, { maxLen: 128 }),
+    ingredientName: sanitizePlainText(d.ingredientName, { maxLen: 80 }),
     unit,
     type: (d.type || 'ajuste_manual') as InventoryMovementType,
     quantityDelta: Number(d.quantityDelta) || 0,
     purchaseTotalCost: Number(d.purchaseTotalCost) || 0,
     calculatedUnitCost: Number(d.calculatedUnitCost) || 0,
-    orderId: String(d.orderId || ''),
+    orderId: sanitizePlainText(d.orderId, { maxLen: 128 }),
     orderNumber: Number(d.orderNumber) || 0,
-    notes: String(d.notes || ''),
-    actorName: String(d.actorName || ''),
-    actorUid: String(d.actorUid || ''),
-    ownerUid: String(d.ownerUid || ''),
-    createdByUid: String(d.createdByUid || ''),
-    allowedEmails: Array.isArray(d.allowedEmails) ? (d.allowedEmails as string[]) : [],
+    notes: sanitizePlainText(d.notes, { maxLen: 300, allowNewlines: true }),
+    actorName: sanitizePlainText(d.actorName, { maxLen: 80 }),
+    actorUid: sanitizePlainText(d.actorUid, { maxLen: 128 }),
+    ownerUid: sanitizePlainText(d.ownerUid, { maxLen: 128 }),
+    createdByUid: sanitizePlainText(d.createdByUid, { maxLen: 128 }),
+    allowedEmails: sanitizeStringList(d.allowedEmails, 25, 160).map((e) => e.toLowerCase()),
     createdAtMs: toMillis(d.createdAt),
   };
 }
@@ -480,24 +570,47 @@ export function mapNotificationDoc(
     d.type === 'nueva_comanda' ||
     d.type === 'turno_abierto' ||
     d.type === 'turno_cerrado' ||
-    d.type === 'venta_anulada'
+    d.type === 'venta_anulada' ||
+    d.type === 'solicitud_acceso'
       ? d.type
       : 'nueva_comanda';
 
   return {
-    id: String(d.id || fallbackId),
+    id: sanitizePlainText(d.id || fallbackId, { maxLen: 128 }),
     type: validType,
-    title: String(d.title || ''),
-    message: String(d.message || ''),
-    orderId: String(d.orderId || ''),
+    title: sanitizePlainText(d.title, { maxLen: 140 }),
+    message: sanitizePlainText(d.message, { maxLen: 360 }),
+    orderId: sanitizePlainText(d.orderId, { maxLen: 128 }),
     orderNumber: Number(d.orderNumber) || 0,
-    shiftId: String(d.shiftId || ''),
-    actorName: String(d.actorName || ''),
-    actorUid: String(d.actorUid || ''),
-    ownerUid: String(d.ownerUid || ''),
-    createdByUid: String(d.createdByUid || ''),
-    allowedEmails: Array.isArray(d.allowedEmails) ? (d.allowedEmails as string[]) : [],
+    shiftId: sanitizePlainText(d.shiftId, { maxLen: 128 }),
+    actorName: sanitizePlainText(d.actorName, { maxLen: 80 }),
+    actorUid: sanitizePlainText(d.actorUid, { maxLen: 128 }),
+    ownerUid: sanitizePlainText(d.ownerUid, { maxLen: 128 }),
+    createdByUid: sanitizePlainText(d.createdByUid, { maxLen: 128 }),
+    allowedEmails: sanitizeStringList(d.allowedEmails, 25, 160).map((e) => e.toLowerCase()),
     createdAtMs: toMillis(d.createdAt),
+  };
+}
+
+export function mapAccessRequestDoc(
+  d: Record<string, unknown>,
+  fallbackUid = ''
+): WorkspaceAccessRequest {
+  const status: AccessRequestStatus =
+    d.status === 'approved' || d.status === 'rejected' ? d.status : 'pending';
+  return {
+    uid: sanitizePlainText(d.uid || fallbackUid, { maxLen: 128 }),
+    email: sanitizePlainText(d.email, { maxLen: 160 }).toLowerCase(),
+    displayName: sanitizePlainText(d.displayName, { maxLen: 100 }),
+    requestedName: sanitizePlainText(d.requestedName, { maxLen: 80 }),
+    status,
+    ...(isValidStaffRole(d.assignedRole) ? { assignedRole: d.assignedRole } : {}),
+    ...(d.reviewedByName ? { reviewedByName: sanitizePlainText(d.reviewedByName, { maxLen: 80 }) } : {}),
+    ...(d.reviewedByUid ? { reviewedByUid: sanitizePlainText(d.reviewedByUid, { maxLen: 128 }) } : {}),
+    ...(d.rejectionReason ? { rejectionReason: sanitizePlainText(d.rejectionReason, { maxLen: 240 }) } : {}),
+    ownerUid: sanitizePlainText(d.ownerUid, { maxLen: 128 }),
+    createdAtMs: toMillis(d.createdAt),
+    updatedAtMs: toMillis(d.updatedAt),
   };
 }
 
@@ -520,10 +633,12 @@ export function mapPurchaseInvoiceDoc(
 ): PurchaseInvoice {
   const lines: PurchaseInvoiceLine[] = Array.isArray(d.lines)
     ? (d.lines as Record<string, unknown>[]).map((line, idx) => ({
-        id: String(line.id || `line_${idx}`),
+        id: sanitizePlainText(line.id || `line_${idx}`, { maxLen: 128 }),
         kind: normalizeExpenseKind(line.kind),
-        description: String(line.description || ''),
-        ...(line.inventoryItemId ? { inventoryItemId: String(line.inventoryItemId) } : {}),
+        description: sanitizePlainText(line.description, { maxLen: 160 }),
+        ...(line.inventoryItemId
+          ? { inventoryItemId: sanitizePlainText(line.inventoryItemId, { maxLen: 128 }) }
+          : {}),
         ...(line.unit === 'g' || line.unit === 'ud' ? { unit: line.unit } : {}),
         quantity: Number(line.quantity) || 0,
         totalCost: Number(line.totalCost) || 0,
@@ -532,24 +647,24 @@ export function mapPurchaseInvoiceDoc(
     : [];
 
   return {
-    id: String(d.id || fallbackId),
-    receiptCode: String(d.receiptCode || ''),
-    supplierId: String(d.supplierId || ''),
-    supplierDocument: String(d.supplierDocument || ''),
-    supplierName: String(d.supplierName || ''),
-    supplierPhone: String(d.supplierPhone || ''),
-    supplierEmail: String(d.supplierEmail || ''),
-    paymentMethod: String(d.paymentMethod || ''),
-    notes: String(d.notes || ''),
+    id: sanitizePlainText(d.id || fallbackId, { maxLen: 128 }),
+    receiptCode: sanitizePlainText(d.receiptCode, { maxLen: 60 }),
+    supplierId: sanitizePlainText(d.supplierId, { maxLen: 128 }),
+    supplierDocument: sanitizePlainText(d.supplierDocument, { maxLen: 40 }),
+    supplierName: sanitizePlainText(d.supplierName, { maxLen: 120 }),
+    supplierPhone: sanitizePlainText(d.supplierPhone, { maxLen: 40 }),
+    supplierEmail: sanitizePlainText(d.supplierEmail, { maxLen: 160 }),
+    paymentMethod: sanitizePlainText(d.paymentMethod, { maxLen: 40 }),
+    notes: sanitizePlainText(d.notes, { maxLen: 300, allowNewlines: true }),
     lines,
     inventoriableTotal: Number(d.inventoriableTotal) || 0,
     expensesTotal: Number(d.expensesTotal) || 0,
     grandTotal: Number(d.grandTotal) || 0,
-    actorName: String(d.actorName || ''),
-    actorUid: String(d.actorUid || ''),
-    ownerUid: String(d.ownerUid || ''),
-    createdByUid: String(d.createdByUid || ''),
-    allowedEmails: Array.isArray(d.allowedEmails) ? (d.allowedEmails as string[]) : [],
+    actorName: sanitizePlainText(d.actorName, { maxLen: 80 }),
+    actorUid: sanitizePlainText(d.actorUid, { maxLen: 128 }),
+    ownerUid: sanitizePlainText(d.ownerUid, { maxLen: 128 }),
+    createdByUid: sanitizePlainText(d.createdByUid, { maxLen: 128 }),
+    allowedEmails: sanitizeStringList(d.allowedEmails, 25, 160).map((e) => e.toLowerCase()),
     createdAtMs: toMillis(d.createdAt),
     updatedAtMs: toMillis(d.updatedAt),
   };
@@ -557,43 +672,47 @@ export function mapPurchaseInvoiceDoc(
 
 export function mapMovementDoc(d: Record<string, unknown>): Movement {
   return {
-    id: String(d.id),
-    orderId: String(d.orderId),
+    id: sanitizePlainText(d.id, { maxLen: 128 }),
+    orderId: sanitizePlainText(d.orderId, { maxLen: 128 }),
     orderNumber: Number(d.orderNumber) || 1,
-    orderReference: String(d.orderReference),
+    orderReference: sanitizePlainText(d.orderReference, { maxLen: 100 }),
     type: d.type as Movement['type'],
-    description: String(d.description),
-    waiterId: String(d.waiterId),
-    waiterName: String(d.waiterName),
-    actorUid: String(d.actorUid),
+    description: sanitizePlainText(d.description, { maxLen: 500 }),
+    waiterId: sanitizePlainText(d.waiterId, { maxLen: 128 }),
+    waiterName: sanitizePlainText(d.waiterName, { maxLen: 80 }),
+    actorUid: sanitizePlainText(d.actorUid, { maxLen: 128 }),
     details: (d.details || {}) as Record<string, string | number | boolean>,
-    ownerUid: String(d.ownerUid),
-    createdByUid: String(d.createdByUid),
-    allowedEmails: Array.isArray(d.allowedEmails) ? (d.allowedEmails as string[]) : [],
+    ownerUid: sanitizePlainText(d.ownerUid, { maxLen: 128 }),
+    createdByUid: sanitizePlainText(d.createdByUid, { maxLen: 128 }),
+    allowedEmails: sanitizeStringList(d.allowedEmails, 25, 160).map((e) => e.toLowerCase()),
     createdAtMs: toMillis(d.createdAt),
   };
 }
 
 export function mapTransferDoc(d: Record<string, unknown>): TransferReceipt {
   return {
-    id: String(d.id),
-    orderId: String(d.orderId),
+    id: sanitizePlainText(d.id, { maxLen: 128 }),
+    orderId: sanitizePlainText(d.orderId, { maxLen: 128 }),
     orderNumber: Number(d.orderNumber) || 1,
-    orderReference: String(d.orderReference),
+    orderReference: sanitizePlainText(d.orderReference, { maxLen: 100 }),
     amount: Number(d.amount) || 0,
-    imageUrl: String(d.imageUrl),
-    storagePath: String(d.storagePath || ''),
-    waiterId: String(d.waiterId),
-    waiterName: String(d.waiterName),
+    imageUrl: sanitizeSafeUrl(d.imageUrl, {
+      allowDataImage: true,
+      allowRelative: false,
+      maxLen: 250000,
+    }),
+    storagePath: sanitizePlainText(d.storagePath, { maxLen: 500 }),
+    waiterId: sanitizePlainText(d.waiterId, { maxLen: 128 }),
+    waiterName: sanitizePlainText(d.waiterName, { maxLen: 80 }),
     paymentStatus: d.paymentStatus as PaymentStatus,
-    notes: String(d.notes || ''),
+    notes: sanitizePlainText(d.notes, { maxLen: 300, allowNewlines: true }),
     annulled: Boolean(d.annulled),
-    annulledByName: d.annulledByName ? String(d.annulledByName) : undefined,
-    annulledReason: d.annulledReason ? String(d.annulledReason) : undefined,
+    annulledByName: d.annulledByName ? sanitizePlainText(d.annulledByName, { maxLen: 80 }) : undefined,
+    annulledReason: d.annulledReason ? sanitizePlainText(d.annulledReason, { maxLen: 240 }) : undefined,
     annulledAtMs: d.annulledAtMs ? Number(d.annulledAtMs) : undefined,
-    ownerUid: String(d.ownerUid),
-    createdByUid: String(d.createdByUid),
-    allowedEmails: Array.isArray(d.allowedEmails) ? (d.allowedEmails as string[]) : [],
+    ownerUid: sanitizePlainText(d.ownerUid, { maxLen: 128 }),
+    createdByUid: sanitizePlainText(d.createdByUid, { maxLen: 128 }),
+    allowedEmails: sanitizeStringList(d.allowedEmails, 25, 160).map((e) => e.toLowerCase()),
     createdAtMs: toMillis(d.createdAt),
   };
 }
@@ -621,19 +740,19 @@ export function mapShiftDoc(d: Record<string, unknown>, fallbackId = ''): Shift 
   );
 
   return {
-    id: String(d.id || fallbackId),
+    id: sanitizePlainText(d.id || fallbackId, { maxLen: 128 }),
     status,
     openingBaseAmount: Number(d.openingBaseAmount) || 0,
-    openingNote: String(d.openingNote || ''),
-    openedByStaffId: String(d.openedByStaffId || ''),
-    openedByName: String(d.openedByName || ''),
-    openedByUid: String(d.openedByUid || ''),
+    openingNote: sanitizePlainText(d.openingNote, { maxLen: 300, allowNewlines: true }),
+    openedByStaffId: sanitizePlainText(d.openedByStaffId, { maxLen: 128 }),
+    openedByName: sanitizePlainText(d.openedByName, { maxLen: 80 }),
+    openedByUid: sanitizePlainText(d.openedByUid, { maxLen: 128 }),
     openedAtMs,
     closedAtMs,
-    closedByStaffId: String(d.closedByStaffId || ''),
-    closedByName: String(d.closedByName || ''),
-    closedByUid: String(d.closedByUid || ''),
-    closingNote: String(d.closingNote || ''),
+    closedByStaffId: sanitizePlainText(d.closedByStaffId, { maxLen: 128 }),
+    closedByName: sanitizePlainText(d.closedByName, { maxLen: 80 }),
+    closedByUid: sanitizePlainText(d.closedByUid, { maxLen: 128 }),
+    closingNote: sanitizePlainText(d.closingNote, { maxLen: 300, allowNewlines: true }),
     usedPaymentMethods,
     declaredClosingBase: Number(d.declaredClosingBase) || 0,
     declaredByMethod: parseMethodMap(d.declaredByMethod),
@@ -644,10 +763,29 @@ export function mapShiftDoc(d: Record<string, unknown>, fallbackId = ''): Shift 
     differenceTotal: Number(d.differenceTotal) || 0,
     paidOrdersCount: Number(d.paidOrdersCount) || 0,
     pendingOrdersCount: Number(d.pendingOrdersCount) || 0,
-    ownerUid: String(d.ownerUid || ''),
-    createdByUid: String(d.createdByUid || ''),
-    allowedEmails: Array.isArray(d.allowedEmails) ? (d.allowedEmails as string[]) : [],
+    ownerUid: sanitizePlainText(d.ownerUid, { maxLen: 128 }),
+    createdByUid: sanitizePlainText(d.createdByUid, { maxLen: 128 }),
+    allowedEmails: sanitizeStringList(d.allowedEmails, 25, 160).map((e) => e.toLowerCase()),
     createdAtMs: openedAtMs,
+    updatedAtMs: toMillis(d.updatedAt),
+  };
+}
+
+export function mapPayrollCompanyDoc(
+  d: Record<string, unknown>,
+  fallbackId = ''
+): PayrollCompany {
+  const mapped = normalizePayrollCompanyRecord(
+    { ...d, id: d.id || fallbackId },
+    {
+      ownerUid: sanitizePlainText(d.ownerUid, { maxLen: 128 }),
+      createdByUid: sanitizePlainText(d.createdByUid, { maxLen: 128 }),
+      allowedEmails: sanitizeStringList(d.allowedEmails, 25, 160).map((e) => e.toLowerCase()),
+    }
+  );
+  return {
+    ...mapped,
+    createdAtMs: toMillis(d.createdAt),
     updatedAtMs: toMillis(d.updatedAt),
   };
 }
@@ -661,14 +799,28 @@ export interface WorkspaceBootstrapInfo {
   selfServiceConfig: SelfServicePaymentConfig;
 }
 
+export type WorkspaceResolutionResult =
+  | { status: 'approved'; workspaceInfo: WorkspaceBootstrapInfo }
+  | {
+      status: 'pending' | 'rejected' | 'deactivated';
+      ownerUid: string;
+      allowSelfRegistration: boolean;
+      accessRequest: WorkspaceAccessRequest | null;
+      reason?: string;
+    };
+
 export async function resolveOrBootstrapCloudWorkspace(
   user: User
-): Promise<WorkspaceBootstrapInfo | null> {
+): Promise<WorkspaceResolutionResult | null> {
   if (!db) return null;
   const wsRef = doc(db, 'workspaces', SHARED_WORKSPACE_ID);
   const dirRef = doc(db, 'workspaceDirectory', SHARED_WORKSPACE_ID);
   const memberRef = doc(db, 'workspaces', SHARED_WORKSPACE_ID, 'members', user.uid);
-  const userEmail = (user.email || '').toLowerCase();
+  const accessReqRef = doc(db, 'workspaces', SHARED_WORKSPACE_ID, 'accessRequests', user.uid);
+  const userEmail = sanitizePlainText(user.email || '', { maxLen: 160 }).toLowerCase();
+  const safeDisplayName =
+    sanitizePlainText(user.displayName || userEmail.split('@')[0] || 'Usuario', { maxLen: 80 }) ||
+    'Usuario';
   const isAdminEmail = userEmail === ADMIN_BOOTSTRAP_EMAIL;
 
   // 1. Principal Admin bootstrap & backfill
@@ -705,7 +857,7 @@ export async function resolveOrBootstrapCloudWorkspace(
         });
         batch.set(memberRef, {
           uid: user.uid,
-          displayName: (user.displayName || userEmail || 'Administrador').trim().slice(0, 100),
+          displayName: safeDisplayName.slice(0, 100) || 'Administrador',
           role: 'admin',
           active: true,
           ownerUid: user.uid,
@@ -715,11 +867,11 @@ export async function resolveOrBootstrapCloudWorkspace(
         const adminStaffId = `staff_${user.uid}`;
         batch.set(doc(db, 'workspaces', SHARED_WORKSPACE_ID, 'staff', adminStaffId), {
           id: adminStaffId,
-          name: (user.displayName || 'Administrador').trim().slice(0, 80),
+          name: safeDisplayName || 'Administrador',
           role: 'admin',
           active: true,
           linkedUid: user.uid,
-          linkedEmail: user.email || userEmail,
+          linkedEmail: userEmail,
           ownerUid: user.uid,
           createdByUid: user.uid,
           allowedEmails: initialEmails,
@@ -771,12 +923,15 @@ export async function resolveOrBootstrapCloudWorkspace(
 
         await batch.commit();
         return {
-          ownerUid: user.uid,
-          authorizedEmails: initialEmails,
-          allowSelfRegistration: true,
-          memberRole: 'admin',
-          billingConfig: DEFAULT_BILLING_CONFIG,
-          selfServiceConfig: DEFAULT_SELF_SERVICE_CONFIG,
+          status: 'approved',
+          workspaceInfo: {
+            ownerUid: user.uid,
+            authorizedEmails: initialEmails,
+            allowSelfRegistration: true,
+            memberRole: 'admin',
+            billingConfig: DEFAULT_BILLING_CONFIG,
+            selfServiceConfig: DEFAULT_SELF_SERVICE_CONFIG,
+          },
         };
       }
 
@@ -806,7 +961,7 @@ export async function resolveOrBootstrapCloudWorkspace(
       if (!dirSnap.exists()) {
         await setDoc(dirRef, {
           id: SHARED_WORKSPACE_ID,
-          name: (data.name || "O'NDE LUIGI").slice(0, 120),
+          name: sanitizePlainText(data.name || "O'NDE LUIGI", { maxLen: 120 }),
           ownerUid: data.ownerUid,
           allowSelfRegistration: true,
           updatedAt: serverTimestamp(),
@@ -820,7 +975,7 @@ export async function resolveOrBootstrapCloudWorkspace(
       if (!memberSnap.exists()) {
         await setDoc(memberRef, {
           uid: user.uid,
-          displayName: (user.displayName || userEmail || 'Administrador').trim().slice(0, 100),
+          displayName: safeDisplayName.slice(0, 100) || 'Administrador',
           role: 'admin',
           active: true,
           ownerUid: data.ownerUid,
@@ -836,11 +991,11 @@ export async function resolveOrBootstrapCloudWorkspace(
         const adminStaffId = `staff_${user.uid}`;
         await setDoc(doc(db, 'workspaces', SHARED_WORKSPACE_ID, 'staff', adminStaffId), {
           id: adminStaffId,
-          name: (user.displayName || 'Administrador').trim().slice(0, 80),
+          name: safeDisplayName || 'Administrador',
           role: 'admin',
           active: true,
           linkedUid: user.uid,
-          linkedEmail: user.email || userEmail,
+          linkedEmail: userEmail,
           ownerUid: data.ownerUid,
           createdByUid: user.uid,
           allowedEmails: emails,
@@ -851,18 +1006,21 @@ export async function resolveOrBootstrapCloudWorkspace(
         await updateDoc(doc(db, 'workspaces', SHARED_WORKSPACE_ID, 'staff', existingAdminStaff.id), {
           active: true,
           linkedUid: user.uid,
-          linkedEmail: user.email || userEmail,
+          linkedEmail: userEmail,
           updatedAt: serverTimestamp(),
         });
       }
 
       return {
-        ownerUid: data.ownerUid,
-        authorizedEmails: emails,
-        allowSelfRegistration: currentAllowSelf,
-        memberRole: 'admin',
-        billingConfig: normalizeBillingConfig(data.billingConfig),
-        selfServiceConfig: normalizeSelfServiceConfig(data.selfServiceConfig),
+        status: 'approved',
+        workspaceInfo: {
+          ownerUid: data.ownerUid,
+          authorizedEmails: emails,
+          allowSelfRegistration: currentAllowSelf,
+          memberRole: 'admin',
+          billingConfig: normalizeBillingConfig(data.billingConfig),
+          selfServiceConfig: normalizeSelfServiceConfig(data.selfServiceConfig),
+        },
       };
     } catch (error) {
       handleFirestoreError(error, OperationType.GET, `workspaces/${SHARED_WORKSPACE_ID}`);
@@ -870,8 +1028,8 @@ export async function resolveOrBootstrapCloudWorkspace(
     }
   }
 
-  // 2. Non-admin user flow
-  const [memberSnap, dirSnap] = await Promise.all([
+  // 2. Non-admin user flow: zero direct access to POS until Admin approves & assigns role
+  const [memberSnap, dirSnap, accessReqSnap] = await Promise.all([
     getDoc(memberRef).catch((err) => {
       handleFirestoreError(err, OperationType.GET, `workspaces/${SHARED_WORKSPACE_ID}/members/${user.uid}`);
       throw err;
@@ -880,107 +1038,156 @@ export async function resolveOrBootstrapCloudWorkspace(
       handleFirestoreError(err, OperationType.GET, `workspaceDirectory/${SHARED_WORKSPACE_ID}`);
       throw err;
     }),
+    getDoc(accessReqRef).catch(() => null),
   ]);
 
   const dirAllowSelf = dirSnap.exists()
     ? Boolean((dirSnap.data() as { allowSelfRegistration?: boolean }).allowSelfRegistration)
     : false;
-  let resolvedRole: AccountRole = 'mesero';
+  const dirOwnerUid = dirSnap.exists()
+    ? String((dirSnap.data() as { ownerUid?: string }).ownerUid || '')
+    : '';
+  const existingReq =
+    accessReqSnap && accessReqSnap.exists()
+      ? mapAccessRequestDoc(accessReqSnap.data() as Record<string, unknown>, user.uid)
+      : null;
 
   if (memberSnap.exists()) {
     const mData = memberSnap.data() as { active?: boolean; role?: string };
     if (mData.active === false) {
-      throw new Error(
-        'Tu acceso fue desactivado por el administrador. Pídele que vuelva a activarte en Ajustes.'
-      );
+      return {
+        status: 'deactivated',
+        ownerUid: dirOwnerUid,
+        allowSelfRegistration: dirAllowSelf,
+        accessRequest: existingReq,
+        reason:
+          'Tu acceso fue desactivado por el administrador. Pídele que vuelva a activarte en Ajustes.',
+      };
     }
-    resolvedRole = mData.role === 'admin' ? 'admin' : 'mesero';
-  } else if (dirSnap.exists() && dirAllowSelf) {
-    const dirData = dirSnap.data() as { ownerUid: string };
+
+    const resolvedRole: AccountRole = mData.role === 'admin' ? 'admin' : 'mesero';
     try {
-      await setDoc(memberRef, {
-        uid: user.uid,
-        displayName: (user.displayName || userEmail || 'Mesero').trim().slice(0, 100),
-        role: 'mesero',
-        active: true,
-        ownerUid: dirData.ownerUid,
-        createdAt: serverTimestamp(),
-      });
-    } catch (err) {
-      handleFirestoreError(err, OperationType.CREATE, `workspaces/${SHARED_WORKSPACE_ID}/members/${user.uid}`);
+      const wsSnap = await getDoc(wsRef);
+      if (!wsSnap.exists()) {
+        throw new Error(
+          `El espacio O'NDE LUIGI aún no ha sido inicializado por el administrador (${ADMIN_BOOTSTRAP_EMAIL}).`
+        );
+      }
+      const wsData = wsSnap.data() as {
+        ownerUid: string;
+        authorizedEmails?: string[];
+        billingConfig?: Partial<BusinessBillingConfig>;
+        selfServiceConfig?: Partial<SelfServicePaymentConfig>;
+      };
+      const emails = Array.isArray(wsData.authorizedEmails)
+        ? wsData.authorizedEmails.map((e) => e.toLowerCase())
+        : [ADMIN_BOOTSTRAP_EMAIL];
+      return {
+        status: 'approved',
+        workspaceInfo: {
+          ownerUid: wsData.ownerUid,
+          authorizedEmails: emails,
+          allowSelfRegistration: dirAllowSelf,
+          memberRole: wsData.ownerUid === user.uid ? 'admin' : resolvedRole,
+          billingConfig: normalizeBillingConfig(wsData.billingConfig),
+          selfServiceConfig: normalizeSelfServiceConfig(wsData.selfServiceConfig),
+        },
+      };
+    } catch (error) {
+      if (error instanceof Error && error.message.includes('no ha sido inicializado')) {
+        throw error;
+      }
+      handleFirestoreError(error, OperationType.GET, `workspaces/${SHARED_WORKSPACE_ID}`);
+      return null;
     }
-  } else {
+  }
+
+  if (!dirSnap.exists() || !dirOwnerUid) {
+    throw new Error(
+      `El administrador (${ADMIN_BOOTSTRAP_EMAIL}) debe abrir la aplicación una vez para activar el acceso del equipo.`
+    );
+  }
+
+  // If open self-registration is disabled, verify the email is pre-authorized before queuing a waiting request
+  if (!dirAllowSelf && dirOwnerUid !== user.uid) {
     let preAuthorizedSnap;
     try {
       preAuthorizedSnap = await getDoc(wsRef);
     } catch {
-      if (!dirSnap.exists()) {
-        throw new Error(
-          `El administrador (${ADMIN_BOOTSTRAP_EMAIL}) debe abrir la aplicación una vez para activar el acceso del equipo.`
-        );
-      }
       throw new Error(
-        `El registro abierto está desactivado. Pide al administrador (${ADMIN_BOOTSTRAP_EMAIL}) que active el acceso con enlace o agregue tu correo (${userEmail}) en Ajustes.`
+        `El registro abierto está desactivado. Pide al administrador (${ADMIN_BOOTSTRAP_EMAIL}) que active el registro con enlace o agregue tu correo (${userEmail}) en Ajustes.`
       );
     }
-
     if (!preAuthorizedSnap.exists()) {
       throw new Error(
         `El espacio O'NDE LUIGI aún no ha sido inicializado por el administrador (${ADMIN_BOOTSTRAP_EMAIL}).`
       );
     }
-
     const preData = preAuthorizedSnap.data() as { ownerUid: string; authorizedEmails?: string[] };
     const preEmails = Array.isArray(preData.authorizedEmails)
       ? preData.authorizedEmails.map((e) => e.toLowerCase())
       : [ADMIN_BOOTSTRAP_EMAIL];
-
     if (preData.ownerUid !== user.uid && !preEmails.includes(userEmail)) {
       throw new Error(
         `La cuenta ${userEmail} no está autorizada. Pide al administrador (${ADMIN_BOOTSTRAP_EMAIL}) que agregue tu correo en Ajustes.`
       );
     }
-
-    await setDoc(memberRef, {
-      uid: user.uid,
-      displayName: (user.displayName || userEmail || 'Mesero').trim().slice(0, 100),
-      role: preData.ownerUid === user.uid ? 'admin' : 'mesero',
-      active: true,
-      ownerUid: preData.ownerUid,
-      createdAt: serverTimestamp(),
-    });
-    resolvedRole = preData.ownerUid === user.uid ? 'admin' : 'mesero';
   }
 
-  try {
-    const wsSnap = await getDoc(wsRef);
-    if (!wsSnap.exists()) {
-      throw new Error(
-        `El espacio O'NDE LUIGI aún no ha sido inicializado por el administrador (${ADMIN_BOOTSTRAP_EMAIL}).`
+  if (existingReq && existingReq.status === 'rejected') {
+    return {
+      status: 'rejected',
+      ownerUid: dirOwnerUid,
+      allowSelfRegistration: dirAllowSelf,
+      accessRequest: existingReq,
+      reason:
+        existingReq.rejectionReason ||
+        'Tu solicitud de acceso fue rechazada por el administrador.',
+    };
+  }
+
+  if (!existingReq || existingReq.status !== 'pending') {
+    const now = Date.now();
+    const pendingPayload: WorkspaceAccessRequest = {
+      uid: user.uid,
+      email: userEmail,
+      displayName: safeDisplayName.slice(0, 100),
+      requestedName: safeDisplayName.slice(0, 80),
+      status: 'pending',
+      ownerUid: dirOwnerUid,
+      createdAtMs: existingReq?.createdAtMs || now,
+      updatedAtMs: now,
+    };
+    try {
+      await setDoc(accessReqRef, {
+        uid: pendingPayload.uid,
+        email: pendingPayload.email,
+        displayName: pendingPayload.displayName,
+        requestedName: pendingPayload.requestedName,
+        status: 'pending',
+        ownerUid: dirOwnerUid,
+        createdAt: existingReq ? Timestamp.fromMillis(pendingPayload.createdAtMs) : serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+    } catch (err) {
+      handleFirestoreError(
+        err,
+        OperationType.CREATE,
+        `workspaces/${SHARED_WORKSPACE_ID}/accessRequests/${user.uid}`
       );
     }
-    const wsData = wsSnap.data() as {
-      ownerUid: string;
-      authorizedEmails?: string[];
-      billingConfig?: Partial<BusinessBillingConfig>;
-      selfServiceConfig?: Partial<SelfServicePaymentConfig>;
-    };
-    const emails = Array.isArray(wsData.authorizedEmails)
-      ? wsData.authorizedEmails.map((e) => e.toLowerCase())
-      : [ADMIN_BOOTSTRAP_EMAIL];
     return {
-      ownerUid: wsData.ownerUid,
-      authorizedEmails: emails,
+      status: 'pending',
+      ownerUid: dirOwnerUid,
       allowSelfRegistration: dirAllowSelf,
-      memberRole: wsData.ownerUid === user.uid ? 'admin' : resolvedRole,
-      billingConfig: normalizeBillingConfig(wsData.billingConfig),
-      selfServiceConfig: normalizeSelfServiceConfig(wsData.selfServiceConfig),
+      accessRequest: pendingPayload,
     };
-  } catch (error) {
-    if (error instanceof Error && error.message.includes('no ha sido inicializado')) {
-      throw error;
-    }
-    handleFirestoreError(error, OperationType.GET, `workspaces/${SHARED_WORKSPACE_ID}`);
-    return null;
   }
+
+  return {
+    status: 'pending',
+    ownerUid: dirOwnerUid,
+    allowSelfRegistration: dirAllowSelf,
+    accessRequest: existingReq,
+  };
 }

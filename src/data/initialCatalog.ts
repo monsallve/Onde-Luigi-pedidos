@@ -46,7 +46,7 @@ export function buildInitialCatalogSeed(
       name: 'Hamburguesa Mixta',
       category: 'Hamburguesas',
       basePrice: 26000,
-      imageUrl: '/menu/mixta.jpg',
+      imageUrl: '/menu/mixta.webp',
       baseRecipe: [
         'Pan brioche',
         'Carne de res',
@@ -82,7 +82,7 @@ export function buildInitialCatalogSeed(
       name: 'Hamburguesa Doble Todo',
       category: 'Hamburguesas',
       basePrice: 30000,
-      imageUrl: '/menu/doble_todo.jpg',
+      imageUrl: '/menu/doble_todo.webp',
       baseRecipe: [
         'Pan brioche',
         'Doble carne de res',
@@ -110,7 +110,7 @@ export function buildInitialCatalogSeed(
       name: 'Hamburguesa Pollo',
       category: 'Hamburguesas',
       basePrice: 22000,
-      imageUrl: '/menu/pollo.jpg',
+      imageUrl: '/menu/pollo.webp',
       baseRecipe: [
         'Pan brioche',
         'Filete de pollo',
@@ -138,7 +138,7 @@ export function buildInitialCatalogSeed(
       name: 'Hamburguesa Especial',
       category: 'Hamburguesas',
       basePrice: 24000,
-      imageUrl: '/menu/especial.jpg',
+      imageUrl: '/menu/especial.webp',
       baseRecipe: [
         'Pan brioche',
         'Carne de res',
@@ -174,7 +174,7 @@ export function buildInitialCatalogSeed(
       name: 'Hamburguesa Tocineta',
       category: 'Hamburguesas',
       basePrice: 21000,
-      imageUrl: '/menu/tocineta.jpg',
+      imageUrl: '/menu/tocineta.webp',
       baseRecipe: [
         'Pan brioche',
         'Carne de res',
@@ -202,7 +202,7 @@ export function buildInitialCatalogSeed(
       name: 'Hamburguesa Queso',
       category: 'Hamburguesas',
       basePrice: 19000,
-      imageUrl: '/menu/queso.jpg',
+      imageUrl: '/menu/queso.webp',
       baseRecipe: [
         'Pan brioche',
         'Carne de res',
@@ -229,7 +229,7 @@ export function buildInitialCatalogSeed(
       name: 'Hamburguesa Sencilla',
       category: 'Hamburguesas',
       basePrice: 16000,
-      imageUrl: '/menu/sencilla.jpg',
+      imageUrl: '/menu/sencilla.webp',
       baseRecipe: [
         'Pan brioche',
         'Carne de res',

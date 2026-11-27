@@ -1,4 +1,5 @@
 import type { BusinessBillingConfig, Order, OrderItem } from '../types/pos';
+import { sanitizePlainText } from './inputSecurity';
 import { formatCustomizationSummary } from './orderMath';
 
 export const DEFAULT_CUSTOMER_DOCUMENT = '222222222';
@@ -22,37 +23,35 @@ export function normalizeBillingConfig(
   raw?: Partial<BusinessBillingConfig> | null
 ): BusinessBillingConfig {
   return {
-    businessName: String(raw?.businessName ?? DEFAULT_BILLING_CONFIG.businessName)
-      .trim()
-      .slice(0, 120) || DEFAULT_BILLING_CONFIG.businessName,
-    legalName: String(raw?.legalName ?? '').trim().slice(0, 120),
-    nit: String(raw?.nit ?? '').trim().slice(0, 40),
+    businessName:
+      sanitizePlainText(raw?.businessName ?? DEFAULT_BILLING_CONFIG.businessName, { maxLen: 120 }) ||
+      DEFAULT_BILLING_CONFIG.businessName,
+    legalName: sanitizePlainText(raw?.legalName ?? '', { maxLen: 120 }),
+    nit: sanitizePlainText(raw?.nit ?? '', { maxLen: 40 }),
     regime:
-      String(raw?.regime ?? DEFAULT_BILLING_CONFIG.regime)
-        .trim()
-        .slice(0, 80) || DEFAULT_BILLING_CONFIG.regime,
-    address: String(raw?.address ?? '').trim().slice(0, 160),
+      sanitizePlainText(raw?.regime ?? DEFAULT_BILLING_CONFIG.regime, { maxLen: 80 }) ||
+      DEFAULT_BILLING_CONFIG.regime,
+    address: sanitizePlainText(raw?.address ?? '', { maxLen: 160 }),
     city:
-      String(raw?.city ?? DEFAULT_BILLING_CONFIG.city)
-        .trim()
-        .slice(0, 80) || DEFAULT_BILLING_CONFIG.city,
-    phone: String(raw?.phone ?? '').trim().slice(0, 40),
-    email: String(raw?.email ?? '').trim().slice(0, 160),
+      sanitizePlainText(raw?.city ?? DEFAULT_BILLING_CONFIG.city, { maxLen: 80 }) ||
+      DEFAULT_BILLING_CONFIG.city,
+    phone: sanitizePlainText(raw?.phone ?? '', { maxLen: 40 }),
+    email: sanitizePlainText(raw?.email ?? '', { maxLen: 160 }),
     receiptPrefix:
-      String(raw?.receiptPrefix ?? DEFAULT_BILLING_CONFIG.receiptPrefix)
-        .trim()
+      sanitizePlainText(raw?.receiptPrefix ?? DEFAULT_BILLING_CONFIG.receiptPrefix, { maxLen: 12 })
         .toUpperCase()
         .replace(/[^A-Z0-9_-]/g, '')
         .slice(0, 12) || DEFAULT_BILLING_CONFIG.receiptPrefix,
     footerNote:
-      String(raw?.footerNote ?? DEFAULT_BILLING_CONFIG.footerNote)
-        .trim()
-        .slice(0, 280) || DEFAULT_BILLING_CONFIG.footerNote,
+      sanitizePlainText(raw?.footerNote ?? DEFAULT_BILLING_CONFIG.footerNote, {
+        maxLen: 280,
+        allowNewlines: true,
+      }) || DEFAULT_BILLING_CONFIG.footerNote,
   };
 }
 
 export function normalizeCustomerDocument(raw?: string): string {
-  const clean = (raw || '').trim().slice(0, 40);
+  const clean = sanitizePlainText(raw || '', { maxLen: 40 });
   return clean || DEFAULT_CUSTOMER_DOCUMENT;
 }
 
@@ -62,7 +61,7 @@ export function isDefaultFinalConsumer(docNumber?: string): boolean {
 }
 
 export function normalizeCustomerName(rawName?: string, rawDoc?: string): string {
-  const cleanName = (rawName || '').trim().slice(0, 120);
+  const cleanName = sanitizePlainText(rawName || '', { maxLen: 120 });
   if (cleanName) return cleanName;
   return isDefaultFinalConsumer(rawDoc) ? DEFAULT_CUSTOMER_NAME : 'Cliente';
 }

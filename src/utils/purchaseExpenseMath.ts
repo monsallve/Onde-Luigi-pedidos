@@ -4,10 +4,13 @@ import type {
   Order,
   PurchaseInvoiceLine,
   Shift,
+  TrackedPaymentMethod,
   WorkspaceNotification,
   WorkspaceNotificationType,
 } from '../types/pos';
 import { calculatePurchaseUnitCost, roundStockQty } from './inventoryMath';
+import { TRACKED_PAYMENT_METHOD_LABELS } from './shiftMath';
+import { sanitizePlainText } from './inputSecurity';
 
 export const EXPENSE_LINE_KIND_LABELS: Record<ExpenseLineKind, string> = {
   inventariable: 'Insumo inventariable',
@@ -55,7 +58,7 @@ export function normalizeInvoiceLine(
   return {
     id: line.id,
     kind: line.kind,
-    description: line.description.trim().replace(/\s+/g, ' ').slice(0, 120),
+    description: sanitizePlainText(line.description, { maxLen: 120 }),
     ...(line.kind === 'inventariable' && line.inventoryItemId
       ? { inventoryItemId: line.inventoryItemId }
       : {}),
@@ -190,15 +193,19 @@ export function buildNotificationCopy(params: {
   openingBaseAmount?: number;
   paidOrdersCount?: number;
   wasPaidOrder?: boolean;
+  refundMethod?: TrackedPaymentMethod;
   reason?: string;
+  requesterEmail?: string;
 }): { title: string; message: string } {
-  const actor = params.actorName.trim() || 'Equipo';
+  const actor = sanitizePlainText(params.actorName, { maxLen: 80 }) || 'Equipo';
   const formatMoney = (n: number) => `$${Math.round(n).toLocaleString('es-CO')}`;
 
   switch (params.type) {
     case 'nueva_comanda': {
       const num = params.orderNumber ? `#${params.orderNumber}` : '';
-      const ref = params.orderReference ? ` · ${params.orderReference}` : '';
+      const ref = params.orderReference
+        ? ` · ${sanitizePlainText(params.orderReference, { maxLen: 80 })}`
+        : '';
       const money = params.total !== undefined ? ` · ${formatMoney(params.total)}` : '';
       return {
         title: `Nueva comanda ${num}${ref}`.trim().slice(0, 140),
@@ -226,12 +233,32 @@ export function buildNotificationCopy(params: {
     }
     case 'venta_anulada': {
       const num = params.orderNumber ? `#${params.orderNumber}` : '';
-      const ref = params.orderReference ? ` · ${params.orderReference}` : '';
+      const ref = params.orderReference
+        ? ` · ${sanitizePlainText(params.orderReference, { maxLen: 80 })}`
+        : '';
       const label = params.wasPaidOrder ? 'Venta anulada' : 'Comanda anulada';
-      const reasonSuffix = params.reason ? ` · Motivo: ${params.reason}` : '';
+      const refundSuffix =
+        params.wasPaidOrder && params.refundMethod
+          ? ` · Devolución: ${TRACKED_PAYMENT_METHOD_LABELS[params.refundMethod]}`
+          : '';
+      const reasonSuffix = params.reason
+        ? ` · Motivo: ${sanitizePlainText(params.reason, { maxLen: 160 })}`
+        : '';
       return {
         title: `${label} ${num}${ref}`.trim().slice(0, 140),
-        message: `${actor} anuló ${params.wasPaidOrder ? 'la venta' : 'la comanda'} ${num}${reasonSuffix}`.slice(
+        message: `${actor} anuló ${params.wasPaidOrder ? 'la venta' : 'la comanda'} ${num}${refundSuffix}${reasonSuffix}`.slice(
+          0,
+          360
+        ),
+      };
+    }
+    case 'solicitud_acceso': {
+      const emailSuffix = params.requesterEmail
+        ? ` (${sanitizePlainText(params.requesterEmail, { maxLen: 120 })})`
+        : '';
+      return {
+        title: 'Nueva solicitud de acceso al POS'.slice(0, 140),
+        message: `${actor}${emailSuffix} espera aprobación y asignación de rol por un administrador.`.slice(
           0,
           360
         ),
@@ -359,6 +386,7 @@ export function mergeWorkspaceNotifications(params: {
           orderNumber: o.orderNumber,
           orderReference: o.reference,
           wasPaidOrder: o.paymentStatus === 'pagado',
+          refundMethod: o.refundMethod,
           reason: o.voidReason,
         });
         synthetic.push({

@@ -140,6 +140,8 @@
         "voidReason": { "type": "string", "maxLength": 240 },
         "voidedByName": { "type": "string", "maxLength": 80 },
         "voidedAtMs": { "type": "number" },
+        "refundMethod": { "type": "string", "enum": ["", "efectivo", "transferencia", "tarjeta", "otro"] },
+        "refundAmount": { "type": "number" },
         "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128 },
         "createdByUid": { "type": "string", "minLength": 1, "maxLength": 128 },
         "allowedEmails": { "type": "array" },
@@ -331,7 +333,7 @@
       "type": "object",
       "properties": {
         "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
-        "type": { "type": "string", "enum": ["nueva_comanda", "turno_abierto", "turno_cerrado", "venta_anulada"] },
+        "type": { "type": "string", "enum": ["nueva_comanda", "turno_abierto", "turno_cerrado", "venta_anulada", "solicitud_acceso"] },
         "title": { "type": "string", "minLength": 1, "maxLength": 140 },
         "message": { "type": "string", "minLength": 1, "maxLength": 360 },
         "orderId": { "type": "string", "maxLength": 128 },
@@ -469,6 +471,8 @@
         "voidReason": { "type": "string", "maxLength": 240 },
         "voidedByName": { "type": "string", "maxLength": 80 },
         "voidedAtMs": { "type": "number" },
+        "refundMethod": { "type": "string", "enum": ["", "efectivo", "transferencia", "tarjeta", "otro"] },
+        "refundAmount": { "type": "number" },
         "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128 },
         "createdByUid": { "type": "string", "minLength": 1, "maxLength": 128 },
         "createdAtMs": { "type": "number" },
@@ -476,6 +480,73 @@
         "updatedAt": { "type": "string", "format": "date-time" }
       },
       "required": ["id", "orderNumber", "reference", "source", "deliveryType", "deliveryAddress", "deliveryNeighborhood", "deliveryPhone", "deliveryNotes", "customerName", "status", "paymentStatus", "paymentMethod", "items", "subtotal", "total", "notes", "receiptCount", "latestReceiptUrl", "receiptStoragePath", "ownerUid", "createdByUid", "createdAtMs", "createdAt", "updatedAt"]
+    },
+    "WorkspaceAccessRequest": {
+      "title": "WorkspaceAccessRequest",
+      "description": "Pending, approved, or rejected staff access request awaiting admin role assignment.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "email": { "type": "string", "minLength": 3, "maxLength": 160 },
+        "displayName": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "requestedName": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "status": { "type": "string", "enum": ["pending", "approved", "rejected"] },
+        "assignedRole": { "type": "string", "enum": ["admin", "mesero", "cajero", "cocina"] },
+        "reviewedByName": { "type": "string", "maxLength": 80 },
+        "reviewedByUid": { "type": "string", "maxLength": 128 },
+        "rejectionReason": { "type": "string", "maxLength": 240 },
+        "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "email", "displayName", "requestedName", "status", "ownerUid", "createdAt", "updatedAt"]
+    },
+    "PushSubscription": {
+      "title": "PushSubscription",
+      "description": "FCM background push token strictly bound to an approved, active staff account.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "staffId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "staffName": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "email": { "type": "string", "minLength": 3, "maxLength": 160 },
+        "role": { "type": "string", "enum": ["admin", "mesero", "cajero", "cocina"] },
+        "active": { "type": "boolean" },
+        "token": { "type": "string", "minLength": 1, "maxLength": 500 },
+        "platform": { "type": "string", "enum": ["android", "ios", "desktop", "unknown"] },
+        "deviceLabel": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "createdByUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "allowedEmails": { "type": "array" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "uid", "staffId", "staffName", "email", "role", "active", "token", "platform", "deviceLabel", "ownerUid", "createdByUid", "allowedEmails", "createdAt", "updatedAt"]
+    },
+    "PayrollCompany": {
+      "title": "PayrollCompany",
+      "description": "Admin-only payroll company with employees, biweekly quincena hours, deductions, and generated payment stubs.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 140 },
+        "nit": { "type": "string", "minLength": 1, "maxLength": 40 },
+        "address": { "type": "string", "maxLength": 160 },
+        "phone": { "type": "string", "maxLength": 40 },
+        "email": { "type": "string", "maxLength": 160 },
+        "rep": { "type": "string", "maxLength": 120 },
+        "legal": { "type": "string", "maxLength": 400 },
+        "logo": { "type": "string", "maxLength": 250000 },
+        "employees": { "type": "array" },
+        "stubs": { "type": "array" },
+        "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "createdByUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "allowedEmails": { "type": "array" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "name", "nit", "address", "phone", "email", "rep", "legal", "logo", "employees", "stubs", "ownerUid", "createdByUid", "allowedEmails", "createdAt", "updatedAt"]
     }
   },
   "firestore": {
@@ -538,6 +609,18 @@
     "/workspaces/{workspaceId}/purchaseInvoices/{invoiceId}": {
       "schema": { "$ref": "#/entities/PurchaseInvoice" },
       "description": "Bulk supplier purchase receipts and non-inventoriable business expenses/services."
+    },
+    "/workspaces/{workspaceId}/accessRequests/{reqId}": {
+      "schema": { "$ref": "#/entities/WorkspaceAccessRequest" },
+      "description": "User access requests held in the waiting screen until admin approves and assigns an operational role."
+    },
+    "/workspaces/{workspaceId}/pushSubscriptions/{subId}": {
+      "schema": { "$ref": "#/entities/PushSubscription" },
+      "description": "Background Web Push FCM device subscriptions restricted to active approved staff accounts."
+    },
+    "/workspaces/{workspaceId}/payrollCompanies/{companyId}": {
+      "schema": { "$ref": "#/entities/PayrollCompany" },
+      "description": "Admin-only biweekly payroll companies, employees, worked hours, deductions, and payment stubs."
     },
     "/publicStorefronts/{workspaceId}": {
       "schema": { "$ref": "#/entities/PublicStorefront" },

@@ -150,6 +150,12 @@ export const SalesReportView: React.FC = () => {
           </p>
           <p className="text-xs text-zinc-400 mt-1 tabular-nums">
             {report.orderCount} pedidos válidos
+            {(report.cancelledCount > 0 || report.refundedTotal > 0) && (
+              <span className="block text-[11px] text-red-300 mt-0.5">
+                {report.cancelledCount} {report.cancelledCount === 1 ? 'anulado' : 'anulados'}
+                {report.refundedTotal > 0 ? ` · Dev. ${formatCurrency(report.refundedTotal)}` : ''}
+              </span>
+            )}
           </p>
         </div>
 

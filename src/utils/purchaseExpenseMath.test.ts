@@ -127,9 +127,11 @@ test('notification builders and live filter distinguish events without historica
     actorName: 'Admin',
     orderNumber: 105,
     wasPaidOrder: true,
+    refundMethod: 'transferencia',
     reason: 'Error en cobro',
   });
   assert.match(anuladaVenta.title, /Venta anulada #105/);
+  assert.match(anuladaVenta.message, /Devolución: Transferencia/);
 
   const anuladaComanda = buildNotificationCopy({
     type: 'venta_anulada',

@@ -6,6 +6,11 @@ import type {
   PublicQueueTicket,
   SelfServicePaymentConfig,
 } from '../types/pos';
+import {
+  containsDangerousCodePattern,
+  sanitizePlainText,
+  sanitizeSafeUrl,
+} from './inputSecurity';
 
 export const DEFAULT_SELF_SERVICE_CONFIG: SelfServicePaymentConfig = {
   enabled: true,
@@ -24,29 +29,29 @@ export function normalizeSelfServiceConfig(
 ): SelfServicePaymentConfig {
   return {
     enabled: raw?.enabled !== undefined ? Boolean(raw.enabled) : DEFAULT_SELF_SERVICE_CONFIG.enabled,
-    qrImageUrl: String(raw?.qrImageUrl || '').trim().slice(0, 250000),
+    qrImageUrl: sanitizeSafeUrl(raw?.qrImageUrl, {
+      allowDataImage: true,
+      allowRelative: true,
+      maxLen: 250000,
+    }),
     brebKey:
-      String(raw?.brebKey ?? DEFAULT_SELF_SERVICE_CONFIG.brebKey)
-        .trim()
-        .slice(0, 100) || DEFAULT_SELF_SERVICE_CONFIG.brebKey,
+      sanitizePlainText(raw?.brebKey ?? DEFAULT_SELF_SERVICE_CONFIG.brebKey, { maxLen: 100 }) ||
+      DEFAULT_SELF_SERVICE_CONFIG.brebKey,
     accountHolder:
-      String(raw?.accountHolder ?? DEFAULT_SELF_SERVICE_CONFIG.accountHolder)
-        .trim()
-        .slice(0, 120) || DEFAULT_SELF_SERVICE_CONFIG.accountHolder,
+      sanitizePlainText(raw?.accountHolder ?? DEFAULT_SELF_SERVICE_CONFIG.accountHolder, {
+        maxLen: 120,
+      }) || DEFAULT_SELF_SERVICE_CONFIG.accountHolder,
     bankName:
-      String(raw?.bankName ?? DEFAULT_SELF_SERVICE_CONFIG.bankName)
-        .trim()
-        .slice(0, 120) || DEFAULT_SELF_SERVICE_CONFIG.bankName,
-    paymentInstructions: String(
-      raw?.paymentInstructions ?? DEFAULT_SELF_SERVICE_CONFIG.paymentInstructions
-    )
-      .trim()
-      .slice(0, 400),
-    deliveryInstructions: String(
-      raw?.deliveryInstructions ?? DEFAULT_SELF_SERVICE_CONFIG.deliveryInstructions
-    )
-      .trim()
-      .slice(0, 400),
+      sanitizePlainText(raw?.bankName ?? DEFAULT_SELF_SERVICE_CONFIG.bankName, { maxLen: 120 }) ||
+      DEFAULT_SELF_SERVICE_CONFIG.bankName,
+    paymentInstructions: sanitizePlainText(
+      raw?.paymentInstructions ?? DEFAULT_SELF_SERVICE_CONFIG.paymentInstructions,
+      { maxLen: 400, allowNewlines: true }
+    ),
+    deliveryInstructions: sanitizePlainText(
+      raw?.deliveryInstructions ?? DEFAULT_SELF_SERVICE_CONFIG.deliveryInstructions,
+      { maxLen: 400, allowNewlines: true }
+    ),
   };
 }
 
@@ -81,25 +86,37 @@ export function validateSelfServiceCheckout(
     errors.deliveryType = 'Debes elegir si recoges en local o deseas domicilio.';
   }
 
-  const cleanName = draft.customerName.trim();
-  if (cleanName.length < 2) {
+  const cleanName = sanitizePlainText(draft.customerName, { maxLen: 80 });
+  if (containsDangerousCodePattern(draft.customerName)) {
+    errors.customerName = 'El nombre contiene caracteres o código no permitido.';
+  } else if (cleanName.length < 2) {
     errors.customerName = 'Ingresa tu nombre completo (mínimo 2 caracteres).';
   }
 
   const cleanPhone = draft.deliveryPhone.trim();
-  if (draft.deliveryType === 'domicilio') {
+  if (containsDangerousCodePattern(draft.deliveryPhone)) {
+    errors.deliveryPhone = 'El teléfono contiene caracteres no permitidos.';
+  } else if (draft.deliveryType === 'domicilio') {
     const digits = cleanPhone.replace(/\D/g, '');
     if (digits.length < 7) {
       errors.deliveryPhone = 'Ingresa un teléfono o WhatsApp válido para el domicilio.';
     }
-    if (draft.deliveryAddress.trim().length < 5) {
+    if (containsDangerousCodePattern(draft.deliveryAddress)) {
+      errors.deliveryAddress = 'La dirección contiene caracteres o código no permitido.';
+    } else if (sanitizePlainText(draft.deliveryAddress, { maxLen: 220 }).length < 5) {
       errors.deliveryAddress = 'Ingresa la dirección exacta de entrega.';
     }
-    if (draft.deliveryNeighborhood.trim().length < 2) {
+    if (containsDangerousCodePattern(draft.deliveryNeighborhood)) {
+      errors.deliveryNeighborhood = 'El barrio contiene caracteres o código no permitido.';
+    } else if (sanitizePlainText(draft.deliveryNeighborhood, { maxLen: 100 }).length < 2) {
       errors.deliveryNeighborhood = 'Ingresa el barrio o sector de entrega.';
     }
   } else if (cleanPhone.length > 0 && cleanPhone.replace(/\D/g, '').length < 7) {
     errors.deliveryPhone = 'Si ingresas teléfono, debe tener al menos 7 dígitos.';
+  }
+
+  if (draft.deliveryNotes && containsDangerousCodePattern(draft.deliveryNotes)) {
+    errors.deliveryNotes = 'Las indicaciones contienen caracteres o código no permitido.';
   }
 
   if (draft.paymentMethod && draft.paymentMethod !== 'transferencia') {

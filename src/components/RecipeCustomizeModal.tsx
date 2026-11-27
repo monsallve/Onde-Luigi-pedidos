@@ -2,6 +2,7 @@ import React, { useMemo, useState } from 'react';
 import { Check, Droplets, Minus, Plus, X } from 'lucide-react';
 import { usePosStore } from '../services/posStore';
 import type { AddonOption, OrderItem, OrderItemAddon, Product } from '../types/pos';
+import { assertSafeTextInput } from '../utils/inputSecurity';
 import {
   buildOrderItem,
   calculateItemLineTotal,
@@ -99,6 +100,16 @@ export const RecipeCustomizeModal: React.FC<Props> = ({
       return;
     }
 
+    let safeCustomNote = '';
+    try {
+      safeCustomNote = assertSafeTextInput(customNote, 'Nota para cocina', { maxLen: 200 });
+    } catch (err) {
+      setSauceError(
+        err instanceof Error ? err.message : 'La nota contiene caracteres no permitidos.'
+      );
+      return;
+    }
+
     const built = buildOrderItem({
       lineId: initialItem?.lineId,
       productId: product.id,
@@ -109,7 +120,7 @@ export const RecipeCustomizeModal: React.FC<Props> = ({
       removedIngredients,
       addedExtras,
       selectedSauces: product.allowSauces ? selectedSauces : [],
-      customNote,
+      customNote: safeCustomNote,
     });
     onConfirm(built);
   };
